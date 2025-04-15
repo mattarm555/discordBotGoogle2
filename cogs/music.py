@@ -128,7 +128,7 @@ class Music(commands.Cog):
         if not voice_client:
             voice_client = await interaction.user.voice.channel.connect()
 
-        if not was_playing:
+        if not was_playing and len(queues[guild_id]) == len(songs_added):
             await self.start_next(interaction)
         else:
             if len(songs_added) == 1:
@@ -150,12 +150,21 @@ class Music(commands.Cog):
             embed = Embed(title="Now Playing", description=next_song['title'], color=discord.Color.green())
             embed.set_thumbnail(url=next_song['thumbnail'])
 
-            msg = await interaction.channel.send(embed=embed)
-            await asyncio.sleep(30)
-            try:
-                await msg.delete()
-            except discord.NotFound:
-                pass
+            if not interaction.response.is_done():
+                await interaction.edit_original_response(embed=embed)
+                await asyncio.sleep(30)
+                try:
+                    msg = await interaction.original_response()
+                    await msg.delete()
+                except discord.NotFound:
+                    pass
+            else:
+                msg = await interaction.channel.send(embed=embed)
+                await asyncio.sleep(30)
+                try:
+                    await msg.delete()
+                except discord.NotFound:
+                    pass
 
             save_queues(queues)
         else:

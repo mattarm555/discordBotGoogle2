@@ -1,0 +1,9 @@
+discord.py
+openai
+speechrecognition
+pyaudio
+gtts
+yt-dlp
+aiohttp
+python-dotenv
+PyNaCl

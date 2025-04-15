@@ -10,20 +10,14 @@ import json
 # --- Persistent Queue File ---
 QUEUE_FILE = "saved_queues.json"
 
+queues = {}  # Now handled at startup only
+
 def save_queues(queues):
     if any(queues.values()):
         with open(QUEUE_FILE, "w") as f:
             json.dump(queues, f, indent=4)
     elif os.path.exists(QUEUE_FILE):
         os.remove(QUEUE_FILE)
-
-def load_queues():
-    if os.path.exists(QUEUE_FILE):
-        with open(QUEUE_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-queues = load_queues()
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -50,7 +44,7 @@ class QueueView(ui.View):
         start = self.page * self.per_page
         end = start + self.per_page
         embed = Embed(
-            title=f"\U0001F3B6 Current Queue (Page {self.page + 1}/{self.max_pages})",
+            title=f"🎶 Current Queue (Page {self.page + 1}/{self.max_pages})",
             color=discord.Color.blue()
         )
         songs_on_page = self.queue[start:end]
@@ -79,6 +73,10 @@ class QueueView(ui.View):
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        global queues
+        queues = {}
+        save_queues(queues)
+        print(f"{YELLOW}[INFO]{RESET} Cleared all queues at startup.")
 
     def get_yt_info(self, query):
         ydl_opts = {

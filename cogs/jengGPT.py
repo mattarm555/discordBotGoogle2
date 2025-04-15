@@ -6,6 +6,7 @@ import requests
 import time
 from json.decoder import JSONDecodeError
 
+# --- Color Codes ---
 RESET = "\033[0m"
 BLACK = "\033[30m"
 RED = "\033[31m"
@@ -19,7 +20,13 @@ WHITE = "\033[37m"
 OLLAMA_URL = "https://burlington-money-emotions-variance.trycloudflare.com"
 DEFAULT_MODEL = "mistral"
 
-# 🔍 Async check to verify Ollama is up before deferring
+def debug_command(name, user, guild, **kwargs):
+    print(f"{GREEN}[COMMAND] /{name}{RESET} triggered by {YELLOW}{user.display_name}{RESET} in {BLUE}{guild.name}{RESET}")
+    if kwargs:
+        print(f"{CYAN}Input:{RESET}")
+        for key, value in kwargs.items():
+            print(f"  {key}: {value}")
+
 async def is_ollama_online() -> bool:
     try:
         async with aiohttp.ClientSession() as session:
@@ -38,6 +45,8 @@ class JengGPT(commands.Cog):
         model="Which model to use (e.g., mistral, llama2, codellama, llama2-uncensored)"
     )
     async def askjeng(self, interaction: Interaction, prompt: str, model: str = DEFAULT_MODEL):
+        debug_command("askjeng", interaction.user, interaction.guild, prompt=prompt, model=model)
+
         try:
             await interaction.response.defer(thinking=True)
         except (discord.NotFound, discord.HTTPException):
@@ -54,10 +63,6 @@ class JengGPT(commands.Cog):
             return
 
         try:
-            print(f"📝 {CYAN}Prompt: {prompt}{RESET}")
-            print(f"🤖 {CYAN}Model selected: {model}{RESET}")
-            print(f"🔁 {CYAN}Sending prompt to:{RESET}", OLLAMA_URL)
-
             response = requests.post(f"{OLLAMA_URL}/api/generate", json={
                 "model": model,
                 "prompt": prompt,
@@ -119,6 +124,8 @@ class JengGPT(commands.Cog):
         model="Which model to warm up (e.g., mistral, llama2, codellama. llam2-uncensored)"
     )
     async def warmup(self, interaction: Interaction, model: str = DEFAULT_MODEL):
+        debug_command("warmup", interaction.user, interaction.guild, model=model)
+
         try:
             await interaction.response.defer(thinking=True)
         except (discord.NotFound, discord.HTTPException):
@@ -128,7 +135,6 @@ class JengGPT(commands.Cog):
         try:
             start_time = time.monotonic()
 
-            # Step 1: Check if Ollama is online and get loaded models
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(f"{OLLAMA_URL}/api/tags", timeout=3) as ping:
@@ -161,7 +167,6 @@ class JengGPT(commands.Cog):
                 ))
                 return
 
-            # Step 2: Try warming up the model with a dummy prompt
             try:
                 response = requests.post(f"{OLLAMA_URL}/api/generate", json={
                     "model": model,
@@ -190,8 +195,7 @@ class JengGPT(commands.Cog):
 
             await interaction.followup.send(embed=Embed(
                 title="✅ Warmup Complete",
-                description=f"Model **`{model}`** is now active.\n"
-                            f"Warmup time: **{elapsed:.2f} seconds**",
+                description=f"Model **`{model}`** is now active.\nWarmup time: **{elapsed:.2f} seconds**",
                 color=discord.Color.green()
             ))
 

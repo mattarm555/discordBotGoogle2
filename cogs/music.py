@@ -7,6 +7,7 @@ import math
 
 queues = {}
 
+# --- Color Codes ---
 RESET = "\033[0m"
 BLACK = "\033[30m"
 RED = "\033[31m"
@@ -18,8 +19,8 @@ CYAN = "\033[36m"
 WHITE = "\033[37m"
 
 # Debug logger
-def debug_command(command_name, user, **kwargs):
-    print(f"{RED}[COMMAND] /{command_name}{RESET} triggered by {YELLOW}{user.display_name}{RESET}")
+def debug_command(command_name, user, guild, **kwargs):
+    print(f"{RED}[COMMAND] /{command_name}{RESET} triggered by {YELLOW}{user.display_name}{RESET} in {BLUE}{guild.name}{RESET}")
     if kwargs:
         print(f"{BLUE}Input:{RESET}")
         for key, value in kwargs.items():
@@ -70,7 +71,7 @@ class Music(commands.Cog):
     @app_commands.command(name="play", description="Plays a song from a YouTube URL.")
     @app_commands.describe(url="YouTube URL")
     async def play(self, interaction: Interaction, url: str):
-        debug_command("play", interaction.user, url=url)
+        debug_command("play", interaction.user, interaction.guild, url=url)
         await interaction.response.defer()
         guild_id = interaction.guild.id
 
@@ -115,7 +116,6 @@ class Music(commands.Cog):
             embed.set_thumbnail(url=next_song['thumbnail'])
             asyncio.run_coroutine_threadsafe(interaction.channel.send(embed=embed), self.bot.loop)
         else:
-            # No more songs — auto disconnect in 60 seconds
             asyncio.run_coroutine_threadsafe(self.auto_disconnect(interaction), self.bot.loop)
 
     async def auto_disconnect(self, interaction: Interaction):
@@ -133,7 +133,7 @@ class Music(commands.Cog):
 
     @app_commands.command(name="queue", description="Shows the current music queue.")
     async def queue(self, interaction: Interaction):
-        debug_command("queue", interaction.user)
+        debug_command("queue", interaction.user, interaction.guild)
         song_queue = queues.get(interaction.guild.id, [])
         if not song_queue:
             embed = Embed(title="Queue Empty", description="No songs in queue.", color=discord.Color.red())
@@ -145,7 +145,7 @@ class Music(commands.Cog):
 
     @app_commands.command(name="skip", description="Skips the current song.")
     async def skip(self, interaction: Interaction):
-        debug_command("skip", interaction.user)
+        debug_command("skip", interaction.user, interaction.guild)
         if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
             interaction.guild.voice_client.stop()
             embed = Embed(title="Skipped", description="Skipped to the next song.", color=discord.Color.orange())
@@ -156,7 +156,7 @@ class Music(commands.Cog):
 
     @app_commands.command(name="stop", description="Pauses the music.")
     async def stop(self, interaction: Interaction):
-        debug_command("stop", interaction.user)
+        debug_command("stop", interaction.user, interaction.guild)
         if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
             interaction.guild.voice_client.pause()
             embed = Embed(title="Paused", description="Music paused.", color=discord.Color.orange())
@@ -167,7 +167,7 @@ class Music(commands.Cog):
 
     @app_commands.command(name="start", description="Resumes paused music.")
     async def start(self, interaction: Interaction):
-        debug_command("start", interaction.user)
+        debug_command("start", interaction.user, interaction.guild)
         if interaction.guild.voice_client and interaction.guild.voice_client.is_paused():
             interaction.guild.voice_client.resume()
             embed = Embed(title="Resumed", description="Music resumed.", color=discord.Color.green())
@@ -178,7 +178,7 @@ class Music(commands.Cog):
 
     @app_commands.command(name="leave", description="Disconnects from voice and clears queue.")
     async def leave(self, interaction: Interaction):
-        debug_command("leave", interaction.user)
+        debug_command("leave", interaction.user, interaction.guild)
         if interaction.guild.voice_client:
             await interaction.guild.voice_client.disconnect()
             queues[interaction.guild.id] = []

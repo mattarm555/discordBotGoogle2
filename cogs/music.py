@@ -85,6 +85,7 @@ class Music(commands.Cog):
     async def play(self, interaction: Interaction, url: str):
         debug_command("play", interaction.user, interaction.guild, url=url)
         await interaction.response.defer()
+
         guild_id = interaction.guild.id
         voice_client = interaction.guild.voice_client
 
@@ -93,11 +94,8 @@ class Music(commands.Cog):
 
         data = self.get_yt_info(url)
 
-        entries = []
-        if 'entries' in data:
-            entries = data['entries']
-        else:
-            entries = [data]
+        entries = data['entries'] if 'entries' in data else [data]
+        songs_added = []
 
         for info in entries:
             song = {
@@ -105,25 +103,23 @@ class Music(commands.Cog):
                 'title': info['title'],
                 'thumbnail': info.get('thumbnail', '')
             }
-            was_playing = voice_client.is_playing()
+            queues[guild_id].append(song)
+            songs_added.append(song)
 
-        queues[guild_id].append(song)
+        # Check voice connection AFTER queue updated
+        was_playing = voice_client.is_playing() if voice_client else False
+        if not voice_client:
+            voice_client = await interaction.user.voice.channel.connect()
 
         if not was_playing:
             await self.start_next(interaction)
         else:
-            embed = Embed(title='Added to Queue', description=song['title'], color=discord.Color.blue())
-            embed.set_thumbnail(url=song['thumbnail'])
+            if len(songs_added) == 1:
+                embed = Embed(title='Added to Queue', description=songs_added[0]['title'], color=discord.Color.blue())
+                embed.set_thumbnail(url=songs_added[0]['thumbnail'])
+            else:
+                embed = Embed(title='Playlist Queued', description=f"Added {len(songs_added)} songs.", color=discord.Color.green())
             await interaction.followup.send(embed=embed)
-
-
-        if len(entries) > 1:
-            embed = Embed(title='Playlist Queued', description=f"Added {len(entries)} songs.", color=discord.Color.green())
-        else:
-            embed = Embed(title='Added to Queue', description=entries[0]['title'], color=discord.Color.green())
-            embed.set_thumbnail(url=entries[0].get('thumbnail', ''))
-
-        await interaction.followup.send(embed=embed)
 
     async def start_next(self, interaction: Interaction):
         guild_id = interaction.guild.id
@@ -133,6 +129,7 @@ class Music(commands.Cog):
             next_song = queues[guild_id].pop(0)
             source = self.get_audio_source(next_song['url'])
             voice_client.play(source, after=lambda e: self._after_song(interaction))
+
             embed = Embed(title="Now Playing", description=next_song['title'], color=discord.Color.green())
             embed.set_thumbnail(url=next_song['thumbnail'])
             await interaction.channel.send(embed=embed)

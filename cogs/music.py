@@ -4,8 +4,26 @@ from discord import app_commands, Interaction, Embed, ui
 import asyncio
 import yt_dlp
 import math
+import os
+import json
 
-queues = {}
+# --- Persistent Queue File ---
+QUEUE_FILE = "saved_queues.json"
+
+def save_queues(queues):
+    if any(queues.values()):
+        with open(QUEUE_FILE, "w") as f:
+            json.dump(queues, f, indent=4)
+    elif os.path.exists(QUEUE_FILE):
+        os.remove(QUEUE_FILE)
+
+def load_queues():
+    if os.path.exists(QUEUE_FILE):
+        with open(QUEUE_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+queues = load_queues()
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -13,7 +31,6 @@ RED = "\033[31m"
 YELLOW = "\033[33m"
 BLUE = "\033[34m"
 
-# Debug logger
 def debug_command(command_name, user, guild, **kwargs):
     print(f"{RED}[COMMAND] /{command_name}{RESET} triggered by {YELLOW}{user.display_name}{RESET} in {BLUE}{guild.name}{RESET}")
     if kwargs:
@@ -86,7 +103,7 @@ class Music(commands.Cog):
         debug_command("play", interaction.user, interaction.guild, url=url)
         await interaction.response.defer(thinking=True)
 
-        guild_id = interaction.guild.id
+        guild_id = str(interaction.guild.id)
         voice_client = interaction.guild.voice_client
 
         if guild_id not in queues:
@@ -105,6 +122,8 @@ class Music(commands.Cog):
             queues[guild_id].append(song)
             songs_added.append(song)
 
+        save_queues(queues)
+
         was_playing = voice_client.is_playing() if voice_client else False
         if not voice_client:
             voice_client = await interaction.user.voice.channel.connect()
@@ -120,7 +139,7 @@ class Music(commands.Cog):
             await interaction.edit_original_response(embed=embed)
 
     async def start_next(self, interaction: Interaction):
-        guild_id = interaction.guild.id
+        guild_id = str(interaction.guild.id)
         voice_client = interaction.guild.voice_client
 
         if queues[guild_id]:
@@ -130,12 +149,15 @@ class Music(commands.Cog):
 
             embed = Embed(title="Now Playing", description=next_song['title'], color=discord.Color.green())
             embed.set_thumbnail(url=next_song['thumbnail'])
+
             msg = await interaction.channel.send(embed=embed)
             await asyncio.sleep(30)
             try:
                 await msg.delete()
             except discord.NotFound:
                 pass
+
+            save_queues(queues)
         else:
             await self.auto_disconnect(interaction)
 
@@ -147,7 +169,8 @@ class Music(commands.Cog):
         vc = interaction.guild.voice_client
         if vc and not vc.is_playing():
             await vc.disconnect()
-            queues[interaction.guild.id] = []
+            queues[str(interaction.guild.id)] = []
+            save_queues(queues)
             embed = Embed(
                 title="Jeng has ran away.",
                 description="No music playing — disconnected automatically.",
@@ -159,7 +182,7 @@ class Music(commands.Cog):
     async def queue(self, interaction: Interaction):
         await interaction.response.defer()
         debug_command("queue", interaction.user, interaction.guild)
-        song_queue = queues.get(interaction.guild.id, [])
+        song_queue = queues.get(str(interaction.guild.id), [])
         if not song_queue:
             embed = Embed(title="Queue Empty", description="No songs in queue.", color=discord.Color.red())
             await interaction.followup.send(embed=embed)
@@ -176,6 +199,7 @@ class Music(commands.Cog):
             interaction.guild.voice_client.stop()
             embed = Embed(title="Skipped", description="Skipped to the next song.", color=discord.Color.orange())
             await interaction.followup.send(embed=embed)
+            save_queues(queues)
         else:
             embed = Embed(title="No Song Playing", description="Nothing to skip.", color=discord.Color.red())
             await interaction.followup.send(embed=embed)
@@ -212,7 +236,8 @@ class Music(commands.Cog):
         vc = interaction.guild.voice_client
         if vc:
             await vc.disconnect()
-            queues[interaction.guild.id] = []
+            queues[str(interaction.guild.id)] = []
+            save_queues(queues)
             embed = Embed(title="Jeng has ran away.", description="Left the voice channel.", color=discord.Color.purple())
             await interaction.response.send_message(embed=embed)
         else:

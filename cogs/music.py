@@ -50,7 +50,7 @@ class QueueView(ui.View):
         start = self.page * self.per_page
         end = start + self.per_page
         embed = Embed(
-            title=f"🎶 Current Queue (Page {self.page + 1}/{self.max_pages})",
+            title=f"\U0001F3B6 Current Queue (Page {self.page + 1}/{self.max_pages})",
             color=discord.Color.blue()
         )
         songs_on_page = self.queue[start:end]
@@ -129,7 +129,8 @@ class Music(commands.Cog):
             voice_client = await interaction.user.voice.channel.connect()
 
         if not was_playing and len(queues[guild_id]) == len(songs_added):
-            await self.start_next(interaction)
+            msg = await interaction.edit_original_response(embed=Embed(title="Now Playing...", color=discord.Color.blurple()))
+            await self.start_next(interaction, msg)
         else:
             if len(songs_added) == 1:
                 embed = Embed(title='Added to Queue', description=songs_added[0]['title'], color=discord.Color.blue())
@@ -138,7 +139,7 @@ class Music(commands.Cog):
                 embed = Embed(title='Playlist Queued', description=f"Added {len(songs_added)} songs.", color=discord.Color.green())
             await interaction.edit_original_response(embed=embed)
 
-    async def start_next(self, interaction: Interaction):
+    async def start_next(self, interaction: Interaction, msg: discord.Message = None):
         guild_id = str(interaction.guild.id)
         voice_client = interaction.guild.voice_client
 
@@ -150,19 +151,18 @@ class Music(commands.Cog):
             embed = Embed(title="Now Playing", description=next_song['title'], color=discord.Color.green())
             embed.set_thumbnail(url=next_song['thumbnail'])
 
-            if not interaction.response.is_done():
-                await interaction.edit_original_response(embed=embed)
+            if msg:
+                await msg.edit(embed=embed)
                 await asyncio.sleep(30)
                 try:
-                    msg = await interaction.original_response()
                     await msg.delete()
                 except discord.NotFound:
                     pass
             else:
-                msg = await interaction.channel.send(embed=embed)
+                temp = await interaction.channel.send(embed=embed)
                 await asyncio.sleep(30)
                 try:
-                    await msg.delete()
+                    await temp.delete()
                 except discord.NotFound:
                     pass
 

@@ -84,7 +84,7 @@ class Music(commands.Cog):
     @app_commands.describe(url="YouTube URL or search term")
     async def play(self, interaction: Interaction, url: str):
         debug_command("play", interaction.user, interaction.guild, url=url)
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=True)
 
         guild_id = interaction.guild.id
         voice_client = interaction.guild.voice_client
@@ -93,7 +93,6 @@ class Music(commands.Cog):
             queues[guild_id] = []
 
         data = self.get_yt_info(url)
-
         entries = data['entries'] if 'entries' in data else [data]
         songs_added = []
 
@@ -106,7 +105,6 @@ class Music(commands.Cog):
             queues[guild_id].append(song)
             songs_added.append(song)
 
-        # Check voice connection AFTER queue updated
         was_playing = voice_client.is_playing() if voice_client else False
         if not voice_client:
             voice_client = await interaction.user.voice.channel.connect()
@@ -119,7 +117,7 @@ class Music(commands.Cog):
                 embed.set_thumbnail(url=songs_added[0]['thumbnail'])
             else:
                 embed = Embed(title='Playlist Queued', description=f"Added {len(songs_added)} songs.", color=discord.Color.green())
-            await interaction.followup.send(embed=embed)
+            await interaction.edit_original_response(embed=embed)
 
     async def start_next(self, interaction: Interaction):
         guild_id = interaction.guild.id
@@ -132,7 +130,12 @@ class Music(commands.Cog):
 
             embed = Embed(title="Now Playing", description=next_song['title'], color=discord.Color.green())
             embed.set_thumbnail(url=next_song['thumbnail'])
-            await interaction.channel.send(embed=embed)
+            msg = await interaction.channel.send(embed=embed)
+            await asyncio.sleep(30)
+            try:
+                await msg.delete()
+            except discord.NotFound:
+                pass
         else:
             await self.auto_disconnect(interaction)
 

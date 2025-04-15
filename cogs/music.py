@@ -133,6 +133,7 @@ class Music(commands.Cog):
 
     @app_commands.command(name="queue", description="Shows the current music queue.")
     async def queue(self, interaction: Interaction):
+        await interaction.response.defer()
         debug_command("queue", interaction.user, interaction.guild)
         song_queue = queues.get(interaction.guild.id, [])
         if not song_queue:
@@ -145,6 +146,7 @@ class Music(commands.Cog):
 
     @app_commands.command(name="skip", description="Skips the current song.")
     async def skip(self, interaction: Interaction):
+        await interaction.response.defer()
         debug_command("skip", interaction.user, interaction.guild)
         if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
             interaction.guild.voice_client.stop()
@@ -156,6 +158,7 @@ class Music(commands.Cog):
 
     @app_commands.command(name="stop", description="Pauses the music.")
     async def stop(self, interaction: Interaction):
+        await interaction.response.defer()
         debug_command("stop", interaction.user, interaction.guild)
         if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
             interaction.guild.voice_client.pause()
@@ -167,6 +170,7 @@ class Music(commands.Cog):
 
     @app_commands.command(name="start", description="Resumes paused music.")
     async def start(self, interaction: Interaction):
+        await interaction.response.defer()
         debug_command("start", interaction.user, interaction.guild)
         if interaction.guild.voice_client and interaction.guild.voice_client.is_paused():
             interaction.guild.voice_client.resume()

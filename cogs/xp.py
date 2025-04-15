@@ -79,9 +79,13 @@ class XP(commands.Cog):
         leveled_up = self.add_xp(message.author, config["xp_per_message"])
         if leveled_up:
             try:
-                await message.channel.send(
-                    f"🎉 {message.author.mention} leveled up to level {self.xp_data[guild_id][str(message.author.id)]['level']}!"
+                embed = Embed(
+                    title="🎉 Level Up!",
+                    description=f"{message.author.mention} leveled up to **Level {self.xp_data[guild_id][str(message.author.id)]['level']}**!",
+                    color=discord.Color.orange()
                 )
+                embed.set_thumbnail(url=message.author.avatar.url if message.author.avatar else message.author.default_avatar.url)
+                await message.channel.send(embed=embed)
             except discord.Forbidden:
                 pass
 

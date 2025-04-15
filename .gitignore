@@ -1,0 +1,7 @@
+# Ignore sensitive or dynamic data files
+xp_data.json
+xp_config.json
+quotes.json
+welcome_config.json
+.env
+__pycache__/

@@ -15,8 +15,8 @@ MAGENTA = "\033[35m"
 CYAN = "\033[36m"
 WHITE = "\033[37m"
 
-def debug_command(name, user, **kwargs):
-    print(f"{RED}[COMMAND] /{name}{RESET} triggered by {YELLOW}{user.display_name}{RESET}")
+def debug_command(name, user, guild, **kwargs):
+    print(f"{RED}[COMMAND] /{name}{RESET} triggered by {YELLOW}{user.display_name}{RESET} in {BLUE}{guild.name}{RESET}")
     if kwargs:
         print(f"{CYAN}Input:{RESET}")
         for key, value in kwargs.items():
@@ -46,7 +46,6 @@ class RSVPView(ui.View):
         
         created_str = self.created_at.strftime("%B %d, %I:%M %p ET")
         embed.set_footer(text=f"🕰️ Created at {created_str} by {self.creator.display_name}")
-
         return embed
 
     @ui.button(label="✅ Going", style=discord.ButtonStyle.success)
@@ -80,7 +79,7 @@ class Events(commands.Cog):
         await interaction.response.defer()
 
         debug_command(
-            "event", interaction.user,
+            "event", interaction.user, interaction.guild,
             title=title,
             time=time,
             location=location,

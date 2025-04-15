@@ -96,7 +96,7 @@ class Music(commands.Cog):
         return discord.FFmpegPCMAudio(url, **ffmpeg_opts)
 
     @app_commands.command(name="play", description="Plays a song or playlist from YouTube.")
-    @app_commands.describe(url="YouTube URL or search term")
+    @app_commands.describe(search="YouTube URL or search term")
     async def play(self, interaction: Interaction, url: str):
         debug_command("play", interaction.user, interaction.guild, url=url)
         await interaction.response.defer(thinking=True)

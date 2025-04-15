@@ -16,8 +16,8 @@ MAGENTA = "\033[35m"
 CYAN = "\033[36m"
 WHITE = "\033[37m"
 
-def debug_command(name, user, **kwargs):
-    print(f"{GREEN}[COMMAND] /{name}{RESET} triggered by {YELLOW}{user.display_name}{RESET}")
+def debug_command(name, user, guild, **kwargs):
+    print(f"{GREEN}[COMMAND] /{name}{RESET} triggered by {YELLOW}{user.display_name}{RESET} in {BLUE}{guild.name}{RESET}")
     if kwargs:
         print(f"{CYAN}Input:{RESET}")
         for key, value in kwargs.items():
@@ -52,9 +52,8 @@ class Polls(commands.Cog):
     ):
         await interaction.response.defer()
 
-        # Debug log
         debug_command(
-            "poll", interaction.user,
+            "poll", interaction.user, interaction.guild,
             question=question,
             duration=f"{duration_minutes} min",
             options={f"{text}": emoji for text, emoji in [
@@ -67,7 +66,6 @@ class Polls(commands.Cog):
             ] if text and emoji}
         )
 
-        # Build options list
         options = []
         for text, emoji in [
             (option1_text, option1_emoji),
@@ -91,12 +89,10 @@ class Polls(commands.Cog):
             )
             return
 
-        # Record timestamps
         eastern = pytz.timezone("US/Eastern")
         start_time = datetime.now(eastern)
         end_time = start_time + timedelta(minutes=duration_minutes)
 
-        # Initial poll embed
         embed = Embed(title="📊 Poll", description=question, color=discord.Color.blurple())
         for text, emoji in options:
             embed.add_field(name=f"{emoji} {text}", value=" ", inline=False)
@@ -111,15 +107,11 @@ class Polls(commands.Cog):
             try:
                 await msg.add_reaction(emoji)
             except:
-                pass  # Skip invalid emojis
+                pass
 
-        # Wait until poll closes
         await asyncio.sleep(duration_minutes * 60)
-
-        # Refresh message to get final reactions
         msg = await interaction.channel.fetch_message(msg.id)
 
-        # Count votes
         votes = {}
         user_voted = set()
 
@@ -133,7 +125,6 @@ class Polls(commands.Cog):
                     votes.setdefault(str(reaction.emoji), []).append(user)
                     user_voted.add(user.id)
 
-        # Results embed
         result_embed = Embed(title="📊 Poll Results", description=question, color=discord.Color.yellow())
         for text, emoji in options:
             voters = votes.get(emoji, [])

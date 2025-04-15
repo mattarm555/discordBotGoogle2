@@ -9,14 +9,9 @@ queues = {}
 
 # --- Color Codes ---
 RESET = "\033[0m"
-BLACK = "\033[30m"
 RED = "\033[31m"
-GREEN = "\033[32m"
 YELLOW = "\033[33m"
 BLUE = "\033[34m"
-MAGENTA = "\033[35m"
-CYAN = "\033[36m"
-WHITE = "\033[37m"
 
 # Debug logger
 def debug_command(command_name, user, guild, **kwargs):
@@ -32,7 +27,7 @@ class QueueView(ui.View):
         self.queue = queue
         self.per_page = per_page
         self.page = 0
-        self.max_pages = math.ceil(len(queue) / per_page)
+        self.max_pages = max(1, math.ceil(len(queue) / per_page))
 
     def format_embed(self):
         start = self.page * self.per_page
@@ -68,55 +63,80 @@ class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="play", description="Plays a song from a YouTube URL.")
-    @app_commands.describe(url="YouTube URL")
+    def get_yt_info(self, query):
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'default_search': 'ytsearch',
+            'extract_flat': False
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(query, download=False)
+
+    def get_audio_source(self, url):
+        ffmpeg_opts = {
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            'options': '-vn'
+        }
+        return discord.FFmpegPCMAudio(url, **ffmpeg_opts)
+
+    @app_commands.command(name="play", description="Plays a song or playlist from YouTube.")
+    @app_commands.describe(url="YouTube URL or search term")
     async def play(self, interaction: Interaction, url: str):
         debug_command("play", interaction.user, interaction.guild, url=url)
         await interaction.response.defer()
         guild_id = interaction.guild.id
+        voice_client = interaction.guild.voice_client
 
         if guild_id not in queues:
             queues[guild_id] = []
 
-        ydl_opts = {'format': 'bestaudio', 'noplaylist': True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        data = self.get_yt_info(url)
+
+        entries = []
+        if 'entries' in data:
+            entries = data['entries']
+        else:
+            entries = [data]
+
+        for info in entries:
             song = {
                 'url': info['url'],
                 'title': info['title'],
-                'thumbnail': info['thumbnail']
+                'thumbnail': info.get('thumbnail', '')
             }
+            queues[guild_id].append(song)
 
-        voice_client = interaction.guild.voice_client
         if not voice_client:
             voice_client = await interaction.user.voice.channel.connect()
 
         if not voice_client.is_playing():
-            voice_client.play(discord.FFmpegPCMAudio(song['url']), after=lambda e: self.play_next(interaction))
-            embed = Embed(title='Now Playing', description=song['title'], color=discord.Color.green())
-            embed.set_thumbnail(url=song['thumbnail'])
-            await interaction.followup.send(embed=embed)
-        else:
-            queues[guild_id].append(song)
-            embed = Embed(title='Added to Queue', description=song['title'], color=discord.Color.blue())
-            embed.set_thumbnail(url=song['thumbnail'])
-            await interaction.followup.send(embed=embed)
+            await self.start_next(interaction)
 
-    def play_next(self, interaction: Interaction):
+        if len(entries) > 1:
+            embed = Embed(title='Playlist Queued', description=f"Added {len(entries)} songs.", color=discord.Color.green())
+        else:
+            embed = Embed(title='Added to Queue', description=entries[0]['title'], color=discord.Color.green())
+            embed.set_thumbnail(url=entries[0].get('thumbnail', ''))
+
+        await interaction.followup.send(embed=embed)
+
+    async def start_next(self, interaction: Interaction):
         guild_id = interaction.guild.id
         voice_client = interaction.guild.voice_client
 
         if queues[guild_id]:
             next_song = queues[guild_id].pop(0)
-            voice_client.play(
-                discord.FFmpegPCMAudio(next_song['url']),
-                after=lambda e: self.play_next(interaction)
-            )
-            embed = Embed(title='Now Playing', description=next_song['title'], color=discord.Color.green())
+            source = self.get_audio_source(next_song['url'])
+            voice_client.play(source, after=lambda e: self._after_song(interaction))
+            embed = Embed(title="Now Playing", description=next_song['title'], color=discord.Color.green())
             embed.set_thumbnail(url=next_song['thumbnail'])
-            asyncio.run_coroutine_threadsafe(interaction.channel.send(embed=embed), self.bot.loop)
+            await interaction.channel.send(embed=embed)
         else:
-            asyncio.run_coroutine_threadsafe(self.auto_disconnect(interaction), self.bot.loop)
+            await self.auto_disconnect(interaction)
+
+    def _after_song(self, interaction: Interaction):
+        asyncio.run_coroutine_threadsafe(self.start_next(interaction), self.bot.loop)
 
     async def auto_disconnect(self, interaction: Interaction):
         await asyncio.sleep(60)
@@ -138,11 +158,11 @@ class Music(commands.Cog):
         song_queue = queues.get(interaction.guild.id, [])
         if not song_queue:
             embed = Embed(title="Queue Empty", description="No songs in queue.", color=discord.Color.red())
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
             return
         view = QueueView(song_queue)
         embed = view.format_embed()
-        await interaction.response.send_message(embed=embed, view=view)
+        await interaction.followup.send(embed=embed, view=view)
 
     @app_commands.command(name="skip", description="Skips the current song.")
     async def skip(self, interaction: Interaction):
@@ -151,40 +171,43 @@ class Music(commands.Cog):
         if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
             interaction.guild.voice_client.stop()
             embed = Embed(title="Skipped", description="Skipped to the next song.", color=discord.Color.orange())
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
         else:
             embed = Embed(title="No Song Playing", description="Nothing to skip.", color=discord.Color.red())
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="stop", description="Pauses the music.")
     async def stop(self, interaction: Interaction):
         await interaction.response.defer()
         debug_command("stop", interaction.user, interaction.guild)
-        if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
-            interaction.guild.voice_client.pause()
+        vc = interaction.guild.voice_client
+        if vc and vc.is_playing():
+            vc.pause()
             embed = Embed(title="Paused", description="Music paused.", color=discord.Color.orange())
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
         else:
             embed = Embed(title="No Music Playing", description="Nothing to pause.", color=discord.Color.red())
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="start", description="Resumes paused music.")
     async def start(self, interaction: Interaction):
         await interaction.response.defer()
         debug_command("start", interaction.user, interaction.guild)
-        if interaction.guild.voice_client and interaction.guild.voice_client.is_paused():
-            interaction.guild.voice_client.resume()
+        vc = interaction.guild.voice_client
+        if vc and vc.is_paused():
+            vc.resume()
             embed = Embed(title="Resumed", description="Music resumed.", color=discord.Color.green())
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
         else:
             embed = Embed(title="Not Paused", description="Nothing is paused.", color=discord.Color.red())
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="leave", description="Disconnects from voice and clears queue.")
     async def leave(self, interaction: Interaction):
         debug_command("leave", interaction.user, interaction.guild)
-        if interaction.guild.voice_client:
-            await interaction.guild.voice_client.disconnect()
+        vc = interaction.guild.voice_client
+        if vc:
+            await vc.disconnect()
             queues[interaction.guild.id] = []
             embed = Embed(title="Jeng has ran away.", description="Left the voice channel.", color=discord.Color.purple())
             await interaction.response.send_message(embed=embed)

@@ -56,7 +56,7 @@ class JengGPT(commands.Cog):
         if not await is_ollama_online():
             await interaction.followup.send(embed=Embed(
                 title="🛑 JengGPT is not available",
-                description="Jeng does not currently have the AI running. Sorry about that!",
+                description="JengGPT is not currently running. Sorry about that!",
                 color=discord.Color.red()
             ), ephemeral=True)
             print(f"❌ {GREEN}Ollama server not available — skipping interaction.{RESET}")

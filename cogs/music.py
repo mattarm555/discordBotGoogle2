@@ -10,7 +10,14 @@ import json
 # --- Persistent Queue File ---
 QUEUE_FILE = "saved_queues.json"
 
-queues = {}  # Now handled at startup only
+queues = {}  # guild_id: [song dicts]
+last_channels = {}  # guild_id: last Interaction.channel
+
+# --- Color Codes ---
+RESET = "\033[0m"
+RED = "\033[31m"
+YELLOW = "\033[33m"
+BLUE = "\033[34m"
 
 def save_queues(queues):
     if any(queues.values()):
@@ -18,12 +25,6 @@ def save_queues(queues):
             json.dump(queues, f, indent=4)
     elif os.path.exists(QUEUE_FILE):
         os.remove(QUEUE_FILE)
-
-# --- Color Codes ---
-RESET = "\033[0m"
-RED = "\033[31m"
-YELLOW = "\033[33m"
-BLUE = "\033[34m"
 
 def debug_command(command_name, user, guild, **kwargs):
     print(f"{RED}[COMMAND] /{command_name}{RESET} triggered by {YELLOW}{user.display_name}{RESET} in {BLUE}{guild.name}{RESET}")
@@ -73,6 +74,7 @@ class QueueView(ui.View):
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.currently_playing = {}  # guild_id: {start_time, duration, song}
         global queues
         queues = {}
         save_queues(queues)
@@ -104,13 +106,13 @@ class Music(commands.Cog):
 
         guild_id = str(interaction.guild.id)
         voice_client = interaction.guild.voice_client
+        last_channels[guild_id] = interaction.channel
 
         if guild_id not in queues:
             queues[guild_id] = []
 
-        # NEW: Determine search mode
         if url.startswith("http"):
-            query = url  # Direct link
+            query = url
         elif url.startswith("sc:"):
             query = f"scsearch:{url[3:].strip()}"
         else:
@@ -124,7 +126,8 @@ class Music(commands.Cog):
             song = {
                 'url': info['url'],
                 'title': info['title'],
-                'thumbnail': info.get('thumbnail', '')
+                'thumbnail': info.get('thumbnail', ''),
+                'duration': info.get('duration', 0)
             }
             queues[guild_id].append(song)
             songs_added.append(song)
@@ -146,13 +149,19 @@ class Music(commands.Cog):
                 embed = Embed(title='Playlist Queued', description=f"Added {len(songs_added)} songs.", color=discord.Color.green())
             await interaction.edit_original_response(embed=embed)
 
-
     async def start_next(self, interaction: Interaction, msg: discord.Message = None):
         guild_id = str(interaction.guild.id)
         voice_client = interaction.guild.voice_client
+        channel = last_channels.get(guild_id, interaction.channel)
 
         if queues[guild_id]:
             next_song = queues[guild_id].pop(0)
+            self.currently_playing[guild_id] = {
+                "start_time": asyncio.get_event_loop().time(),
+                "duration": next_song.get("duration", 0),
+                "song": next_song
+            }
+
             source = self.get_audio_source(next_song['url'])
             voice_client.play(source, after=lambda e: self._after_song(interaction))
 
@@ -167,7 +176,7 @@ class Music(commands.Cog):
                 except discord.NotFound:
                     pass
             else:
-                temp = await interaction.channel.send(embed=embed)
+                temp = await channel.send(embed=embed)
                 await asyncio.sleep(30)
                 try:
                     await temp.delete()
@@ -176,29 +185,49 @@ class Music(commands.Cog):
 
             save_queues(queues)
         else:
+            self.currently_playing.pop(guild_id, None)
             await self.auto_disconnect(interaction)
 
     def _after_song(self, interaction: Interaction):
         asyncio.run_coroutine_threadsafe(self.start_next(interaction), self.bot.loop)
 
-    async def auto_disconnect(self, interaction: Interaction):
-        await asyncio.sleep(60)
-        vc = interaction.guild.voice_client
-        if vc and not vc.is_playing():
-            await vc.disconnect()
-            queues[str(interaction.guild.id)] = []
-            save_queues(queues)
-            embed = Embed(
-                title="Jeng has ran away.",
-                description="No music playing — disconnected automatically.",
-                color=discord.Color.purple()
-            )
-            await interaction.channel.send(embed=embed)
+    @app_commands.command(name="np", description="Shows the currently playing song.")
+    async def now_playing(self, interaction: Interaction):
+        await interaction.response.defer()
+        guild_id = str(interaction.guild.id)
+        now = asyncio.get_event_loop().time()
+        playing = self.currently_playing.get(guild_id)
+
+        if not playing:
+            embed = Embed(title="No Song Playing", description="Nothing is currently playing.", color=discord.Color.red())
+            await interaction.followup.send(embed=embed)
+            return
+
+        start = playing["start_time"]
+        duration = playing["duration"]
+        elapsed = int(now - start)
+        total = duration or 1
+
+        bar_len = 20
+        filled_len = int(bar_len * elapsed / total)
+        bar = "▬" * min(filled_len, bar_len - 1) + "🔘" + "▬" * max(0, bar_len - filled_len - 1)
+        elapsed_fmt = f"{elapsed // 60}:{elapsed % 60:02}"
+        total_fmt = f"{total // 60}:{total % 60:02}"
+
+        embed = Embed(
+            title="🎵 Now Playing",
+            description=f"**{playing['song']['title']}**\n{bar}",
+            color=discord.Color.orange()
+        )
+        embed.set_thumbnail(url=playing["song"]["thumbnail"])
+        embed.set_footer(text=f"{elapsed_fmt} / {total_fmt}")
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="queue", description="Shows the current music queue.")
     async def queue(self, interaction: Interaction):
         await interaction.response.defer()
         debug_command("queue", interaction.user, interaction.guild)
+        last_channels[str(interaction.guild.id)] = interaction.channel
         song_queue = queues.get(str(interaction.guild.id), [])
         if not song_queue:
             embed = Embed(title="Queue Empty", description="No songs in queue.", color=discord.Color.red())
@@ -212,6 +241,7 @@ class Music(commands.Cog):
     async def skip(self, interaction: Interaction):
         await interaction.response.defer()
         debug_command("skip", interaction.user, interaction.guild)
+        last_channels[str(interaction.guild.id)] = interaction.channel
         if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
             interaction.guild.voice_client.stop()
             embed = Embed(title="Skipped", description="Skipped to the next song.", color=discord.Color.orange())
@@ -225,6 +255,7 @@ class Music(commands.Cog):
     async def stop(self, interaction: Interaction):
         await interaction.response.defer()
         debug_command("stop", interaction.user, interaction.guild)
+        last_channels[str(interaction.guild.id)] = interaction.channel
         vc = interaction.guild.voice_client
         if vc and vc.is_playing():
             vc.pause()
@@ -238,6 +269,7 @@ class Music(commands.Cog):
     async def start(self, interaction: Interaction):
         await interaction.response.defer()
         debug_command("start", interaction.user, interaction.guild)
+        last_channels[str(interaction.guild.id)] = interaction.channel
         vc = interaction.guild.voice_client
         if vc and vc.is_paused():
             vc.resume()
@@ -250,6 +282,7 @@ class Music(commands.Cog):
     @app_commands.command(name="leave", description="Disconnects from voice and clears queue.")
     async def leave(self, interaction: Interaction):
         debug_command("leave", interaction.user, interaction.guild)
+        last_channels[str(interaction.guild.id)] = interaction.channel
         vc = interaction.guild.voice_client
         if vc:
             await vc.disconnect()
@@ -260,6 +293,21 @@ class Music(commands.Cog):
         else:
             embed = Embed(title="Not Connected", description="I'm not in a voice channel.", color=discord.Color.red())
             await interaction.response.send_message(embed=embed)
+
+    async def auto_disconnect(self, interaction: Interaction):
+        await asyncio.sleep(60)
+        vc = interaction.guild.voice_client
+        if vc and not vc.is_playing():
+            await vc.disconnect()
+            queues[str(interaction.guild.id)] = []
+            save_queues(queues)
+            embed = Embed(
+                title="Jeng has ran away.",
+                description="No music playing — disconnected automatically.",
+                color=discord.Color.purple()
+            )
+            channel = last_channels.get(str(interaction.guild.id), interaction.channel)
+            await channel.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Music(bot))

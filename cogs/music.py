@@ -105,13 +105,17 @@ class Music(commands.Cog):
                 'title': info['title'],
                 'thumbnail': info.get('thumbnail', '')
             }
-            queues[guild_id].append(song)
+            was_playing = voice_client.is_playing()
 
-        if not voice_client:
-            voice_client = await interaction.user.voice.channel.connect()
+        queues[guild_id].append(song)
 
-        if not voice_client.is_playing():
+        if not was_playing:
             await self.start_next(interaction)
+        else:
+            embed = Embed(title='Added to Queue', description=song['title'], color=discord.Color.blue())
+            embed.set_thumbnail(url=song['thumbnail'])
+            await interaction.followup.send(embed=embed)
+
 
         if len(entries) > 1:
             embed = Embed(title='Playlist Queued', description=f"Added {len(entries)} songs.", color=discord.Color.green())

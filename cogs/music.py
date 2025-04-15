@@ -95,9 +95,9 @@ class Music(commands.Cog):
         }
         return discord.FFmpegPCMAudio(url, **ffmpeg_opts)
 
-    @app_commands.command(name="play", description="Plays a song or playlist from YouTube.")
+    @app_commands.command(name="play", description="Plays a song or playlist from YouTube or SoundCloud.")
     @app_commands.rename(url="search")
-    @app_commands.describe(url="YouTube URL or search term")
+    @app_commands.describe(url="YouTube/SoundCloud URL or search term (use 'sc:' for SoundCloud search)")
     async def play(self, interaction: Interaction, url: str):
         debug_command("play", interaction.user, interaction.guild, url=url)
         await interaction.response.defer(thinking=True)
@@ -108,7 +108,15 @@ class Music(commands.Cog):
         if guild_id not in queues:
             queues[guild_id] = []
 
-        data = self.get_yt_info(url)
+        # NEW: Determine search mode
+        if url.startswith("http"):
+            query = url  # Direct link
+        elif url.startswith("sc:"):
+            query = f"scsearch:{url[3:].strip()}"
+        else:
+            query = f"ytsearch:{url.strip()}"
+
+        data = self.get_yt_info(query)
         entries = data['entries'] if 'entries' in data else [data]
         songs_added = []
 
@@ -137,6 +145,7 @@ class Music(commands.Cog):
             else:
                 embed = Embed(title='Playlist Queued', description=f"Added {len(songs_added)} songs.", color=discord.Color.green())
             await interaction.edit_original_response(embed=embed)
+
 
     async def start_next(self, interaction: Interaction, msg: discord.Message = None):
         guild_id = str(interaction.guild.id)

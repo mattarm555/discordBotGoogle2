@@ -7,6 +7,7 @@ import pytz
 from utils.debug import debug_command
 import asyncio
 
+# --- Color Codes ---
 RESET = "\033[0m"
 BLACK = "\033[30m"
 RED = "\033[31m"
@@ -17,6 +18,13 @@ MAGENTA = "\033[35m"
 CYAN = "\033[36m"
 WHITE = "\033[37m"
 
+# Update debug_command to include guild
+def debug_command(name, user, guild, **kwargs):
+    print(f"{GREEN}[COMMAND] /{name}{RESET} triggered by {YELLOW}{user.display_name}{RESET} in {BLUE}{guild.name}{RESET}")
+    if kwargs:
+        print(f"{CYAN}Input:{RESET}")
+        for key, value in kwargs.items():
+            print(f"  {key}: {value}")
 
 class HelpPaginator(ui.View):
     def __init__(self, pages):
@@ -46,9 +54,7 @@ class HelpPaginator(ui.View):
 class Misc(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-
-        # Placeholder for you to fill
-        self.league_champions = [
+        self.league_champions = [  # Truncated for brevity
             "Ahri", "Akali", "Aatrox", "Alistar", "Amumu", "Anivia", "Annie", "Aphelios", "Ashe",
     "Aurelion Sol", "Azir", "Bard", "Bel'Veth", "Blitzcrank", "Brand", "Braum", "Caitlyn", "Camille",
     "Cassiopeia", "Cho'Gath", "Corki", "Darius", "Diana", "Dr. Mundo", "Draven", "Ekko",
@@ -73,7 +79,7 @@ class Misc(commands.Cog):
 
     @app_commands.command(name="champ", description="Randomly selects a League of Legends champion.")
     async def champ(self, interaction: Interaction):
-        debug_command("champ", interaction.user)
+        debug_command("champ", interaction.user, interaction.guild)
 
         if not self.league_champions:
             embed = Embed(title="⚠ No Champions", description="The champion list is currently empty.", color=discord.Color.orange())
@@ -91,7 +97,7 @@ class Misc(commands.Cog):
     @app_commands.command(name="spam", description="Mentions a user multiple times.")
     @app_commands.describe(user="The user to mention", count="Number of times to mention the user (max 20)")
     async def spam(self, interaction: Interaction, user: discord.Member, count: int = 1):
-        debug_command("spam", interaction.user, target=user.display_name, count=count)
+        debug_command("spam", interaction.user, interaction.guild, target=user.display_name, count=count)
 
         if count > 20:
             embed = Embed(title="⚠ Limit Exceeded", description="Please enter a number **20 or lower**.", color=discord.Color.red())
@@ -101,12 +107,12 @@ class Misc(commands.Cog):
         await interaction.response.send_message(f"{user.mention} wya")
 
         for _ in range(count - 1):
-            await asyncio.sleep(0.75)  # ⏱️ add delay between messages
+            await asyncio.sleep(0.75)
             await interaction.channel.send(f"{user.mention} wya")
 
     @app_commands.command(name="snipe", description="Retrieves the last deleted message in the current channel.")
     async def snipe(self, interaction: Interaction):
-        debug_command("snipe", interaction.user)
+        debug_command("snipe", interaction.user, interaction.guild)
 
         sniped_messages = self.bot.sniped_messages
         snipe_data = sniped_messages.get(interaction.channel.id)
@@ -124,15 +130,13 @@ class Misc(commands.Cog):
         embed.set_author(name=snipe_data["author"].display_name, icon_url=snipe_data["author"].avatar.url if snipe_data["author"].avatar else None)
         await interaction.response.send_message(embed=embed)
 
-
-
     @app_commands.command(name="help", description="Displays a list of available commands.")
     async def help(self, interaction: Interaction):
-        debug_command("help", interaction.user)
+        debug_command("help", interaction.user, interaction.guild)
 
         pages = []
 
-    # 🎵 Music Commands
+        # Music
         music_embed = Embed(title="🎵 Music Commands", color=discord.Color.blue())
         music_embed.add_field(name="/play <url>", value="Plays a song from the given URL.", inline=False)
         music_embed.add_field(name="/queue", value="Shows the current music queue.", inline=False)
@@ -143,7 +147,7 @@ class Misc(commands.Cog):
         music_embed.set_footer(text="Page 1/5")
         pages.append(music_embed)
 
-    # 📈 XP Commands
+        # XP
         xp_embed = Embed(title="📈 XP System Commands", color=discord.Color.green())
         xp_embed.add_field(name="/level", value="Shows your XP level and server rank.", inline=False)
         xp_embed.add_field(name="/leaderboard", value="Shows the leaders in XP in this server.", inline=False)
@@ -154,25 +158,25 @@ class Misc(commands.Cog):
         xp_embed.set_footer(text="Page 2/5")
         pages.append(xp_embed)
 
-    # 😂 Fun & Misc
+        # Misc
         misc_embed = Embed(title="😂 Miscellaneous Commands", color=discord.Color.purple())
         misc_embed.add_field(name="/champ", value="Selects a random champion.", inline=False)
         misc_embed.add_field(name="/spam <user> <num>", value="Spams a user a specified number of times.", inline=False)
-        misc_embed.add_field(name="/askjeng <prompt> <model>", value="Ask an AI that runs locally on Jeng's computer! If it is your first quetsion of the day, I recommend using /warmup <model> first.", inline=False)
-        misc_embed.add_field(name="/warmup <model>", value="Warms up a specific ollama model to prevent timeout errors.", inline=False)
+        misc_embed.add_field(name="/askjeng <prompt> <model>", value="Ask an AI that runs locally on Jeng's computer!", inline=False)
+        misc_embed.add_field(name="/warmup <model>", value="Warms up a specific ollama model.", inline=False)
         misc_embed.set_footer(text="Page 3/5")
         pages.append(misc_embed)
 
-    # 📊 Community Tools
+        # Community
         community_embed = Embed(title="📊 Community Tools", color=discord.Color.orange())
         community_embed.add_field(name="/poll", value="Create a poll with emoji-based voting.", inline=False)
         community_embed.add_field(name="/event", value="Create an RSVP event for members.", inline=False)
-        community_embed.add_field(name="/welcommeconfig", value="Shows server's welcoming configuration.", inline=False)
+        community_embed.add_field(name="/welcomeconfig", value="Shows server's welcoming configuration.", inline=False)
         community_embed.add_field(name="/setwelcome", value="Allows user to configure a welcoming system.", inline=False)
         community_embed.set_footer(text="Page 4/5")
         pages.append(community_embed)
 
-    # 💬 Quote System
+        # Quotes
         quotes_embed = Embed(title="💬 Quote System", color=discord.Color.teal())
         quotes_embed.add_field(name="/quote_add", value="Add a new quote.", inline=False)
         quotes_embed.add_field(name="/quote_get", value="Get a random quote.", inline=False)
@@ -182,7 +186,6 @@ class Misc(commands.Cog):
         quotes_embed.set_footer(text="Page 5/5")
         pages.append(quotes_embed)
 
-    # Send DM
         try:
             view = HelpPaginator(pages)
             await interaction.user.send(embed=pages[0], view=view)
@@ -201,8 +204,6 @@ class Misc(commands.Cog):
                 color=discord.Color.red()
             )
             await interaction.response.send_message(embed=error, ephemeral=True)
-
-
 
 async def setup(bot):
     await bot.add_cog(Misc(bot))

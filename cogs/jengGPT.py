@@ -99,7 +99,7 @@ class JengGPT(commands.Cog):
             print(f"❌ {GREEN}Could not connect to Ollama server.{RESET}")
             await interaction.followup.send(embed=Embed(
                 title="😴 JengGPT is Offline",
-                description="Sorry, JengGPT is not here right now! I recommend trying /warmup before you ask a question for better response times.",
+                description="Sorry, JengGPT is either not here right now or experiencing technical difficulties.",
                 color=discord.Color.orange()
             ))
 

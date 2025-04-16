@@ -98,7 +98,7 @@ class Music(commands.Cog):
 
     def get_stream_url(self, url: str):
         ydl_opts = {
-            'format': 'bestaudio[abr<=128]',
+            'format': 'bestaudio[abr<=128]/bestaudio/best',
             'quiet': True,
             'noplaylist': True
         }

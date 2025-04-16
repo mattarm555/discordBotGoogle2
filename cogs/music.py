@@ -82,15 +82,19 @@ class Music(commands.Cog):
         save_queues(queues)
         print(f"{YELLOW}[INFO]{RESET} Cleared all queues at startup.")
 
-    def get_yt_info(self, query):
+   def get_yt_info(self, query):
+       is_playlist = "playlist" in query.lower() or "list=" in query.lower()
+
         ydl_opts = {
-            'format': 'bestaudio[abr<=128]',
+            'format': 'bestaudio/best',
             'quiet': True,
             'default_search': 'ytsearch',
-            'extract_flat': 'in_playlist'  # fetch full info outside playlists
+            'extract_flat': 'in_playlist' if is_playlist else False
         }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(query, download=False)
+
 
     def get_stream_url(self, url: str):
         ydl_opts = {
@@ -170,6 +174,23 @@ class Music(commands.Cog):
 
         while queues[guild_id]:  # keep going until a song works or queue is empty
             next_song = queues[guild_id].pop(0)
+
+            # 🟨 Fallback metadata if missing (e.g., from extract_flat)
+            if not next_song.get("thumbnail") or not next_song.get("duration"):
+                try:
+                    full_info = self.get_yt_info(next_song["url"])
+                    next_song["title"] = full_info.get("title", next_song["title"])
+                    next_song["thumbnail"] = full_info.get("thumbnail", "")
+                    next_song["duration"] = full_info.get("duration", 0)
+                except Exception as e:
+                    print(f"{RED}⚠️ Failed to fetch full info for {next_song['title']}: {e}{RESET}")
+                    await channel.send(embed=Embed(
+                        title="⚠️ Metadata Error",
+                        description=f"Could not fetch full info for **{next_song['title']}**, skipping...",
+                        color=discord.Color.orange()
+                    ))
+                    continue
+
             self.currently_playing[guild_id] = {
                 "start_time": asyncio.get_event_loop().time(),
                 "duration": next_song.get("duration", 0),
@@ -200,7 +221,7 @@ class Music(commands.Cog):
                         pass
 
                 save_queues(queues)
-                return  # song successfully started, exit function
+                return  # song successfully started
 
             except Exception as e:
                 print(f"{RED}⚠️ Failed to play: {next_song['title']} — {e}{RESET}")
@@ -211,9 +232,10 @@ class Music(commands.Cog):
                 ))
                 continue  # try the next song in the queue
 
-        # If we reached here, everything failed or queue is empty
+        # If we reached here, queue is empty or all songs failed
         self.currently_playing.pop(guild_id, None)
         await self.auto_disconnect(interaction)
+
 
 
 

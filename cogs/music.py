@@ -106,6 +106,21 @@ class Music(commands.Cog):
             info = ydl.extract_info(url, download=False)
             return info['url']
 
+    async def auto_disconnect(self, interaction: Interaction):
+        await asyncio.sleep(60)  # Wait 60 seconds (or however long you want)
+        vc = interaction.guild.voice_client
+        if vc and not vc.is_playing():
+            await vc.disconnect()
+            queues[str(interaction.guild.id)] = []
+            save_queues(queues)
+
+            embed = Embed(
+                title="Jeng has ran away.",
+                description="No music playing — disconnected automatically.",
+                color=discord.Color.purple()
+            )
+            channel = last_channels.get(str(interaction.guild.id), interaction.channel)
+            await channel.send(embed=embed)
 
 
     def get_audio_source(self, url):

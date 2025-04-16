@@ -365,6 +365,77 @@ class Music(commands.Cog):
                 embed = Embed(title="Playlist Queued", description=f"Added {len(songs_added)} songs.", color=discord.Color.green())
             await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="saveplaylist", description="Save a playlist link under a custom name.")
+    async def save_playlist(self, interaction: Interaction, name: str, link: str):
+        guild_id = str(interaction.guild.id)
+        playlists = self.load_playlists()
+        if guild_id not in playlists:
+            playlists[guild_id] = {}
+        playlists[guild_id][name] = link
+        self.save_playlists(playlists)
+        await interaction.response.send_message(embed=Embed(
+            title="✅ Playlist Saved",
+            description=f"Saved `{name}`.",
+            color=discord.Color.green()
+        ))
+
+    @app_commands.command(name="playplaylist", description="Play a previously saved playlist.")
+    async def play_playlist(self, interaction: Interaction, name: str):
+        guild_id = str(interaction.guild.id)
+        playlists = self.load_playlists()
+        if guild_id in playlists and name in playlists[guild_id]:
+            link = playlists[guild_id][name]
+            await interaction.response.send_message(embed=Embed(
+                title="📼 Loading Playlist",
+                description=f"Now playing: `{name}`",
+                color=discord.Color.blue()
+            ))
+            await self.play_song(interaction, link)
+        else:
+            await interaction.response.send_message(embed=Embed(
+                title="⚠️ Not Found",
+                description=f"No playlist saved under `{name}`.",
+                color=discord.Color.red()
+            ))
+
+    @app_commands.command(name="listplaylists", description="List saved playlists for this server.")
+    async def list_playlists(self, interaction: Interaction):
+        guild_id = str(interaction.guild.id)
+        playlists = self.load_playlists().get(guild_id, {})
+        if not playlists:
+            await interaction.response.send_message(embed=Embed(
+                title="📂 No Playlists",
+                description="No playlists saved yet.",
+                color=discord.Color.orange()
+            ))
+            return
+
+        embed = Embed(title="📚 Saved Playlists", color=discord.Color.blurple())
+        for name, link in playlists.items():
+            embed.add_field(name=name, value=link, inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="removeplaylist", description="Delete a saved playlist.")
+    async def remove_playlist(self, interaction: Interaction, name: str):
+        guild_id = str(interaction.guild.id)
+        playlists = self.load_playlists()
+        if guild_id in playlists and name in playlists[guild_id]:
+            del playlists[guild_id][name]
+            self.save_playlists(playlists)
+            await interaction.response.send_message(embed=Embed(
+                title="🗑️ Playlist Removed",
+                description=f"`{name}` has been deleted.",
+                color=discord.Color.red()
+            ))
+        else:
+            await interaction.response.send_message(embed=Embed(
+                title="⚠️ Not Found",
+                description=f"No playlist found under `{name}`.",
+                color=discord.Color.orange()
+            ))
+
+
+
 async def setup(bot):
     await bot.add_cog(Music(bot))
 

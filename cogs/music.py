@@ -84,23 +84,24 @@ class Music(commands.Cog):
 
     def get_yt_info(self, query):
         ydl_opts = {
-            'format': 'bestaudio/best',
+            'format': 'bestaudio[abr<=128]',
             'quiet': True,
             'default_search': 'ytsearch',
-            'extract_flat': 'in_playlist'
+            'extract_flat': 'in_playlist'  # fetch full info outside playlists
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(query, download=False)
 
     def get_stream_url(self, url: str):
         ydl_opts = {
-            'format': 'bestaudio',
+            'format': 'bestaudio[abr<=128]',
             'quiet': True,
             'noplaylist': True
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return info['url']
+
 
 
     def get_audio_source(self, url):
@@ -167,7 +168,7 @@ class Music(commands.Cog):
         voice_client = interaction.guild.voice_client
         channel = last_channels.get(guild_id, interaction.channel)
 
-        if queues[guild_id]:
+        while queues[guild_id]:  # keep going until a song works or queue is empty
             next_song = queues[guild_id].pop(0)
             self.currently_playing[guild_id] = {
                 "start_time": asyncio.get_event_loop().time(),
@@ -179,33 +180,41 @@ class Music(commands.Cog):
                 stream_url = self.get_stream_url(next_song['url'])
                 source = self.get_audio_source(stream_url)
                 voice_client.play(source, after=lambda e: self._after_song(interaction))
+
+                embed = Embed(title="Now Playing", description=next_song['title'], color=discord.Color.green())
+                embed.set_thumbnail(url=next_song['thumbnail'])
+
+                if msg:
+                    await msg.edit(embed=embed)
+                    await asyncio.sleep(30)
+                    try:
+                        await msg.delete()
+                    except discord.NotFound:
+                        pass
+                else:
+                    temp = await channel.send(embed=embed)
+                    await asyncio.sleep(30)
+                    try:
+                        await temp.delete()
+                    except discord.NotFound:
+                        pass
+
+                save_queues(queues)
+                return  # song successfully started, exit function
+
             except Exception as e:
                 print(f"{RED}⚠️ Failed to play: {next_song['title']} — {e}{RESET}")
-                await self.start_next(interaction)
-                return
+                await channel.send(embed=Embed(
+                    title="❌ Failed to Play",
+                    description=f"Sorry, **{next_song['title']}** could not be downloaded properly.",
+                    color=discord.Color.red()
+                ))
+                continue  # try the next song in the queue
 
-            embed = Embed(title="Now Playing", description=next_song['title'], color=discord.Color.green())
-            embed.set_thumbnail(url=next_song['thumbnail'])
+        # If we reached here, everything failed or queue is empty
+        self.currently_playing.pop(guild_id, None)
+        await self.auto_disconnect(interaction)
 
-            if msg:
-                await msg.edit(embed=embed)
-                await asyncio.sleep(30)
-                try:
-                    await msg.delete()
-                except discord.NotFound:
-                    pass
-            else:
-                temp = await channel.send(embed=embed)
-                await asyncio.sleep(30)
-                try:
-                    await temp.delete()
-                except discord.NotFound:
-                    pass
-
-            save_queues(queues)
-        else:
-            self.currently_playing.pop(guild_id, None)
-            await self.auto_disconnect(interaction)
 
 
     def _after_song(self, interaction: Interaction):

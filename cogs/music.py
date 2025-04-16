@@ -376,6 +376,8 @@ class Music(commands.Cog):
             queues[guild_id].append(song)
             songs_added.append(song)
 
+        await asyncio.sleep(0.5)  # you can increase this to 0.5 if needed
+
         save_queues(queues)
 
         was_playing = voice_client.is_playing() if voice_client else False

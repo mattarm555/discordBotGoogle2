@@ -92,6 +92,17 @@ class Music(commands.Cog):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(query, download=False)
 
+    def get_stream_url(self, url: str):
+        ydl_opts = {
+            'format': 'bestaudio',
+            'quiet': True,
+            'noplaylist': True
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return info['url']
+
+
     def get_audio_source(self, url):
         ffmpeg_opts = {
             'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
@@ -164,8 +175,14 @@ class Music(commands.Cog):
                 "song": next_song
             }
 
-            source = self.get_audio_source(next_song['url'])
-            voice_client.play(source, after=lambda e: self._after_song(interaction))
+            try:
+                stream_url = self.get_stream_url(next_song['url'])
+                source = self.get_audio_source(stream_url)
+                voice_client.play(source, after=lambda e: self._after_song(interaction))
+            except Exception as e:
+                print(f"{RED}⚠️ Failed to play: {next_song['title']} — {e}{RESET}")
+                await self.start_next(interaction)
+                return
 
             embed = Embed(title="Now Playing", description=next_song['title'], color=discord.Color.green())
             embed.set_thumbnail(url=next_song['thumbnail'])
@@ -189,6 +206,7 @@ class Music(commands.Cog):
         else:
             self.currently_playing.pop(guild_id, None)
             await self.auto_disconnect(interaction)
+
 
     def _after_song(self, interaction: Interaction):
         asyncio.run_coroutine_threadsafe(self.start_next(interaction), self.bot.loop)

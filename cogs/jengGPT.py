@@ -17,7 +17,7 @@ MAGENTA = "\033[35m"
 CYAN = "\033[36m"
 WHITE = "\033[37m"
 
-OLLAMA_URL = "https://soil-oral-istanbul-virtue.trycloudflare.com"
+OLLAMA_URL = "https://thunder-aaa-comfort-supplier.trycloudflare.com"
 DEFAULT_MODEL = "mistral"
 
 def debug_command(name, user, guild, **kwargs):

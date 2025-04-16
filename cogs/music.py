@@ -87,7 +87,7 @@ class Music(commands.Cog):
             'format': 'bestaudio/best',
             'quiet': True,
             'default_search': 'ytsearch',
-            'extract_flat': False
+            'extract_flat': 'in_playlist'
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(query, download=False)

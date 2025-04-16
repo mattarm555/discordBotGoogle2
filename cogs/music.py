@@ -4,7 +4,6 @@ from discord import app_commands, Interaction, Embed, ui
 import asyncio
 import yt_dlp
 import math
-
 import json
 import os
 import random

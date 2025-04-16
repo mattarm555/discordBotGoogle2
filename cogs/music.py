@@ -82,8 +82,8 @@ class Music(commands.Cog):
         save_queues(queues)
         print(f"{YELLOW}[INFO]{RESET} Cleared all queues at startup.")
 
-   def get_yt_info(self, query):
-       is_playlist = "playlist" in query.lower() or "list=" in query.lower()
+    def get_yt_info(self, query):
+        is_playlist = "playlist" in query.lower() or "list=" in query.lower()
 
         ydl_opts = {
             'format': 'bestaudio/best',

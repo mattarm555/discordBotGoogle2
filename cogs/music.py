@@ -42,7 +42,6 @@ class QueueView(ui.View):
         self.per_page = per_page
         self.page = 0
         self.max_pages = max(1, math.ceil(len(queue) / per_page))
-        self.force_stopped = {}  # guild_id: True if /leave was called
 
     def format_embed(self):
         start = self.page * self.per_page
@@ -78,6 +77,7 @@ class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.currently_playing = {}  # guild_id: {start_time, duration, song}
+        self.force_stopped = {}  # guild_id: True if /leave was called
         global queues
         queues = {}
         save_queues(queues)

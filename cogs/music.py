@@ -310,18 +310,28 @@ class Music(commands.Cog):
 
     @app_commands.command(name="leave", description="Disconnects from voice and clears queue.")
     async def leave(self, interaction: Interaction):
+        await interaction.response.defer()  # ✅ Defers the response to buy time
         debug_command("leave", interaction.user, interaction.guild)
         last_channels[str(interaction.guild.id)] = interaction.channel
         vc = interaction.guild.voice_client
+
         if vc:
             await vc.disconnect()
             queues[str(interaction.guild.id)] = []
             save_queues(queues)
-            embed = Embed(title="Jeng has ran away.", description="Left the voice channel.", color=discord.Color.purple())
-            await interaction.response.send_message(embed=embed)
+            embed = Embed(
+                title="Jeng has ran away.",
+                description="Left the voice channel.",
+                color=discord.Color.purple()
+            )
+            await interaction.followup.send(embed=embed)
         else:
-            embed = Embed(title="Not Connected", description="I'm not in a voice channel.", color=discord.Color.red())
-            await interaction.response.send_message(embed=embed)
+            embed = Embed(
+                title="Not Connected",
+                description="I'm not in a voice channel.",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
 
     
 

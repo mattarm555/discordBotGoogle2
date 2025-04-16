@@ -42,6 +42,7 @@ class QueueView(ui.View):
         self.per_page = per_page
         self.page = 0
         self.max_pages = max(1, math.ceil(len(queue) / per_page))
+        self.force_stopped = {}  # guild_id: True if /leave was called
 
     def format_embed(self):
         start = self.page * self.per_page
@@ -138,6 +139,7 @@ class Music(commands.Cog):
         await interaction.response.defer(thinking=True)
 
         guild_id = str(interaction.guild.id)
+        self.force_stopped[guild_id] = False
         voice_client = interaction.guild.voice_client
         last_channels[guild_id] = interaction.channel
 
@@ -184,6 +186,10 @@ class Music(commands.Cog):
 
     async def start_next(self, interaction: Interaction, msg: discord.Message = None):
         guild_id = str(interaction.guild.id)
+        # ⛔ If force_stopped, do nothing
+        if self.force_stopped.get(guild_id):
+            return
+            
         voice_client = interaction.guild.voice_client
         channel = last_channels.get(guild_id, interaction.channel)
 
@@ -347,15 +353,22 @@ class Music(commands.Cog):
 
     @app_commands.command(name="leave", description="Disconnects from voice and clears queue.")
     async def leave(self, interaction: Interaction):
-        await interaction.response.defer()  # ✅ Defers the response to buy time
+        await interaction.response.defer()  # ✅ Defer response
         debug_command("leave", interaction.user, interaction.guild)
-        last_channels[str(interaction.guild.id)] = interaction.channel
+
+        guild_id = str(interaction.guild.id)
+        last_channels[guild_id] = interaction.channel
         vc = interaction.guild.voice_client
+
+        # ✅ Mark this server as force-stopped
+        self.force_stopped[guild_id] = True
+
+        # ✅ Clear queue and save
+        queues[guild_id] = []
+        save_queues(queues)
 
         if vc:
             await vc.disconnect()
-            queues[str(interaction.guild.id)] = []
-            save_queues(queues)
             embed = Embed(
                 title="Jeng has ran away.",
                 description="Left the voice channel.",
@@ -369,6 +382,7 @@ class Music(commands.Cog):
                 color=discord.Color.red()
             )
             await interaction.followup.send(embed=embed)
+
 
     
 
@@ -396,6 +410,7 @@ class Music(commands.Cog):
     async def play_song(self, interaction: Interaction, url: str):
         debug_command("play_song", interaction.user, interaction.guild, url=url)
         guild_id = str(interaction.guild.id)
+        self.force_stopped[guild_id] = False
         voice_client = interaction.guild.voice_client
         last_channels[guild_id] = interaction.channel
 

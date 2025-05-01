@@ -11,7 +11,7 @@ import random
 
 # --- Persistent Queue File ---
 QUEUE_FILE = "saved_queues.json"
-COOKIE_FILE = "cookies.txt"  # Top-level constant
+COOKIE_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
 
 queues = {}  # guild_id: [song dicts]
 last_channels = {}  # guild_id: last Interaction.channel
@@ -86,6 +86,7 @@ class Music(commands.Cog):
 
     def get_yt_info(self, query):
         is_playlist = "playlist" in query.lower() or "list=" in query.lower()
+        print(f"[DEBUG] Using cookie file: {COOKIE_FILE}")
 
         ydl_opts = {
             'format': 'bestaudio/best',

@@ -11,6 +11,7 @@ import random
 
 # --- Persistent Queue File ---
 QUEUE_FILE = "saved_queues.json"
+COOKIE_FILE = "cookies.txt"  # Top-level constant
 
 queues = {}  # guild_id: [song dicts]
 last_channels = {}  # guild_id: last Interaction.channel
@@ -90,22 +91,25 @@ class Music(commands.Cog):
             'format': 'bestaudio/best',
             'quiet': True,
             'default_search': 'ytsearch',
-            'extract_flat': 'in_playlist' if is_playlist else False
+            'extract_flat': 'in_playlist' if is_playlist else False,
+            'cookiefile': COOKIE_FILE,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(query, download=False)
 
-
     def get_stream_url(self, url: str):
         ydl_opts = {
             'format': 'bestaudio[abr<=128]/bestaudio/best',
             'quiet': True,
-            'noplaylist': True
+            'noplaylist': True,
+            'cookiefile': COOKIE_FILE,
         }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return info['url']
+
 
     async def auto_disconnect(self, interaction: Interaction):
         await asyncio.sleep(60)  # Wait 60 seconds (or however long you want)

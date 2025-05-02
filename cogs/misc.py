@@ -138,12 +138,17 @@ class Misc(commands.Cog):
 
         # Music
         music_embed = Embed(title="🎵 Music Commands", color=discord.Color.blue())
-        music_embed.add_field(name="/play <url>", value="Plays a song from the given URL.", inline=False)
+        music_embed.add_field(name="/play <url>", value="Plays a song or playlist from the given URL.", inline=False)
         music_embed.add_field(name="/queue", value="Shows the current music queue.", inline=False)
         music_embed.add_field(name="/skip", value="Skips the current song.", inline=False)
         music_embed.add_field(name="/stop", value="Pauses the music.", inline=False)
         music_embed.add_field(name="/start", value="Resumes paused music.", inline=False)
         music_embed.add_field(name="/leave", value="Clears the queue and makes the bot leave the voice channel.", inline=False)
+        music_embed.add_field(name="/playplaylist", value="Play a saved playlist.", inline=False)
+        music_embed.add_field(name="/saveplaylist", value="Save a custom playlist under a chosen name.", inline=False)
+        music_embed.add_field(name="/removeplaylist", value="Remove a saved playlist.", inline=False)
+        music_embed.add_field(name="/listplaylists", value="Lists saved playlists.", inline=False)
+        music_embed.add_field(name="/queueshuffle", value="Shuffles the current queue.", inline=False)
         music_embed.set_footer(text="Page 1/5")
         pages.append(music_embed)
 

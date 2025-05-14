@@ -34,6 +34,8 @@ class JengBot(commands.Bot):
         self.sniped_messages = {}
 
     async def setup_hook(self):
+        TEST_GUILD = discord.Object(id=799649221053382656)  # Your test server
+
         # Load all cogs from the cogs/ directory with error handling
         for filename in os.listdir("./cogs"):
             if filename.endswith(".py"):
@@ -43,12 +45,10 @@ class JengBot(commands.Bot):
                 except Exception as e:
                     print(f"{RED}❌ Failed to load {filename}:{RESET} {e}")
 
-        # Safely sync slash commands (once)
-        if not self.tree.commands:
-            synced = await self.tree.sync()
-            print(f"{MAGENTA}Synced {len(synced)} slash commands globally{RESET}")
-        else:
-            print(f"{MAGENTA}Slash commands already present. Skipping sync.{RESET}")
+        # Copy all global commands to test guild and sync them there
+        self.tree.copy_global_to(guild=TEST_GUILD)
+        synced = await self.tree.sync(guild=TEST_GUILD)
+        print(f"{MAGENTA}✅ Synced {len(synced)} slash commands to test guild {TEST_GUILD.id}{RESET}")
 
 
     async def on_ready(self):

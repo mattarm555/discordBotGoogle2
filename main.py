@@ -3,6 +3,7 @@ import os
 from discord.ext import commands
 from dotenv import load_dotenv
 from datetime import datetime
+from discord import app_commands
 
 # Load environment variables
 load_dotenv()
@@ -34,9 +35,6 @@ class JengBot(commands.Bot):
         self.sniped_messages = {}
 
     async def setup_hook(self):
-        TEST_GUILD = discord.Object(id=799649221053382656)  # Your test server
-
-        # Load all cogs from the cogs/ directory with error handling
         for filename in os.listdir("./cogs"):
             if filename.endswith(".py"):
                 try:
@@ -44,6 +42,17 @@ class JengBot(commands.Bot):
                     print(f"{GREEN}Loaded cog: {filename}{RESET}")
                 except Exception as e:
                     print(f"{RED}❌ Failed to load {filename}:{RESET} {e}")
+
+        # Register the /sync command
+        self.tree.add_command(self.sync_commands)
+
+    @app_commands.command(name="sync", description="Manually sync commands to this guild.")
+    async def sync_commands(self, interaction: discord.Interaction):
+        if interaction.user.id != YOUR_USER_ID:  # Replace with your Discord user ID
+            await interaction.response.send_message("❌ You are not authorized to use this command.", ephemeral=True)
+            return
+        await self.tree.sync(guild=interaction.guild)
+        await interaction.response.send_message("✅ Commands synced to this server!", ephemeral=True)
 
 
     async def on_ready(self):

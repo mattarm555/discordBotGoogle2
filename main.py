@@ -43,6 +43,14 @@ class JengBot(commands.Bot):
                 except Exception as e:
                     print(f"{RED}❌ Failed to load {filename}:{RESET} {e}")
 
+        # Safely sync slash commands (once)
+        if not self.tree.commands:
+            synced = await self.tree.sync()
+            print(f"{MAGENTA}Synced {len(synced)} slash commands globally{RESET}")
+        else:
+            print(f"{MAGENTA}Slash commands already present. Skipping sync.{RESET}")
+
+
     async def on_ready(self):
         await self.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="/help"))
 
@@ -53,12 +61,6 @@ class JengBot(commands.Bot):
             print(f"{BLUE} - {guild.name} ({guild.id}){RESET}")
 
         print(f"{RED}Cogs Loaded: {list(self.cogs.keys())}{RESET}")
-
-    if not self.tree.commands:
-        synced = await self.tree.sync()
-        print(f"{MAGENTA}Synced {len(synced)} slash commands globally{RESET}")
-    else:
-        print(f"{MAGENTA}Slash commands already present. Skipping sync.{RESET}")
 
 bot = JengBot()
 

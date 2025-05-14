@@ -45,11 +45,6 @@ class JengBot(commands.Bot):
                 except Exception as e:
                     print(f"{RED}❌ Failed to load {filename}:{RESET} {e}")
 
-        # Copy all global commands to test guild and sync them there
-        self.tree.copy_global_to(guild=TEST_GUILD)
-        synced = await self.tree.sync(guild=TEST_GUILD)
-        print(f"{MAGENTA}✅ Synced {len(synced)} slash commands to test guild {TEST_GUILD.id}{RESET}")
-
 
     async def on_ready(self):
         await self.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="/help"))

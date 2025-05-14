@@ -54,8 +54,11 @@ class JengBot(commands.Bot):
 
         print(f"{RED}Cogs Loaded: {list(self.cogs.keys())}{RESET}")
 
-        await self.tree.sync()
-        print(f"{MAGENTA}Slash commands synced globally{RESET}")
+    if not self.tree.commands:
+        synced = await self.tree.sync()
+        print(f"{MAGENTA}Synced {len(synced)} slash commands globally{RESET}")
+    else:
+        print(f"{MAGENTA}Slash commands already present. Skipping sync.{RESET}")
 
 bot = JengBot()
 

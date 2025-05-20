@@ -17,7 +17,7 @@ MAGENTA = "\033[35m"
 CYAN = "\033[36m"
 WHITE = "\033[37m"
 
-OLLAMA_URL = "https://null-clearly-scratch-launched.trycloudflare.com"
+OLLAMA_URL = "https://domestic-other-basis-valuation.trycloudflare.com"
 DEFAULT_MODEL = "mistral"
 
 def debug_command(name, user, guild, **kwargs):

@@ -3,11 +3,11 @@ import os
 from discord.ext import commands
 from dotenv import load_dotenv
 from datetime import datetime
-from discord import app_commands
 
 # Load environment variables
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
+YOUR_USER_ID = 123456789012345678  # 🔁 Replace with your actual Discord user ID
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -43,18 +43,6 @@ class JengBot(commands.Bot):
                 except Exception as e:
                     print(f"{RED}❌ Failed to load {filename}:{RESET} {e}")
 
-        # Register the /sync command
-        self.tree.add_command(self.sync_commands)
-
-    @app_commands.command(name="sync", description="Manually sync commands to this guild.")
-    async def sync_commands(self, interaction: discord.Interaction):
-        if interaction.user.id != YOUR_USER_ID:  # Replace with your Discord user ID
-            await interaction.response.send_message("❌ You are not authorized to use this command.", ephemeral=True)
-            return
-        await self.tree.sync(guild=interaction.guild)
-        await interaction.response.send_message("✅ Commands synced to this server!", ephemeral=True)
-
-
     async def on_ready(self):
         await self.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="/help"))
 
@@ -63,16 +51,23 @@ class JengBot(commands.Bot):
         print(f"{RED}Connected to:{RESET}")
         for guild in self.guilds:
             print(f"{BLUE} - {guild.name} ({guild.id}){RESET}")
-
         print(f"{RED}Cogs Loaded: {list(self.cogs.keys())}{RESET}")
 
 bot = JengBot()
+
+# ✅ Slash command using Pycord
+@bot.slash_command(name="sync", description="Manually sync commands to this guild.")
+async def sync_commands(ctx):
+    if ctx.author.id != YOUR_USER_ID:
+        await ctx.respond("❌ You are not authorized to use this command.", ephemeral=True)
+        return
+    await bot.sync_commands()
+    await ctx.respond("✅ Commands synced to this server!", ephemeral=True)
 
 @bot.event
 async def on_message_delete(message):
     if message.author.bot:
         return
-
     bot.sniped_messages[message.channel.id] = {
         "content": message.content,
         "author": message.author,

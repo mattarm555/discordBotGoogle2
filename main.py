@@ -3,7 +3,7 @@ import os
 from discord.ext import commands
 from dotenv import load_dotenv
 from datetime import datetime
-from discord import app_commands
+import discord.app_commands  # ✅ Updated import
 
 # Load environment variables
 load_dotenv()
@@ -46,14 +46,13 @@ class JengBot(commands.Bot):
         # Register the /sync command
         self.tree.add_command(self.sync_commands)
 
-    @app_commands.command(name="sync", description="Manually sync commands to this guild.")
+    @discord.app_commands.command(name="sync", description="Manually sync commands to this guild.")  # ✅ Updated usage
     async def sync_commands(self, interaction: discord.Interaction):
-        if interaction.user.id != YOUR_USER_ID:  # Replace with your Discord user ID
+        if interaction.user.id != 123456789012345678:  # 🔒 Replace with your real Discord user ID
             await interaction.response.send_message("❌ You are not authorized to use this command.", ephemeral=True)
             return
         await self.tree.sync(guild=interaction.guild)
         await interaction.response.send_message("✅ Commands synced to this server!", ephemeral=True)
-
 
     async def on_ready(self):
         await self.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="/help"))

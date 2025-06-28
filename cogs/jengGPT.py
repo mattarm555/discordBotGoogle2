@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands
-from discord import app_commands, Interaction, Embed
+from discord import Interaction, Embed
 import aiohttp
 import requests
 import time
@@ -8,14 +8,11 @@ from json.decoder import JSONDecodeError
 
 # --- Color Codes ---
 RESET = "\033[0m"
-BLACK = "\033[30m"
-RED = "\033[31m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 BLUE = "\033[34m"
-MAGENTA = "\033[35m"
 CYAN = "\033[36m"
-WHITE = "\033[37m"
+MAGENTA = "\033[35m"
 
 OLLAMA_URL = "https://domestic-other-basis-valuation.trycloudflare.com"
 DEFAULT_MODEL = "mistral"
@@ -39,27 +36,20 @@ class JengGPT(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="askjeng", description="Ask your local AI anything.")
-    @app_commands.describe(
-        prompt="What do you want to ask JengGPT?",
-        model="Which model to use (e.g., mistral, llama2, codellama, llama2-uncensored)"
-    )
-    async def askjeng(self, interaction: Interaction, prompt: str, model: str = DEFAULT_MODEL):
-        debug_command("askjeng", interaction.user, interaction.guild, prompt=prompt, model=model)
+    @commands.slash_command(name="askjeng", description="Ask your local AI anything.")
+    async def askjeng(self, ctx: discord.ApplicationContext,
+                      prompt: discord.Option(str, description="What do you want to ask JengGPT?"),
+                      model: discord.Option(str, description="Model (mistral, llama2, etc.)", default=DEFAULT_MODEL)):
+        debug_command("askjeng", ctx.user, ctx.guild, prompt=prompt, model=model)
 
-        try:
-            await interaction.response.defer(thinking=True)
-        except (discord.NotFound, discord.HTTPException):
-            print(f"❌ {GREEN}Could not defer. Interaction may have expired or already responded.{RESET}")
-            return
+        await ctx.defer()
 
         if not await is_ollama_online():
-            await interaction.followup.send(embed=Embed(
+            await ctx.respond(embed=Embed(
                 title="🛑 JengGPT is not available",
                 description="JengGPT is not currently running. Sorry about that!",
                 color=discord.Color.red()
             ), ephemeral=True)
-            print(f"❌ {GREEN}Ollama server not available — skipping interaction.{RESET}")
             return
 
         try:
@@ -75,10 +65,9 @@ class JengGPT(commands.Cog):
             try:
                 data = response.json()
             except JSONDecodeError:
-                print(f"❌ {GREEN}Received non-JSON response from Ollama.{RESET}")
-                await interaction.followup.send(embed=Embed(
+                await ctx.respond(embed=Embed(
                     title="😴 JengGPT is Not Available",
-                    description="Sorry, JengGPT is not here right now! Please try again later.",
+                    description="Sorry, JengGPT returned a non-JSON response. Try again later.",
                     color=discord.Color.orange()
                 ))
                 return
@@ -93,121 +82,85 @@ class JengGPT(commands.Cog):
             embed.add_field(name="🤖 Model Used", value=model, inline=False)
             embed.set_footer(text=f"Powered by {model} via Ollama")
 
-            await interaction.followup.send(embed=embed)
+            await ctx.respond(embed=embed)
 
         except requests.exceptions.ConnectionError:
-            print(f"❌ {GREEN}Could not connect to Ollama server.{RESET}")
-            await interaction.followup.send(embed=Embed(
+            await ctx.respond(embed=Embed(
                 title="😴 JengGPT is Offline",
-                description="Sorry, JengGPT is either not here right now or experiencing technical difficulties.",
+                description="Could not connect to Ollama.",
                 color=discord.Color.orange()
             ))
-
         except requests.exceptions.Timeout:
-            print(f"⏳ {GREEN}Request to Ollama timed out.{RESET}")
-            await interaction.followup.send(embed=Embed(
+            await ctx.respond(embed=Embed(
                 title="⏳ Timeout",
-                description="JengGPT took too long to respond. I recommend trying /warmup before you ask a question for better response times.",
+                description="JengGPT took too long to respond.",
                 color=discord.Color.orange()
             ))
-
         except Exception as e:
-            print(f"❌ {GREEN}Exception occurred:{RESET}", e)
-            await interaction.followup.send(embed=Embed(
+            await ctx.respond(embed=Embed(
                 title="❌ Error",
                 description=f"```\n{str(e)}\n```",
                 color=discord.Color.red()
             ))
 
-    @app_commands.command(name="warmup", description="Ping Ollama and warm up a specific model.")
-    @app_commands.describe(
-        model="Which model to warm up (e.g., mistral, llama2, codellama. llam2-uncensored)"
-    )
-    async def warmup(self, interaction: Interaction, model: str = DEFAULT_MODEL):
-        debug_command("warmup", interaction.user, interaction.guild, model=model)
+    @commands.slash_command(name="warmup", description="Ping Ollama and warm up a model.")
+    async def warmup(self, ctx: discord.ApplicationContext,
+                     model: discord.Option(str, description="Model to warm up", default=DEFAULT_MODEL)):
+        debug_command("warmup", ctx.user, ctx.guild, model=model)
+
+        await ctx.defer()
+        start_time = time.monotonic()
 
         try:
-            await interaction.response.defer(thinking=True)
-        except (discord.NotFound, discord.HTTPException):
-            print(f"❌ {GREEN}Could not defer. Interaction may have expired or already responded.{RESET}")
-            return
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{OLLAMA_URL}/api/tags", timeout=3) as ping:
+                    if ping.status != 200:
+                        await ctx.respond(embed=Embed(
+                            title="❌ Ollama is not responding",
+                            description="Ping to the AI backend failed.",
+                            color=discord.Color.red()
+                        ))
+                        return
+                    tag_data = await ping.json()
+                    models = [m["name"] if isinstance(m, dict) else m for m in tag_data.get("models", [])]
 
-        try:
-            start_time = time.monotonic()
+                    if model in models:
+                        await ctx.respond(embed=Embed(
+                            title="🟢 Model Already Active",
+                            description=f"The model **`{model}`** is already running.",
+                            color=discord.Color.blurple()
+                        ))
+                        return
 
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(f"{OLLAMA_URL}/api/tags", timeout=3) as ping:
-                        if ping.status != 200:
-                            print(f"❌ {GREEN}Ollama ping failed with status {RESET}{ping.status}")
-                            await interaction.followup.send(embed=Embed(
-                                title="❌ Ollama is not responding",
-                                description="Ping to the AI backend failed.",
-                                color=discord.Color.red()
-                            ))
-                            return
-                        tag_data = await ping.json()
-                        model_list = tag_data.get("models") or tag_data.get("tags") or []
-                        available_models = [m["name"] if isinstance(m, dict) else m for m in model_list]
-
-                        if model in available_models:
-                            print(f"🟢 Model '{model}' is already loaded.")
-                            await interaction.followup.send(embed=Embed(
-                                title="🟢 Model Already Active",
-                                description=f"The model **`{model}`** is already running and ready to use.",
-                                color=discord.Color.blurple()
-                            ))
-                            return
-            except Exception:
-                print(f"❌ {GREEN}Ollama server is offline or unreachable.{RESET}")
-                await interaction.followup.send(embed=Embed(
-                    title="😴 JengGPT is Offline",
-                    description="Sorry, JengGPT is not here right now! Please try again later.",
-                    color=discord.Color.orange()
-                ))
-                return
-
-            try:
-                response = requests.post(f"{OLLAMA_URL}/api/generate", json={
-                    "model": model,
-                    "prompt": "Hello",
-                    "stream": False
-                }, timeout=15)
-            except Exception:
-                print(f"❌ {GREEN}Warmup request failed due to timeout or unreachable host.{RESET}")
-                await interaction.followup.send(embed=Embed(
-                    title="😴 JengGPT is Offline",
-                    description="Warmup failed. JengGPT is not responding or offline.",
-                    color=discord.Color.orange()
-                ))
-                return
+            response = requests.post(f"{OLLAMA_URL}/api/generate", json={
+                "model": model,
+                "prompt": "Hello",
+                "stream": False
+            }, timeout=15)
 
             elapsed = time.monotonic() - start_time
 
             if response.status_code != 200:
-                print(f"⚠️ {GREEN}Ollama warmup failed (status {response.status_code}) in {elapsed:.2f}s{RESET}")
-                await interaction.followup.send(embed=Embed(
+                await ctx.respond(embed=Embed(
                     title="⚠️ Warmup Failed",
                     description=f"Ollama responded with status code `{response.status_code}`.",
                     color=discord.Color.orange()
                 ))
                 return
 
-            await interaction.followup.send(embed=Embed(
+            await ctx.respond(embed=Embed(
                 title="✅ Warmup Complete",
                 description=f"Model **`{model}`** is now active.\nWarmup time: **{elapsed:.2f} seconds**",
                 color=discord.Color.green()
             ))
-
-            print(f"🔥 {MAGENTA}Model '{model}' warmed up in {elapsed:.2f} seconds.{RESET}")
-
         except Exception as e:
-            print(f"❌ {GREEN}Warmup error:{RESET}", e)
-            await interaction.followup.send(embed=Embed(
+            print(f"❌ Warmup error: {e}")
+            await ctx.respond(embed=Embed(
                 title="❌ Warmup Failed",
-                description="Warmup failed. JengGPT is not responding or offline.",
+                description="Warmup failed. JengGPT may be offline.",
                 color=discord.Color.red()
             ))
 
+# --- Cog Setup ---
 async def setup(bot):
     await bot.add_cog(JengGPT(bot))

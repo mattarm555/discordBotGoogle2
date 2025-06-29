@@ -1,15 +1,19 @@
 import discord
 from discord.ext import commands
-from discord import Interaction, Embed, ui
+from discord import app_commands, Interaction, Embed, ui
 from datetime import datetime
 import pytz
 
 # --- Color Codes ---
 RESET = "\033[0m"
+BLACK = "\033[30m"
 RED = "\033[31m"
+GREEN = "\033[32m"
 YELLOW = "\033[33m"
 BLUE = "\033[34m"
+MAGENTA = "\033[35m"
 CYAN = "\033[36m"
+WHITE = "\033[37m"
 
 def debug_command(name, user, guild, **kwargs):
     print(f"{RED}[COMMAND] /{name}{RESET} triggered by {YELLOW}{user.display_name}{RESET} in {BLUE}{guild.name}{RESET}")
@@ -30,7 +34,7 @@ class RSVPView(ui.View):
         self.going = set()
         self.not_going = set()
         self.message = None
-        self.created_at = datetime.now(pytz.timezone("US/Eastern"))
+        self.created_at = datetime.now(pytz.timezone("US/Eastern"))  # store creation time
 
     def format_embed(self):
         embed = Embed(title=f"📅 {self.title}", description=self.description, color=discord.Color.gold())
@@ -39,6 +43,7 @@ class RSVPView(ui.View):
         embed.add_field(name="📝 Details", value=self.details or "None", inline=False)
         embed.add_field(name="✅ Going", value="\n".join(u.mention for u in self.going) or "No one yet", inline=True)
         embed.add_field(name="❌ Not Going", value="\n".join(u.mention for u in self.not_going) or "No one yet", inline=True)
+        
         created_str = self.created_at.strftime("%B %d, %I:%M %p ET")
         embed.set_footer(text=f"🕰️ Created at {created_str} by {self.creator.display_name}")
         return embed
@@ -59,23 +64,22 @@ class RSVPView(ui.View):
         await interaction.response.edit_message(embed=self.format_embed(), view=self)
 
 class Events(commands.Cog):
-    def __init__(self, bot: discord.Bot):
+    def __init__(self, bot):
         self.bot = bot
 
-    @discord.slash_command(name="event", description="Create an interactive RSVP event.")
-    async def event(self, ctx: discord.ApplicationContext,
-                    title: discord.Option(str, description="Event title"),
-                    time: discord.Option(str, description="When is the event?"),
-                    location: discord.Option(str, description="Where is it?"),
-                    details: discord.Option(str, description="More information", default=""),
-                    description: discord.Option(str, description="Embed header", default="Click a button to RSVP!")):
+    @app_commands.command(name="event", description="Create an interactive RSVP event.")
+    @app_commands.describe(
+        title="Event title",
+        time="When is the event?",
+        location="Where is it?",
+        details="More information about the event",
+        description="Top message in the embed (e.g., RSVP instructions)"
+    )
+    async def event(self, interaction: Interaction, title: str, time: str, location: str, details: str = "", description: str = "Click a button to RSVP!"):
+        await interaction.response.defer()
 
-        debug_command("event", ctx.user, ctx.guild,
-                      title=title, time=time, location=location,
-                      details=details, description=description)
-
-        view = RSVPView(
-            creator=ctx.user,
+        debug_command(
+            "event", interaction.user, interaction.guild,
             title=title,
             time=time,
             location=location,
@@ -83,9 +87,19 @@ class Events(commands.Cog):
             description=description
         )
 
-        response = await ctx.respond(embed=view.format_embed(), view=view)
-        view.message = await response.original_response()
+        view = RSVPView(
+            creator=interaction.user,
+            title=title,
+            time=time,
+            location=location,
+            details=details,
+            description=description
+        )
+
+        embed = view.format_embed()
+        msg = await interaction.followup.send(embed=embed, view=view, wait=True)
+        view.message = msg
 
 # --- Cog Setup ---
-async def setup(bot: discord.Bot):
+async def setup(bot):
     await bot.add_cog(Events(bot))

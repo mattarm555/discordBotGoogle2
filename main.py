@@ -58,9 +58,9 @@ async def sync_commands(ctx: discord.ApplicationContext):
     await bot.sync_commands()
     await ctx.respond("✅ Commands synced to this server!", ephemeral=True)
 
-# Load all cogs
+# Load all cogs on startup
 @bot.event
-async def on_start():
+async def setup_hook():
     for filename in os.listdir("./cogs"):
         if filename.endswith(".py"):
             try:

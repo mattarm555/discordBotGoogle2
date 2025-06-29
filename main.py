@@ -52,6 +52,8 @@ class JengBot(commands.Bot):
         await interaction.response.send_message("✅ Synced slash commands to this server.", ephemeral=True)
 
     async def on_ready(self):
+        await bot.tree.sync()
+        print("✅ Forced global command sync")
         await self.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="/help"))
         print(f"{YELLOW}🔓 Logged in as {self.user}{RESET}")
         print(f"{CYAN}📅 Ready at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{RESET}")

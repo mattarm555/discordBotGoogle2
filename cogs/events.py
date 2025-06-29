@@ -59,10 +59,10 @@ class RSVPView(ui.View):
         await interaction.response.edit_message(embed=self.format_embed(), view=self)
 
 class Events(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot: discord.Bot):
         self.bot = bot
 
-    @commands.slash_command(name="event", description="Create an interactive RSVP event.")
+    @discord.slash_command(name="event", description="Create an interactive RSVP event.")
     async def event(self, ctx: discord.ApplicationContext,
                     title: discord.Option(str, description="Event title"),
                     time: discord.Option(str, description="When is the event?"),
@@ -83,10 +83,9 @@ class Events(commands.Cog):
             description=description
         )
 
-        embed = view.format_embed()
-        msg = await ctx.respond(embed=embed, view=view)
-        view.message = await msg.original_response()
+        response = await ctx.respond(embed=view.format_embed(), view=view)
+        view.message = await response.original_response()
 
 # --- Cog Setup ---
-async def setup(bot):
+async def setup(bot: discord.Bot):
     await bot.add_cog(Events(bot))

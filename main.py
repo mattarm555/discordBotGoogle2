@@ -33,27 +33,34 @@ class JengBot(commands.Bot):
     async def setup_hook(self):
         # Load cogs
         for filename in os.listdir("./cogs"):
-            if filename.endswith(".py"):
+            if filename.endswith(".py") and filename != "__init__.py":
                 try:
                     await self.load_extension(f"cogs.{filename[:-3]}")
                     print(f"{GREEN}✅ Loaded cog: {filename}{RESET}")
                 except Exception as e:
                     print(f"{RED}❌ Failed to load {filename}:{RESET} {e}")
 
-        # Add sync command to tree
+        # Register /sync command
         self.tree.add_command(self.sync_commands)
 
-    @app_commands.command(name="sync", description="Manually sync slash commands to this guild.")
+    @app_commands.command(name="sync", description="Manually sync slash commands to this server.")
     async def sync_commands(self, interaction: discord.Interaction):
         if interaction.user.id != YOUR_USER_ID:
             await interaction.response.send_message("❌ You are not authorized.", ephemeral=True)
             return
-        await self.tree.sync(guild=interaction.guild)
-        await interaction.response.send_message("✅ Synced slash commands to this server.", ephemeral=True)
+        try:
+            synced = await self.tree.sync(guild=interaction.guild)
+            await interaction.response.send_message(f"✅ Synced {len(synced)} commands to this server.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"⚠️ Sync failed: {e}", ephemeral=True)
 
     async def on_ready(self):
-        await bot.tree.sync()
-        print("✅ Forced global command sync")
+        try:
+            synced = await self.tree.sync()
+            print(f"{GREEN}🔁 Global slash commands synced: {len(synced)}{RESET}")
+        except Exception as e:
+            print(f"{RED}⚠️ Slash sync failed: {e}{RESET}")
+
         await self.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="/help"))
         print(f"{YELLOW}🔓 Logged in as {self.user}{RESET}")
         print(f"{CYAN}📅 Ready at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{RESET}")

@@ -84,6 +84,24 @@ class Music(commands.Cog):
         save_queues(queues)
         print(f"{YELLOW}[INFO]{RESET} Cleared all queues at startup.")
 
+    async def safe_connect(self, interaction):
+        """Attempts to safely connect to a voice channel with retry on error 4006."""
+        try:
+            return await interaction.user.voice.channel.connect()
+        except discord.errors.ConnectionClosed as e:
+            if e.code == 4006:
+                print(f"{RED}⚠️ WebSocket closed with 4006. Retrying...{RESET}")
+                await asyncio.sleep(1)
+                try:
+                    return await interaction.user.voice.channel.connect()
+                except Exception as retry_error:
+                    print(f"{RED}❌ Retry failed: {retry_error}{RESET}")
+                    raise
+            else:
+                print(f"{RED}❌ Voice connect error: {e}{RESET}")
+                raise
+
+
     def get_yt_info(self, query):
         is_playlist = "playlist" in query.lower() or "list=" in query.lower()
         print(f"[DEBUG] Using cookie file: {COOKIE_FILE}")
@@ -176,7 +194,7 @@ class Music(commands.Cog):
 
         was_playing = voice_client.is_playing() if voice_client else False
         if not voice_client:
-            voice_client = await interaction.user.voice.channel.connect()
+            voice_client = await self.safe_connect(interaction)
 
         if not was_playing and len(queues[guild_id]) == len(songs_added):
             msg = await interaction.edit_original_response(embed=Embed(title="Now Playing...", color=discord.Color.blurple()))
@@ -449,7 +467,7 @@ class Music(commands.Cog):
 
         was_playing = voice_client.is_playing() if voice_client else False
         if not voice_client:
-            voice_client = await interaction.user.voice.channel.connect()
+            voice_client = await self.safe_connect(interaction)
 
         if not was_playing and len(queues[guild_id]) == len(songs_added):
             msg = await interaction.followup.send(embed=Embed(title="Now Playing...", color=discord.Color.blurple()), wait=True)

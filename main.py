@@ -39,27 +39,7 @@ class JengBot(commands.Bot):
                 except Exception as e:
                     print(f"{RED}❌ Failed to load {filename}:{RESET} {e}")
 
-        # Register /sync command
-        self.tree.add_command(self.sync_commands)
-
-    @bot.slash_command(name="sync", description="Manually sync slash commands to this server.")
-    async def sync_commands(self, interaction: discord.Interaction):
-        if interaction.user.id != YOUR_USER_ID:
-            await interaction.response.send_message("❌ You are not authorized.", ephemeral=True)
-            return
-        try:
-            synced = await self.tree.sync(guild=interaction.guild)
-            await interaction.response.send_message(f"✅ Synced {len(synced)} commands to this server.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"⚠️ Sync failed: {e}", ephemeral=True)
-
     async def on_ready(self):
-        try:
-            synced = await self.tree.sync()
-            print(f"{GREEN}🔁 Global slash commands synced: {len(synced)}{RESET}")
-        except Exception as e:
-            print(f"{RED}⚠️ Slash sync failed: {e}{RESET}")
-
         await self.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="/help"))
         print(f"{YELLOW}🔓 Logged in as {self.user}{RESET}")
         print(f"{CYAN}📅 Ready at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{RESET}")
@@ -70,6 +50,17 @@ class JengBot(commands.Bot):
 
 # Initialize bot
 bot = JengBot()
+
+@bot.slash_command(name="sync", description="Manually sync slash commands to this server.")
+async def sync_commands(ctx):
+    if ctx.author.id != YOUR_USER_ID:
+        await ctx.respond("❌ You are not authorized.", ephemeral=True)
+        return
+    try:
+        synced = await bot.sync_commands()
+        await ctx.respond(f"✅ Synced {len(synced)} commands to this server.", ephemeral=True)
+    except Exception as e:
+        await ctx.respond(f"⚠️ Sync failed: {e}", ephemeral=True)
 
 @bot.event
 async def on_message_delete(message):

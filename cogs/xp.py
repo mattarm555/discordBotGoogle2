@@ -1,6 +1,5 @@
 import discord
 from discord.ext import commands
-from discord import app_commands, Interaction, Embed
 import json
 import os
 
@@ -79,7 +78,7 @@ class XP(commands.Cog):
         leveled_up = self.add_xp(message.author, config["xp_per_message"])
         if leveled_up:
             try:
-                embed = Embed(
+                embed = discord.Embed(
                     title="🎉 Level Up!",
                     description=f"{message.author.mention} leveled up to **Level {self.xp_data[guild_id][str(message.author.id)]['level']}**!",
                     color=discord.Color.orange()
@@ -91,12 +90,12 @@ class XP(commands.Cog):
 
         save_json(XP_FILE, self.xp_data)
 
-    @app_commands.command(name="level", description="Shows your current XP level and rank.")
-    async def level(self, interaction: Interaction):
-        debug_command("level", interaction.user, interaction.guild)
+    @commands.slash_command(name="level", description="Shows your current XP level and rank.")
+    async def level(self, ctx: discord.ApplicationContext):
+        debug_command("level", ctx.author, ctx.guild)
 
-        guild_id = str(interaction.guild.id)
-        user_id = str(interaction.user.id)
+        guild_id = str(ctx.guild.id)
+        user_id = str(ctx.author.id)
 
         user_data = self.xp_data.get(guild_id, {}).get(user_id, {"xp": 0, "level": 1})
         xp = user_data["xp"]
@@ -109,22 +108,22 @@ class XP(commands.Cog):
         )
         rank = next((i for i, (uid, _) in enumerate(sorted_users, start=1) if uid == user_id), None)
 
-        embed = Embed(title="📈 XP Level", color=discord.Color.green())
-        embed.set_thumbnail(url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
+        embed = discord.Embed(title="📈 XP Level", color=discord.Color.green())
+        embed.set_thumbnail(url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
         embed.add_field(name="Level", value=level)
         embed.add_field(name="XP", value=f"{xp} / {required_xp}")
         embed.add_field(name="Rank", value=f"#{rank}" if rank else "Unranked")
-        await interaction.response.send_message(embed=embed)
+        await ctx.respond(embed=embed)
 
-    @app_commands.command(name="leaderboard", description="Shows the top XP earners in this server.")
-    async def leaderboard(self, interaction: Interaction):
-        debug_command("leaderboard", interaction.user, interaction.guild)
+    @commands.slash_command(name="leaderboard", description="Shows the top XP earners in this server.")
+    async def leaderboard(self, ctx: discord.ApplicationContext):
+        debug_command("leaderboard", ctx.author, ctx.guild)
 
-        guild_id = str(interaction.guild.id)
+        guild_id = str(ctx.guild.id)
         all_users = self.xp_data.get(guild_id, {})
 
         if not all_users:
-            await interaction.response.send_message(embed=Embed(
+            await ctx.respond(embed=discord.Embed(
                 title="❌ Empty Leaderboard",
                 description="No XP data yet!",
                 color=discord.Color.red()
@@ -136,9 +135,9 @@ class XP(commands.Cog):
         )
         top_users = sorted_users[:10]
 
-        embed = Embed(title="🏆 XP Leaderboard", color=discord.Color.gold())
+        embed = discord.Embed(title="🏆 XP Leaderboard", color=discord.Color.gold())
         for i, (user_id, data) in enumerate(top_users, start=1):
-            user = interaction.guild.get_member(int(user_id))
+            user = ctx.guild.get_member(int(user_id))
             if user:
                 embed.add_field(
                     name=f"#{i}: {user.display_name}",
@@ -146,81 +145,78 @@ class XP(commands.Cog):
                     inline=False
                 )
 
-        await interaction.response.send_message(embed=embed)
+        await ctx.respond(embed=embed)
 
-    @app_commands.command(name="xpset", description="Set how much XP is earned per message.")
-    @app_commands.describe(amount="XP amount per message")
-    async def xpset(self, interaction: Interaction, amount: int):
-        debug_command("xpset", interaction.user, interaction.guild, amount=amount)
+    @commands.slash_command(name="xpset", description="Set how much XP is earned per message.")
+    async def xpset(self, ctx: discord.ApplicationContext, amount: int):
+        debug_command("xpset", ctx.author, ctx.guild, amount=amount)
 
-        guild_id = str(interaction.guild.id)
+        guild_id = str(ctx.guild.id)
         self.get_xp_config(guild_id)["xp_per_message"] = amount
         save_json(CONFIG_FILE, self.config)
 
-        embed = Embed(
+        embed = discord.Embed(
             title="✅ XP Updated",
             description=f"XP per message set to {amount}.",
             color=discord.Color.green()
         )
-        await interaction.response.send_message(embed=embed)
+        await ctx.respond(embed=embed)
 
-    @app_commands.command(name="xpblock", description="Block XP gain in a channel.")
-    @app_commands.describe(channel="The channel to block")
-    async def xpblock(self, interaction: Interaction, channel: discord.TextChannel):
-        debug_command("xpblock", interaction.user, interaction.guild, blocked=channel.name)
+    @commands.slash_command(name="xpblock", description="Block XP gain in a channel.")
+    async def xpblock(self, ctx: discord.ApplicationContext, channel: discord.TextChannel):
+        debug_command("xpblock", ctx.author, ctx.guild, blocked=channel.name)
 
-        guild_id = str(interaction.guild.id)
+        guild_id = str(ctx.guild.id)
         config = self.get_xp_config(guild_id)
 
         if str(channel.id) not in config["blocked_channels"]:
             config["blocked_channels"].append(str(channel.id))
             save_json(CONFIG_FILE, self.config)
 
-        embed = Embed(
+        embed = discord.Embed(
             title="🚫 XP Blocked",
             description=f"XP disabled in {channel.mention}.",
             color=discord.Color.red()
         )
-        await interaction.response.send_message(embed=embed)
+        await ctx.respond(embed=embed)
 
-    @app_commands.command(name="xpunblock", description="Unblock XP gain in a channel.")
-    @app_commands.describe(channel="The channel to unblock")
-    async def xpunblock(self, interaction: Interaction, channel: discord.TextChannel):
-        debug_command("xpunblock", interaction.user, interaction.guild, unblocked=channel.name)
+    @commands.slash_command(name="xpunblock", description="Unblock XP gain in a channel.")
+    async def xpunblock(self, ctx: discord.ApplicationContext, channel: discord.TextChannel):
+        debug_command("xpunblock", ctx.author, ctx.guild, unblocked=channel.name)
 
-        guild_id = str(interaction.guild.id)
+        guild_id = str(ctx.guild.id)
         config = self.get_xp_config(guild_id)
 
         if str(channel.id) in config["blocked_channels"]:
             config["blocked_channels"].remove(str(channel.id))
             save_json(CONFIG_FILE, self.config)
 
-        embed = Embed(
+        embed = discord.Embed(
             title="✅ XP Unblocked",
             description=f"XP enabled in {channel.mention}.",
             color=discord.Color.green()
         )
-        await interaction.response.send_message(embed=embed)
+        await ctx.respond(embed=embed)
 
-    @app_commands.command(name="xpconfig", description="Show current XP settings.")
-    async def xpconfig(self, interaction: Interaction):
-        debug_command("xpconfig", interaction.user, interaction.guild)
+    @commands.slash_command(name="xpconfig", description="Show current XP settings.")
+    async def xpconfig(self, ctx: discord.ApplicationContext):
+        debug_command("xpconfig", ctx.author, ctx.guild)
 
-        guild_id = str(interaction.guild.id)
+        guild_id = str(ctx.guild.id)
         config = self.get_xp_config(guild_id)
 
         amount = config.get("xp_per_message", 10)
         blocked = config.get("blocked_channels", [])
         blocked_channels = [f"<#{cid}>" for cid in blocked]
 
-        embed = Embed(title="⚙️ XP Settings", color=discord.Color.blurple())
+        embed = discord.Embed(title="⚙️ XP Settings", color=discord.Color.blurple())
         embed.add_field(name="XP per message", value=amount, inline=False)
         embed.add_field(
             name="Blocked Channels",
             value=", ".join(blocked_channels) if blocked_channels else "None",
             inline=False
         )
-        await interaction.response.send_message(embed=embed)
+        await ctx.respond(embed=embed)
 
 # --- Cog Setup ---
 async def setup(bot):

@@ -1,7 +1,6 @@
 import discord
 import os
 from discord.ext import commands
-from discord import app_commands
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -43,7 +42,7 @@ class JengBot(commands.Bot):
         # Register /sync command
         self.tree.add_command(self.sync_commands)
 
-    @app_commands.command(name="sync", description="Manually sync slash commands to this server.")
+    @bot.slash_command(name="sync", description="Manually sync slash commands to this server.")
     async def sync_commands(self, interaction: discord.Interaction):
         if interaction.user.id != YOUR_USER_ID:
             await interaction.response.send_message("❌ You are not authorized.", ephemeral=True)

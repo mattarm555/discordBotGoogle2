@@ -1,6 +1,5 @@
 import discord
 from discord.ext import commands
-from discord import app_commands, Interaction, Embed, ui
 from datetime import datetime
 import pytz
 
@@ -22,7 +21,7 @@ def debug_command(name, user, guild, **kwargs):
         for key, value in kwargs.items():
             print(f"  {key}: {value}")
 
-class RSVPView(ui.View):
+class RSVPView(discord.ui.View):
     def __init__(self, creator, title, time, location, details, description="Click a button to RSVP!"):
         super().__init__(timeout=None)
         self.creator = creator
@@ -37,7 +36,7 @@ class RSVPView(ui.View):
         self.created_at = datetime.now(pytz.timezone("US/Eastern"))  # store creation time
 
     def format_embed(self):
-        embed = Embed(title=f"📅 {self.title}", description=self.description, color=discord.Color.gold())
+        embed = discord.Embed(title=f"📅 {self.title}", description=self.description, color=discord.Color.gold())
         embed.add_field(name="🕒 Time", value=self.time, inline=False)
         embed.add_field(name="📍 Location", value=self.location, inline=False)
         embed.add_field(name="📝 Details", value=self.details or "None", inline=False)
@@ -48,38 +47,41 @@ class RSVPView(ui.View):
         embed.set_footer(text=f"🕰️ Created at {created_str} by {self.creator.display_name}")
         return embed
 
-    @ui.button(label="✅ Going", style=discord.ButtonStyle.success)
-    async def yes(self, interaction: Interaction, button: ui.Button):
+    @discord.ui.button(label="✅ Going", style=discord.ButtonStyle.success)
+    async def yes(self, button, interaction: discord.Interaction):
         self.not_going.discard(interaction.user)
         self.going.add(interaction.user)
         await self.update(interaction)
 
-    @ui.button(label="❌ Not Going", style=discord.ButtonStyle.danger)
-    async def no(self, interaction: Interaction, button: ui.Button):
+    @discord.ui.button(label="❌ Not Going", style=discord.ButtonStyle.danger)
+    async def no(self, button, interaction: discord.Interaction):
         self.going.discard(interaction.user)
         self.not_going.add(interaction.user)
         await self.update(interaction)
 
-    async def update(self, interaction: Interaction):
+    async def update(self, interaction: discord.Interaction):
         await interaction.response.edit_message(embed=self.format_embed(), view=self)
 
 class Events(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="event", description="Create an interactive RSVP event.")
-    @app_commands.describe(
-        title="Event title",
-        time="When is the event?",
-        location="Where is it?",
-        details="More information about the event",
-        description="Top message in the embed (e.g., RSVP instructions)"
+    @commands.slash_command(
+        name="event",
+        description="Create an interactive RSVP event."
     )
-    async def event(self, interaction: Interaction, title: str, time: str, location: str, details: str = "", description: str = "Click a button to RSVP!"):
-        await interaction.response.defer()
-
+    async def event(
+        self,
+        ctx: discord.ApplicationContext,
+        title: str,
+        time: str,
+        location: str,
+        details: str = "",
+        description: str = "Click a button to RSVP!"
+    ):
+        await ctx.defer()
         debug_command(
-            "event", interaction.user, interaction.guild,
+            "event", ctx.author, ctx.guild,
             title=title,
             time=time,
             location=location,
@@ -88,7 +90,7 @@ class Events(commands.Cog):
         )
 
         view = RSVPView(
-            creator=interaction.user,
+            creator=ctx.author,
             title=title,
             time=time,
             location=location,
@@ -97,7 +99,7 @@ class Events(commands.Cog):
         )
 
         embed = view.format_embed()
-        msg = await interaction.followup.send(embed=embed, view=view, wait=True)
+        msg = await ctx.send(embed=embed, view=view)
         view.message = msg
 
 # --- Cog Setup ---

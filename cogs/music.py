@@ -1,6 +1,5 @@
 import discord
 from discord.ext import commands
-from discord import app_commands, Interaction, Embed, ui
 import asyncio
 import yt_dlp
 import math
@@ -8,13 +7,12 @@ import json
 import os
 import random
 
-
 # --- Persistent Queue File ---
 QUEUE_FILE = "saved_queues.json"
 COOKIE_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
 
 queues = {}  # guild_id: [song dicts]
-last_channels = {}  # guild_id: last Interaction.channel
+last_channels = {}  # guild_id: last ctx.channel
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -36,7 +34,7 @@ def debug_command(command_name, user, guild, **kwargs):
         for key, value in kwargs.items():
             print(f"{RED}  {key.capitalize()}: {value}{RESET}")
 
-class QueueView(ui.View):
+class QueueView(discord.ui.View):
     def __init__(self, queue, per_page=5):
         super().__init__(timeout=60)
         self.queue = queue
@@ -47,7 +45,7 @@ class QueueView(ui.View):
     def format_embed(self):
         start = self.page * self.per_page
         end = start + self.per_page
-        embed = Embed(
+        embed = discord.Embed(
             title=f"🎶 Current Queue (Page {self.page + 1}/{self.max_pages})",
             color=discord.Color.blue()
         )
@@ -58,16 +56,16 @@ class QueueView(ui.View):
             embed.set_thumbnail(url=songs_on_page[0]['thumbnail'])
         return embed
 
-    @ui.button(label="⬅️", style=discord.ButtonStyle.blurple)
-    async def previous(self, interaction: Interaction, button: ui.Button):
+    @discord.ui.button(label="⬅️", style=discord.ButtonStyle.blurple)
+    async def previous(self, button, interaction: discord.Interaction):
         if self.page > 0:
             self.page -= 1
             await interaction.response.edit_message(embed=self.format_embed(), view=self)
         else:
             await interaction.response.defer()
 
-    @ui.button(label="➡️", style=discord.ButtonStyle.blurple)
-    async def next(self, interaction: Interaction, button: ui.Button):
+    @discord.ui.button(label="➡️", style=discord.ButtonStyle.blurple)
+    async def next(self, button, interaction: discord.Interaction):
         if self.page < self.max_pages - 1:
             self.page += 1
             await interaction.response.edit_message(embed=self.format_embed(), view=self)
@@ -84,23 +82,21 @@ class Music(commands.Cog):
         save_queues(queues)
         print(f"{YELLOW}[INFO]{RESET} Cleared all queues at startup.")
 
-    async def safe_connect(self, interaction):
-        """Attempts to safely connect to a voice channel with retry on error 4006."""
+    async def safe_connect(self, ctx):
         try:
-            return await interaction.user.voice.channel.connect()
+            return await ctx.author.voice.channel.connect()
         except discord.errors.ConnectionClosed as e:
             if e.code == 4006:
                 print(f"{RED}⚠️ WebSocket closed with 4006. Retrying...{RESET}")
                 await asyncio.sleep(1)
                 try:
-                    return await interaction.user.voice.channel.connect()
+                    return await ctx.author.voice.channel.connect()
                 except Exception as retry_error:
                     print(f"{RED}❌ Retry failed: {retry_error}{RESET}")
                     raise
             else:
                 print(f"{RED}❌ Voice connect error: {e}{RESET}")
                 raise
-
 
     def get_yt_info(self, query):
         is_playlist = "playlist" in query.lower() or "list=" in query.lower()
@@ -129,23 +125,21 @@ class Music(commands.Cog):
             info = ydl.extract_info(url, download=False)
             return info['url']
 
-
-    async def auto_disconnect(self, interaction: Interaction):
-        await asyncio.sleep(60)  # Wait 60 seconds (or however long you want)
-        vc = interaction.guild.voice_client
+    async def auto_disconnect(self, ctx):
+        await asyncio.sleep(60)
+        vc = ctx.guild.voice_client
         if vc and not vc.is_playing():
             await vc.disconnect()
-            queues[str(interaction.guild.id)] = []
+            queues[str(ctx.guild.id)] = []
             save_queues(queues)
 
-            embed = Embed(
+            embed = discord.Embed(
                 title="Jeng has ran away.",
                 description="No music playing — disconnected automatically.",
                 color=discord.Color.purple()
             )
-            channel = last_channels.get(str(interaction.guild.id), interaction.channel)
+            channel = last_channels.get(str(ctx.guild.id), ctx.channel)
             await channel.send(embed=embed)
-
 
     def get_audio_source(self, url):
         ffmpeg_opts = {
@@ -154,17 +148,15 @@ class Music(commands.Cog):
         }
         return discord.FFmpegPCMAudio(url, **ffmpeg_opts)
 
-    @app_commands.command(name="play", description="Plays a song or playlist from YouTube or SoundCloud.")
-    @app_commands.rename(url="search")
-    @app_commands.describe(url="YouTube/SoundCloud URL or search term (use 'sc:' for SoundCloud search)")
-    async def play(self, interaction: Interaction, url: str):
-        debug_command("play", interaction.user, interaction.guild, url=url)
-        await interaction.response.defer(thinking=True)
+    @commands.slash_command(name="play", description="Plays a song or playlist from YouTube or SoundCloud.")
+    async def play(self, ctx: discord.ApplicationContext, url: str):
+        debug_command("play", ctx.author, ctx.guild, url=url)
+        await ctx.defer()
 
-        guild_id = str(interaction.guild.id)
+        guild_id = str(ctx.guild.id)
         self.force_stopped[guild_id] = False
-        voice_client = interaction.guild.voice_client
-        last_channels[guild_id] = interaction.channel
+        voice_client = ctx.guild.voice_client
+        last_channels[guild_id] = ctx.channel
 
         if guild_id not in queues:
             queues[guild_id] = []
@@ -194,32 +186,30 @@ class Music(commands.Cog):
 
         was_playing = voice_client.is_playing() if voice_client else False
         if not voice_client:
-            voice_client = await self.safe_connect(interaction)
+            voice_client = await self.safe_connect(ctx)
 
         if not was_playing and len(queues[guild_id]) == len(songs_added):
-            msg = await interaction.edit_original_response(embed=Embed(title="Now Playing...", color=discord.Color.blurple()))
-            await self.start_next(interaction, msg)
+            msg = await ctx.send(embed=discord.Embed(title="Now Playing...", color=discord.Color.blurple()))
+            await self.start_next(ctx, msg)
         else:
             if len(songs_added) == 1:
-                embed = Embed(title='Added to Queue', description=songs_added[0]['title'], color=discord.Color.blue())
+                embed = discord.Embed(title='Added to Queue', description=songs_added[0]['title'], color=discord.Color.blue())
                 embed.set_thumbnail(url=songs_added[0]['thumbnail'])
             else:
-                embed = Embed(title='Playlist Queued', description=f"Added {len(songs_added)} songs.", color=discord.Color.green())
-            await interaction.edit_original_response(embed=embed)
+                embed = discord.Embed(title='Playlist Queued', description=f"Added {len(songs_added)} songs.", color=discord.Color.green())
+            await ctx.send(embed=embed)
 
-    async def start_next(self, interaction: Interaction, msg: discord.Message = None):
-        guild_id = str(interaction.guild.id)
-        # ⛔ If force_stopped, do nothing
+    async def start_next(self, ctx, msg: discord.Message = None):
+        guild_id = str(ctx.guild.id)
         if self.force_stopped.get(guild_id):
             return
-            
-        voice_client = interaction.guild.voice_client
-        channel = last_channels.get(guild_id, interaction.channel)
 
-        while queues[guild_id]:  # keep going until a song works or queue is empty
+        voice_client = ctx.guild.voice_client
+        channel = last_channels.get(guild_id, ctx.channel)
+
+        while queues[guild_id]:
             next_song = queues[guild_id].pop(0)
 
-            # 🟨 Fallback metadata if missing (e.g., from extract_flat)
             if not next_song.get("thumbnail") or not next_song.get("duration"):
                 try:
                     full_info = self.get_yt_info(next_song["url"])
@@ -228,7 +218,7 @@ class Music(commands.Cog):
                     next_song["duration"] = full_info.get("duration", 0)
                 except Exception as e:
                     print(f"{RED}⚠️ Failed to fetch full info for {next_song['title']}: {e}{RESET}")
-                    await channel.send(embed=Embed(
+                    await channel.send(embed=discord.Embed(
                         title="⚠️ Metadata Error",
                         description=f"Could not fetch full info for **{next_song['title']}**, skipping...",
                         color=discord.Color.orange()
@@ -244,9 +234,9 @@ class Music(commands.Cog):
             try:
                 stream_url = self.get_stream_url(next_song['url'])
                 source = self.get_audio_source(stream_url)
-                voice_client.play(source, after=lambda e: self._after_song(interaction))
+                voice_client.play(source, after=lambda e: self._after_song(ctx))
 
-                embed = Embed(title="Now Playing", description=next_song['title'], color=discord.Color.green())
+                embed = discord.Embed(title="Now Playing", description=next_song['title'], color=discord.Color.green())
                 embed.set_thumbnail(url=next_song['thumbnail'])
 
                 if msg:
@@ -265,37 +255,33 @@ class Music(commands.Cog):
                         pass
 
                 save_queues(queues)
-                return  # song successfully started
+                return
 
             except Exception as e:
                 print(f"{RED}⚠️ Failed to play: {next_song['title']} — {e}{RESET}")
-                await channel.send(embed=Embed(
+                await channel.send(embed=discord.Embed(
                     title="❌ Failed to Play",
                     description=f"Sorry, **{next_song['title']}** could not be downloaded properly.",
                     color=discord.Color.red()
                 ))
-                continue  # try the next song in the queue
+                continue
 
-        # If we reached here, queue is empty or all songs failed
         self.currently_playing.pop(guild_id, None)
-        await self.auto_disconnect(interaction)
+        await self.auto_disconnect(ctx)
 
+    def _after_song(self, ctx):
+        asyncio.run_coroutine_threadsafe(self.start_next(ctx), self.bot.loop)
 
-
-
-    def _after_song(self, interaction: Interaction):
-        asyncio.run_coroutine_threadsafe(self.start_next(interaction), self.bot.loop)
-
-    @app_commands.command(name="np", description="Shows the currently playing song.")
-    async def now_playing(self, interaction: Interaction):
-        await interaction.response.defer()
-        guild_id = str(interaction.guild.id)
+    @commands.slash_command(name="np", description="Shows the currently playing song.")
+    async def now_playing(self, ctx: discord.ApplicationContext):
+        await ctx.defer()
+        guild_id = str(ctx.guild.id)
         now = asyncio.get_event_loop().time()
         playing = self.currently_playing.get(guild_id)
 
         if not playing:
-            embed = Embed(title="No Song Playing", description="Nothing is currently playing.", color=discord.Color.red())
-            await interaction.followup.send(embed=embed)
+            embed = discord.Embed(title="No Song Playing", description="Nothing is currently playing.", color=discord.Color.red())
+            await ctx.send(embed=embed)
             return
 
         start = playing["start_time"]
@@ -309,116 +295,109 @@ class Music(commands.Cog):
         elapsed_fmt = f"{elapsed // 60}:{elapsed % 60:02}"
         total_fmt = f"{total // 60}:{total % 60:02}"
 
-        embed = Embed(
+        embed = discord.Embed(
             title="🎵 Now Playing",
             description=f"**{playing['song']['title']}**\n{bar}",
             color=discord.Color.orange()
         )
         embed.set_thumbnail(url=playing["song"]["thumbnail"])
         embed.set_footer(text=f"{elapsed_fmt} / {total_fmt}")
-        await interaction.followup.send(embed=embed)
+        await ctx.send(embed=embed)
 
-    @app_commands.command(name="queue", description="Shows the current music queue.")
-    async def queue(self, interaction: Interaction):
-        await interaction.response.defer()
-        debug_command("queue", interaction.user, interaction.guild)
-        last_channels[str(interaction.guild.id)] = interaction.channel
-        song_queue = queues.get(str(interaction.guild.id), [])
+    @commands.slash_command(name="queue", description="Shows the current music queue.")
+    async def queue(self, ctx: discord.ApplicationContext):
+        await ctx.defer()
+        debug_command("queue", ctx.author, ctx.guild)
+        last_channels[str(ctx.guild.id)] = ctx.channel
+        song_queue = queues.get(str(ctx.guild.id), [])
         if not song_queue:
-            embed = Embed(title="Queue Empty", description="No songs in queue.", color=discord.Color.red())
-            await interaction.followup.send(embed=embed)
+            embed = discord.Embed(title="Queue Empty", description="No songs in queue.", color=discord.Color.red())
+            await ctx.send(embed=embed)
             return
         view = QueueView(song_queue)
         embed = view.format_embed()
-        await interaction.followup.send(embed=embed, view=view)
+        await ctx.send(embed=embed, view=view)
 
-    @app_commands.command(name="skip", description="Skips the current song.")
-    async def skip(self, interaction: Interaction):
-        await interaction.response.defer()
-        debug_command("skip", interaction.user, interaction.guild)
-        last_channels[str(interaction.guild.id)] = interaction.channel
-        if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
-            interaction.guild.voice_client.stop()
-            embed = Embed(title="Skipped", description="Skipped to the next song.", color=discord.Color.orange())
-            await interaction.followup.send(embed=embed)
+    @commands.slash_command(name="skip", description="Skips the current song.")
+    async def skip(self, ctx: discord.ApplicationContext):
+        await ctx.defer()
+        debug_command("skip", ctx.author, ctx.guild)
+        last_channels[str(ctx.guild.id)] = ctx.channel
+        if ctx.guild.voice_client and ctx.guild.voice_client.is_playing():
+            ctx.guild.voice_client.stop()
+            embed = discord.Embed(title="Skipped", description="Skipped to the next song.", color=discord.Color.orange())
+            await ctx.send(embed=embed)
             save_queues(queues)
         else:
-            embed = Embed(title="No Song Playing", description="Nothing to skip.", color=discord.Color.red())
-            await interaction.followup.send(embed=embed)
+            embed = discord.Embed(title="No Song Playing", description="Nothing to skip.", color=discord.Color.red())
+            await ctx.send(embed=embed)
 
-    @app_commands.command(name="stop", description="Pauses the music.")
-    async def stop(self, interaction: Interaction):
-        await interaction.response.defer()
-        debug_command("stop", interaction.user, interaction.guild)
-        last_channels[str(interaction.guild.id)] = interaction.channel
-        vc = interaction.guild.voice_client
+    @commands.slash_command(name="stop", description="Pauses the music.")
+    async def stop(self, ctx: discord.ApplicationContext):
+        await ctx.defer()
+        debug_command("stop", ctx.author, ctx.guild)
+        last_channels[str(ctx.guild.id)] = ctx.channel
+        vc = ctx.guild.voice_client
         if vc and vc.is_playing():
             vc.pause()
-            embed = Embed(title="Paused", description="Music paused.", color=discord.Color.orange())
-            await interaction.followup.send(embed=embed)
+            embed = discord.Embed(title="Paused", description="Music paused.", color=discord.Color.orange())
+            await ctx.send(embed=embed)
         else:
-            embed = Embed(title="No Music Playing", description="Nothing to pause.", color=discord.Color.red())
-            await interaction.followup.send(embed=embed)
+            embed = discord.Embed(title="No Music Playing", description="Nothing to pause.", color=discord.Color.red())
+            await ctx.send(embed=embed)
 
-    @app_commands.command(name="start", description="Resumes paused music.")
-    async def start(self, interaction: Interaction):
-        await interaction.response.defer()
-        debug_command("start", interaction.user, interaction.guild)
-        last_channels[str(interaction.guild.id)] = interaction.channel
-        vc = interaction.guild.voice_client
+    @commands.slash_command(name="start", description="Resumes paused music.")
+    async def start(self, ctx: discord.ApplicationContext):
+        await ctx.defer()
+        debug_command("start", ctx.author, ctx.guild)
+        last_channels[str(ctx.guild.id)] = ctx.channel
+        vc = ctx.guild.voice_client
         if vc and vc.is_paused():
             vc.resume()
-            embed = Embed(title="Resumed", description="Music resumed.", color=discord.Color.green())
-            await interaction.followup.send(embed=embed)
+            embed = discord.Embed(title="Resumed", description="Music resumed.", color=discord.Color.green())
+            await ctx.send(embed=embed)
         else:
-            embed = Embed(title="Not Paused", description="Nothing is paused.", color=discord.Color.red())
-            await interaction.followup.send(embed=embed)
+            embed = discord.Embed(title="Not Paused", description="Nothing is paused.", color=discord.Color.red())
+            await ctx.send(embed=embed)
 
-    @app_commands.command(name="leave", description="Disconnects from voice and clears queue.")
-    async def leave(self, interaction: Interaction):
-        await interaction.response.defer()  # ✅ Defer response
-        debug_command("leave", interaction.user, interaction.guild)
+    @commands.slash_command(name="leave", description="Disconnects from voice and clears queue.")
+    async def leave(self, ctx: discord.ApplicationContext):
+        await ctx.defer()
+        debug_command("leave", ctx.author, ctx.guild)
 
-        guild_id = str(interaction.guild.id)
-        last_channels[guild_id] = interaction.channel
-        vc = interaction.guild.voice_client
+        guild_id = str(ctx.guild.id)
+        last_channels[guild_id] = ctx.channel
+        vc = ctx.guild.voice_client
 
-        # ✅ Mark this server as force-stopped
         self.force_stopped[guild_id] = True
-
-        # ✅ Clear queue and save
         queues[guild_id] = []
         save_queues(queues)
 
         if vc:
             await vc.disconnect()
-            embed = Embed(
+            embed = discord.Embed(
                 title="Jeng has ran away.",
                 description="Left the voice channel.",
                 color=discord.Color.purple()
             )
-            await interaction.followup.send(embed=embed)
+            await ctx.send(embed=embed)
         else:
-            embed = Embed(
+            embed = discord.Embed(
                 title="Not Connected",
                 description="I'm not in a voice channel.",
                 color=discord.Color.red()
             )
-            await interaction.followup.send(embed=embed)
+            await ctx.send(embed=embed)
 
-
-    
-
-    @app_commands.command(name="queueshuffle", description="Shuffle the current song queue.")
-    async def queueshuffle(self, interaction: Interaction):
-        await interaction.response.defer()
-        guild_id = str(interaction.guild.id)
+    @commands.slash_command(name="queueshuffle", description="Shuffle the current song queue.")
+    async def queueshuffle(self, ctx: discord.ApplicationContext):
+        await ctx.defer()
+        guild_id = str(ctx.guild.id)
         if guild_id in queues and queues[guild_id]:
-            
             random.shuffle(queues[guild_id])
-            await interaction.followup.send(embed=Embed(title="🔀 Queue Shuffled", description="The queue has been shuffled.", color=discord.Color.green()))
+            await ctx.send(embed=discord.Embed(title="🔀 Queue Shuffled", description="The queue has been shuffled.", color=discord.Color.green()))
         else:
-            await interaction.followup.send(embed=Embed(title="📭 Empty Queue", description="There is nothing to shuffle.", color=discord.Color.red()))
+            await ctx.send(embed=discord.Embed(title="📭 Empty Queue", description="There is nothing to shuffle.", color=discord.Color.red()))
 
     def load_playlists(self):
         if os.path.exists("saved_playlists.json"):
@@ -430,12 +409,12 @@ class Music(commands.Cog):
         with open("saved_playlists.json", "w") as f:
             json.dump(playlists, f, indent=4)
 
-    async def play_song(self, interaction: Interaction, url: str):
-        debug_command("play_song", interaction.user, interaction.guild, url=url)
-        guild_id = str(interaction.guild.id)
+    async def play_song(self, ctx, url: str):
+        debug_command("play_song", ctx.author, ctx.guild, url=url)
+        guild_id = str(ctx.guild.id)
         self.force_stopped[guild_id] = False
-        voice_client = interaction.guild.voice_client
-        last_channels[guild_id] = interaction.channel
+        voice_client = ctx.guild.voice_client
+        last_channels[guild_id] = ctx.channel
 
         if guild_id not in queues:
             queues[guild_id] = []
@@ -461,104 +440,97 @@ class Music(commands.Cog):
             queues[guild_id].append(song)
             songs_added.append(song)
 
-        await asyncio.sleep(0.5)  # you can increase this to 0.5 if needed
+        await asyncio.sleep(0.5)
 
         save_queues(queues)
 
         was_playing = voice_client.is_playing() if voice_client else False
         if not voice_client:
-            voice_client = await self.safe_connect(interaction)
+            voice_client = await self.safe_connect(ctx)
 
         if not was_playing and len(queues[guild_id]) == len(songs_added):
-            msg = await interaction.followup.send(embed=Embed(title="Now Playing...", color=discord.Color.blurple()), wait=True)
-            await self.start_next(interaction, msg)
+            msg = await ctx.send(embed=discord.Embed(title="Now Playing...", color=discord.Color.blurple()))
+            await self.start_next(ctx, msg)
         else:
             if len(songs_added) == 1:
-                embed = Embed(title="Added to Queue", description=songs_added[0]["title"], color=discord.Color.blue())
+                embed = discord.Embed(title="Added to Queue", description=songs_added[0]["title"], color=discord.Color.blue())
                 embed.set_thumbnail(url=songs_added[0]["thumbnail"])
             else:
-                embed = Embed(title="Playlist Queued", description=f"Added {len(songs_added)} songs.", color=discord.Color.green())
-            await interaction.followup.send(embed=embed)
+                embed = discord.Embed(title="Playlist Queued", description=f"Added {len(songs_added)} songs.", color=discord.Color.green())
+            await ctx.send(embed=embed)
 
-    @app_commands.command(name="removeplaylist", description="Delete a saved playlist.")
-    async def remove_playlist(self, interaction: Interaction, name: str):
-        debug_command("removeplaylist", interaction.user, interaction.guild, name=name)
-        guild_id = str(interaction.guild.id)
+    @commands.slash_command(name="removeplaylist", description="Delete a saved playlist.")
+    async def remove_playlist(self, ctx: discord.ApplicationContext, name: str):
+        debug_command("removeplaylist", ctx.author, ctx.guild, name=name)
+        guild_id = str(ctx.guild.id)
         playlists = self.load_playlists()
         if guild_id in playlists and name in playlists[guild_id]:
             del playlists[guild_id][name]
             self.save_playlists(playlists)
-            await interaction.response.send_message(embed=Embed(
+            await ctx.send(embed=discord.Embed(
                 title="🗑️ Playlist Removed",
                 description=f"`{name}` has been deleted.",
                 color=discord.Color.red()
             ))
         else:
-            await interaction.response.send_message(embed=Embed(
+            await ctx.send(embed=discord.Embed(
                 title="⚠️ Not Found",
                 description=f"No playlist found under `{name}`.",
                 color=discord.Color.orange()
             ))
 
-
-
-    @app_commands.command(name="playplaylist", description="Play a previously saved playlist.")
-    async def play_playlist(self, interaction: Interaction, name: str):
-        debug_command("playplaylist", interaction.user, interaction.guild, name=name)
-        guild_id = str(interaction.guild.id)
+    @commands.slash_command(name="playplaylist", description="Play a previously saved playlist.")
+    async def play_playlist(self, ctx: discord.ApplicationContext, name: str):
+        debug_command("playplaylist", ctx.author, ctx.guild, name=name)
+        guild_id = str(ctx.guild.id)
         playlists = self.load_playlists()
         if guild_id in playlists and name in playlists[guild_id]:
             link = playlists[guild_id][name]
-            await interaction.response.send_message(embed=Embed(
+            await ctx.send(embed=discord.Embed(
                 title="📼 Loading Playlist",
                 description=f"Now playing: `{name}`",
                 color=discord.Color.blue()
             ))
-            await self.play_song(interaction, link)
+            await self.play_song(ctx, link)
         else:
-            await interaction.response.send_message(embed=Embed(
+            await ctx.send(embed=discord.Embed(
                 title="⚠️ Not Found",
                 description=f"No playlist saved under `{name}`.",
                 color=discord.Color.red()
             ))
 
-
-    @app_commands.command(name="listplaylists", description="List saved playlists for this server.")
-    async def list_playlists(self, interaction: Interaction):
-        debug_command("listplaylists", interaction.user, interaction.guild)
-        guild_id = str(interaction.guild.id)
+    @commands.slash_command(name="listplaylists", description="List saved playlists for this server.")
+    async def list_playlists(self, ctx: discord.ApplicationContext):
+        debug_command("listplaylists", ctx.author, ctx.guild)
+        guild_id = str(ctx.guild.id)
         playlists = self.load_playlists().get(guild_id, {})
         if not playlists:
-            await interaction.response.send_message(embed=Embed(
+            await ctx.send(embed=discord.Embed(
                 title="📂 No Playlists",
                 description="No playlists saved yet.",
                 color=discord.Color.orange()
             ))
             return
 
-        embed = Embed(title="📚 Saved Playlists", color=discord.Color.blurple())
+        embed = discord.Embed(title="📚 Saved Playlists", color=discord.Color.blurple())
         for name, link in playlists.items():
             embed.add_field(name=name, value=link, inline=False)
-        await interaction.response.send_message(embed=embed)
+        await ctx.send(embed=embed)
 
-
-    @app_commands.command(name="saveplaylist", description="Save a playlist link under a custom name.")
-    async def save_playlist(self, interaction: Interaction, name: str, link: str):
-        debug_command("saveplaylist", interaction.user, interaction.guild, name=name, link=link)
-        guild_id = str(interaction.guild.id)
+    @commands.slash_command(name="saveplaylist", description="Save a playlist link under a custom name.")
+    async def save_playlist(self, ctx: discord.ApplicationContext, name: str, link: str):
+        debug_command("saveplaylist", ctx.author, ctx.guild, name=name, link=link)
+        guild_id = str(ctx.guild.id)
         playlists = self.load_playlists()
         if guild_id not in playlists:
             playlists[guild_id] = {}
         playlists[guild_id][name] = link
         self.save_playlists(playlists)
-        await interaction.response.send_message(embed=Embed(
+        await ctx.send(embed=discord.Embed(
             title="✅ Playlist Saved",
             description=f"Saved `{name}`.",
             color=discord.Color.green()
         ))
-
-
-
 
 async def setup(bot):
     await bot.add_cog(Music(bot))

@@ -1,6 +1,5 @@
 import discord
 from discord.ext import commands
-from discord import app_commands, Interaction, Embed
 import json
 import os
 
@@ -55,7 +54,7 @@ class Welcome(commands.Cog):
         formatted_message = welcome_message.format(user=member.mention, server=member.guild.name)
         channel = member.guild.get_channel(int(channel_id))
         if channel:
-            embed = Embed(
+            embed = discord.Embed(
                 title="🎉 Welcome!",
                 description=formatted_message,
                 color=discord.Color.purple()
@@ -68,16 +67,11 @@ class Welcome(commands.Cog):
             # Debug log
             print(f"{GREEN}[WELCOME]{RESET} Welcomed {YELLOW}{member.display_name}{RESET} to {BLUE}{member.guild.name}{RESET}")
 
-    @app_commands.command(name="setwelcome", description="Configure the welcome message settings.")
-    @app_commands.describe(
-        channel="The channel to send welcome messages to.",
-        message="The welcome message. Use {user} and {server}.",
-        role="Optional role to assign to new members."
-    )
-    async def set_welcome(self, interaction: Interaction, channel: discord.TextChannel, message: str, role: discord.Role = None):
-        debug_command("setwelcome", interaction.user, interaction.guild, channel=channel.name, role=role.name if role else None)
+    @commands.slash_command(name="setwelcome", description="Configure the welcome message settings.")
+    async def set_welcome(self, ctx: discord.ApplicationContext, channel: discord.TextChannel, message: str, role: discord.Role = None):
+        debug_command("setwelcome", ctx.author, ctx.guild, channel=channel.name, role=role.name if role else None)
 
-        guild_id = str(interaction.guild.id)
+        guild_id = str(ctx.guild.id)
 
         self.welcome_config[guild_id] = {
             "channel_id": str(channel.id),
@@ -87,34 +81,34 @@ class Welcome(commands.Cog):
 
         save_welcome_config(self.welcome_config)
 
-        embed = Embed(
+        embed = discord.Embed(
             title="✅ Welcome Configuration Set",
             description=f"Welcome messages will be sent in {channel.mention}.\nMessage: `{message}`\nRole: {role.mention if role else 'None'}",
             color=discord.Color.green()
         )
-        await interaction.response.send_message(embed=embed)
+        await ctx.respond(embed=embed)
 
-    @app_commands.command(name="welcomeconfig", description="Show current welcome message configuration.")
-    async def welcome_config_show(self, interaction: Interaction):
-        debug_command("welcomeconfig", interaction.user, interaction.guild)
+    @commands.slash_command(name="welcomeconfig", description="Show current welcome message configuration.")
+    async def welcome_config_show(self, ctx: discord.ApplicationContext):
+        debug_command("welcomeconfig", ctx.author, ctx.guild)
 
-        guild_id = str(interaction.guild.id)
+        guild_id = str(ctx.guild.id)
         config = self.welcome_config.get(guild_id)
 
         if not config:
-            embed = Embed(
+            embed = discord.Embed(
                 title="❌ No Welcome Configuration",
                 description="No welcome message has been set for this server.",
                 color=discord.Color.red()
             )
-            await interaction.response.send_message(embed=embed)
+            await ctx.respond(embed=embed)
             return
 
         channel = self.bot.get_channel(int(config['channel_id']))
-        role = interaction.guild.get_role(int(config['role_id'])) if config.get('role_id') else None
+        role = ctx.guild.get_role(int(config['role_id'])) if config.get('role_id') else None
         message = config.get("message", "")
 
-        embed = Embed(
+        embed = discord.Embed(
             title="📋 Welcome Configuration",
             description=(
                 f"**Channel:** {channel.mention if channel else 'Unknown'}\n"
@@ -123,7 +117,7 @@ class Welcome(commands.Cog):
             ),
             color=discord.Color.blue()
         )
-        await interaction.response.send_message(embed=embed)
+        await ctx.respond(embed=embed)
 
 # --- Cog setup ---
 async def setup(bot):

@@ -1,5 +1,6 @@
 import discord
-discord.utils.setup_logging(level=discord.LogLevel.DEBUG)
+import logging
+discord.utils.setup_logging(level=logging.DEBUG)
 import os
 from discord.ext import commands
 from discord import app_commands

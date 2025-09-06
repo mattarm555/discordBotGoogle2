@@ -85,26 +85,16 @@ class Music(commands.Cog):
         print(f"{YELLOW}[INFO]{RESET} Cleared all queues at startup.")
 
     async def safe_connect(self, interaction):
-        """Smarter safe connect: only disconnect if the client is dead or broken, else reuse."""
+        """Force a clean disconnect before joining to kill zombie sessions."""
         vc = interaction.guild.voice_client
-        if vc and vc.is_connected():
-            # Already connected, reuse it
-            return vc
-
-        # If a zombie connection exists, clean it up first
         if vc:
-            await vc.disconnect(force=True)
+            await vc.disconnect(force=True)  # Kill zombie session
 
         try:
             return await interaction.user.voice.channel.connect()
-        except discord.errors.ConnectionClosed as e:
-            if e.code == 4006:
-                print(f"{RED}⚠️ WebSocket closed with 4006. Retrying...{RESET}")
-                await asyncio.sleep(1)
-                return await interaction.user.voice.channel.connect()
-            else:
-                print(f"{RED}❌ Voice connect error: {e}{RESET}")
-                raise
+        except Exception as e:
+            print(f"{RED}❌ Voice connect failed: {e}{RESET}")
+            raise
 
 
     def get_yt_info(self, query):

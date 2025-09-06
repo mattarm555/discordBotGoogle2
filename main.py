@@ -42,10 +42,10 @@ class JengBot(commands.Bot):
                 except Exception as e:
                     print(f"{RED}❌ Failed to load {filename}:{RESET} {e}")
 
-        # Register /sync command
+        # Register /synccommands command
         self.tree.add_command(self.sync_commands)
 
-    @app_commands.command(name="sync", description="Manually sync slash commands to this server.")
+    @app_commands.command(name="synccommands", description="Manually sync slash commands to this server.")
     async def sync_commands(self, interaction: discord.Interaction):
         if interaction.user.id != YOUR_USER_ID:
             await interaction.response.send_message("❌ You are not authorized.", ephemeral=True)

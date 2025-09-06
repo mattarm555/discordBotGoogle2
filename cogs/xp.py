@@ -95,6 +95,14 @@ class XP(commands.Cog):
                 )
                 embed.set_thumbnail(url=message.author.avatar.url if message.author.avatar else message.author.default_avatar.url)
                 await message.channel.send(embed=embed)
+                # Assign role if configured for this level
+                level_roles = config.get("level_roles", {})
+                new_level = self.xp_data[guild_id][str(message.author.id)]["level"]
+                role_id = level_roles.get(str(new_level))
+                if role_id:
+                    role = message.guild.get_role(int(role_id))
+                    if role and role not in message.author.roles:
+                        await message.author.add_roles(role, reason="Level up reward")
             except discord.Forbidden:
                 pass
 

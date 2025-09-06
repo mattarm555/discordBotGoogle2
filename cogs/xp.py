@@ -33,10 +33,24 @@ def debug_command(name, user, guild, **kwargs):
             print(f"  {key}: {value}")
 
 class XP(commands.Cog):
+    def has_bot_admin(self, member: discord.Member):
+        guild_id = str(member.guild.id)
+        config = self.get_xp_config(guild_id)
+        perms = config.get("permissions_roles", [])
+        # Check if user is admin or has a bot-admin role
+        if member.guild_permissions.administrator:
+            return True
+        for role in member.roles:
+            if str(role.id) in perms:
+                return True
+        return False
+
     @app_commands.command(name="setlevelrole", description="Set which role is given at a specific level.")
     @app_commands.describe(level="Level number", role="Role to assign")
-    @app_commands.checks.has_permissions(administrator=True)
     async def setlevelrole(self, interaction: Interaction, level: int, role: discord.Role):
+        if not self.has_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
         guild_id = str(interaction.guild.id)
         config = self.get_xp_config(guild_id)
         config.setdefault("level_roles", {})[str(level)] = str(role.id)
@@ -168,12 +182,13 @@ class XP(commands.Cog):
     @app_commands.command(name="xpset", description="Set how much XP is earned per message.")
     @app_commands.describe(amount="XP amount per message")
     async def xpset(self, interaction: Interaction, amount: int):
+        if not self.has_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
         debug_command("xpset", interaction.user, interaction.guild, amount=amount)
-
         guild_id = str(interaction.guild.id)
         self.get_xp_config(guild_id)["xp_per_message"] = amount
         save_json(CONFIG_FILE, self.config)
-
         embed = Embed(
             title="✅ XP Updated",
             description=f"XP per message set to {amount}.",
@@ -184,15 +199,15 @@ class XP(commands.Cog):
     @app_commands.command(name="xpblock", description="Block XP gain in a channel.")
     @app_commands.describe(channel="The channel to block")
     async def xpblock(self, interaction: Interaction, channel: discord.TextChannel):
+        if not self.has_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
         debug_command("xpblock", interaction.user, interaction.guild, blocked=channel.name)
-
         guild_id = str(interaction.guild.id)
         config = self.get_xp_config(guild_id)
-
         if str(channel.id) not in config["blocked_channels"]:
             config["blocked_channels"].append(str(channel.id))
             save_json(CONFIG_FILE, self.config)
-
         embed = Embed(
             title="🚫 XP Blocked",
             description=f"XP disabled in {channel.mention}.",
@@ -203,15 +218,15 @@ class XP(commands.Cog):
     @app_commands.command(name="xpunblock", description="Unblock XP gain in a channel.")
     @app_commands.describe(channel="The channel to unblock")
     async def xpunblock(self, interaction: Interaction, channel: discord.TextChannel):
+        if not self.has_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
         debug_command("xpunblock", interaction.user, interaction.guild, unblocked=channel.name)
-
         guild_id = str(interaction.guild.id)
         config = self.get_xp_config(guild_id)
-
         if str(channel.id) in config["blocked_channels"]:
             config["blocked_channels"].remove(str(channel.id))
             save_json(CONFIG_FILE, self.config)
-
         embed = Embed(
             title="✅ XP Unblocked",
             description=f"XP enabled in {channel.mention}.",
@@ -221,15 +236,15 @@ class XP(commands.Cog):
 
     @app_commands.command(name="xpconfig", description="Show current XP settings.")
     async def xpconfig(self, interaction: Interaction):
+        if not self.has_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
         debug_command("xpconfig", interaction.user, interaction.guild)
-
         guild_id = str(interaction.guild.id)
         config = self.get_xp_config(guild_id)
-
         amount = config.get("xp_per_message", 10)
         blocked = config.get("blocked_channels", [])
         blocked_channels = [f"<#{cid}>" for cid in blocked]
-
         embed = Embed(title="⚙️ XP Settings", color=discord.Color.blurple())
         embed.add_field(name="XP per message", value=amount, inline=False)
         embed.add_field(

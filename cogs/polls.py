@@ -140,5 +140,37 @@ class Polls(commands.Cog):
         await msg.edit(embed=result_embed)
 
 # --- Cog setup ---
+    async def poll(
+        self,
+        interaction: Interaction,
+        question: str,
+        duration_minutes: int,
+        option1_text: str, option1_emoji: str,
+        option2_text: str, option2_emoji: str,
+        option3_text: str = None, option3_emoji: str = None,
+        option4_text: str = None, option4_emoji: str = None,
+        option5_text: str = None, option5_emoji: str = None,
+        option6_text: str = None, option6_emoji: str = None
+    ):
+        # Permission check
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        debug_command(
+            "poll", interaction.user, interaction.guild,
+            question=question,
+            duration=f"{duration_minutes} min",
+            options={f"{text}": emoji for text, emoji in [
+                (option1_text, option1_emoji),
+                (option2_text, option2_emoji),
+                (option3_text, option3_emoji),
+                (option4_text, option4_emoji),
+                (option5_text, option5_emoji),
+                (option6_text, option6_emoji)
+            ] if text}
+        )
+
+# --- Cog Setup ---
 async def setup(bot):
     await bot.add_cog(Polls(bot))

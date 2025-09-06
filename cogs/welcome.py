@@ -75,18 +75,18 @@ class Welcome(commands.Cog):
         role="Optional role to assign to new members."
     )
     async def set_welcome(self, interaction: Interaction, channel: discord.TextChannel, message: str, role: discord.Role = None):
+        # Permission check
+        if not interaction.user.guild_permissions.administrator and not (role and role in interaction.user.roles):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
         debug_command("setwelcome", interaction.user, interaction.guild, channel=channel.name, role=role.name if role else None)
-
         guild_id = str(interaction.guild.id)
-
         self.welcome_config[guild_id] = {
             "channel_id": str(channel.id),
             "message": message,
             "role_id": str(role.id) if role else None
         }
-
         save_welcome_config(self.welcome_config)
-
         embed = Embed(
             title="✅ Welcome Configuration Set",
             description=f"Welcome messages will be sent in {channel.mention}.\nMessage: `{message}`\nRole: {role.mention if role else 'None'}",
@@ -96,11 +96,13 @@ class Welcome(commands.Cog):
 
     @app_commands.command(name="welcomeconfig", description="Show current welcome message configuration.")
     async def welcome_config_show(self, interaction: Interaction):
+        # Permission check
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
         debug_command("welcomeconfig", interaction.user, interaction.guild)
-
         guild_id = str(interaction.guild.id)
         config = self.welcome_config.get(guild_id)
-
         if not config:
             embed = Embed(
                 title="❌ No Welcome Configuration",
@@ -109,11 +111,9 @@ class Welcome(commands.Cog):
             )
             await interaction.response.send_message(embed=embed)
             return
-
         channel = self.bot.get_channel(int(config['channel_id']))
         role = interaction.guild.get_role(int(config['role_id'])) if config.get('role_id') else None
         message = config.get("message", "")
-
         embed = Embed(
             title="📋 Welcome Configuration",
             description=(
@@ -121,7 +121,7 @@ class Welcome(commands.Cog):
                 f"**Message:** `{message}`\n"
                 f"**Role:** {role.mention if role else 'None'}"
             ),
-            color=discord.Color.blue()
+            color=discord.Color.blurple()
         )
         await interaction.response.send_message(embed=embed)
 

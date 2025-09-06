@@ -76,8 +76,11 @@ class Events(commands.Cog):
         description="Top message in the embed (e.g., RSVP instructions)"
     )
     async def event(self, interaction: Interaction, title: str, time: str, location: str, details: str = "", description: str = "Click a button to RSVP!"):
+        # Permission check
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
         await interaction.response.defer()
-
         debug_command(
             "event", interaction.user, interaction.guild,
             title=title,
@@ -86,7 +89,6 @@ class Events(commands.Cog):
             details=details,
             description=description
         )
-
         view = RSVPView(
             creator=interaction.user,
             title=title,
@@ -95,7 +97,6 @@ class Events(commands.Cog):
             details=details,
             description=description
         )
-
         embed = view.format_embed()
         msg = await interaction.followup.send(embed=embed, view=view, wait=True)
         view.message = msg

@@ -52,6 +52,82 @@ class HelpPaginator(ui.View):
             await interaction.response.defer()
 
 class Misc(commands.Cog):
+    @app_commands.command(name="listpermissions", description="List all roles with bot admin permissions for this server.")
+    async def listpermissions(self, interaction: Interaction):
+        CONFIG_FILE = "xp_config.json"
+        def load_json(file):
+            import os, json
+            if os.path.exists(file):
+                with open(file, "r") as f:
+                    return json.load(f)
+            return {}
+        config = load_json(CONFIG_FILE)
+        guild_id = str(interaction.guild.id)
+        perms = config.get(guild_id, {}).get("permissions_roles", [])
+        if not perms:
+            await interaction.response.send_message("No roles have bot admin permissions.", ephemeral=True)
+            return
+        role_mentions = []
+        for role_id in perms:
+            role = interaction.guild.get_role(int(role_id))
+            if role:
+                role_mentions.append(role.mention)
+        if role_mentions:
+            await interaction.response.send_message("Roles with bot admin permissions: " + ", ".join(role_mentions), ephemeral=True)
+        else:
+            await interaction.response.send_message("No valid roles found in bot admin permissions.", ephemeral=True)
+    
+    @app_commands.command(name="removepermissions", description="Remove a role from bot admin permissions for this server.")
+    @app_commands.describe(role="Role to remove from bot admin permissions")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def removepermissions(self, interaction: Interaction, role: discord.Role):
+        CONFIG_FILE = "xp_config.json"
+        def load_json(file):
+            import os, json
+            if os.path.exists(file):
+                with open(file, "r") as f:
+                    return json.load(f)
+            return {}
+        def save_json(file, data):
+            import json
+            with open(file, "w") as f:
+                json.dump(data, f, indent=4)
+        config = load_json(CONFIG_FILE)
+        guild_id = str(interaction.guild.id)
+        perms = config.setdefault(guild_id, {}).setdefault("permissions_roles", [])
+        if str(role.id) in perms:
+            perms.remove(str(role.id))
+            save_json(CONFIG_FILE, config)
+            await interaction.response.send_message(f"Role {role.mention} removed from bot admin permissions.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"Role {role.mention} is not a bot admin.", ephemeral=True)
+    
+    @app_commands.command(name="setpermissions", description="Set a role as bot admin for this server.")
+    @app_commands.describe(role="Role to grant bot admin permissions")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setpermissions(self, interaction: Interaction, role: discord.Role):
+        # Load config
+        CONFIG_FILE = "xp_config.json"
+        def load_json(file):
+            import os, json
+            if os.path.exists(file):
+                with open(file, "r") as f:
+                    return json.load(f)
+            return {}
+        def save_json(file, data):
+            import json
+            with open(file, "w") as f:
+                json.dump(data, f, indent=4)
+        config = load_json(CONFIG_FILE)
+        guild_id = str(interaction.guild.id)
+        perms = config.setdefault(guild_id, {}).setdefault("permissions_roles", [])
+        if str(role.id) not in perms:
+            perms.append(str(role.id))
+            save_json(CONFIG_FILE, config)
+            await interaction.response.send_message(f"Role {role.mention} added as bot admin.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"Role {role.mention} is already a bot admin.", ephemeral=True)
+    
     def __init__(self, bot):
         self.bot = bot
         self.league_champions = [  # Truncated for brevity

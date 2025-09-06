@@ -33,6 +33,15 @@ def debug_command(name, user, guild, **kwargs):
             print(f"  {key}: {value}")
 
 class XP(commands.Cog):
+    @app_commands.command(name="setlevelrole", description="Set which role is given at a specific level.")
+    @app_commands.describe(level="Level number", role="Role to assign")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setlevelrole(self, interaction: Interaction, level: int, role: discord.Role):
+        guild_id = str(interaction.guild.id)
+        config = self.get_xp_config(guild_id)
+        config.setdefault("level_roles", {})[str(level)] = str(role.id)
+        save_json(CONFIG_FILE, self.config)
+        await interaction.response.send_message(f"Role {role.mention} will now be assigned at level {level}.", ephemeral=True)
     def __init__(self, bot):
         self.bot = bot
         self.xp_data = load_json(XP_FILE)
@@ -40,7 +49,7 @@ class XP(commands.Cog):
 
     def get_xp_config(self, guild_id):
         if guild_id not in self.config:
-            self.config[guild_id] = {"xp_per_message": 10, "blocked_channels": []}
+            self.config[guild_id] = {"xp_per_message": 10, "blocked_channels": [], "level_roles": {}}
         return self.config[guild_id]
 
     def add_xp(self, member: discord.Member, amount: int):

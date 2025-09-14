@@ -107,6 +107,7 @@ class Music(commands.Cog):
             'default_search': 'ytsearch',
             'extract_flat': 'in_playlist' if is_playlist else False,
             'cookiefile': COOKIE_FILE,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -118,6 +119,7 @@ class Music(commands.Cog):
             'quiet': True,
             'noplaylist': True,
             'cookiefile': COOKIE_FILE,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

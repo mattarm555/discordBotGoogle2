@@ -42,11 +42,15 @@ class Follow(commands.Cog):
         self.session = aiohttp.ClientSession()
         # concurrency limiter for parallel checks
         self._sem = asyncio.Semaphore(10)
+        # per-channel locks to avoid interleaving pings/messages for multiple subs
+        self._channel_locks: dict[int, asyncio.Lock] = {}
         # Twitch token cache
         self._twitch_token = None
         self._twitch_token_expiry = 0.0
         # background worker
-        self.worker_task = bot.loop.create_task(self.worker())
+        # Use asyncio.create_task to schedule the worker on the running loop.
+        # Using bot.loop.create_task can fail silently with some event loop setups.
+        self.worker_task = asyncio.create_task(self.worker())
 
     async def cog_unload(self):
         self.worker_task.cancel()
@@ -71,6 +75,48 @@ class Follow(commands.Cog):
                 return m.group(1)
         except Exception:
             logger.exception("[Follow] Error fetching YouTube thumbnail")
+        return None
+
+    async def _resolve_youtube_handle(self, identifier: str) -> str | None:
+        """Resolve YouTube handle or @username pages to a canonical channel id (UC...).
+
+        Accepts forms like:
+        - https://www.youtube.com/@handle
+        - @handle
+        - youtube.com/@handle
+        Returns a channel id (UC...) when possible, otherwise None.
+        """
+        try:
+            # Normalize simple handle forms
+            ident = identifier.strip()
+            if ident.startswith('@'):
+                url = f'https://www.youtube.com/{ident}'
+            elif ident.startswith('http') and '/@' in ident:
+                url = ident
+            elif ident.startswith('www.youtube.com/@') or ident.startswith('youtube.com/@'):
+                if not ident.startswith('http'):
+                    url = 'https://' + ident
+                else:
+                    url = ident
+            else:
+                return None
+
+            text = await self._fetch_text(url)
+            if not text:
+                return None
+            # Look for canonical channel link or og:url containing /channel/UC...
+            m = re.search(r'href="(/channel/(UC[A-Za-z0-9_-]{20,}))"', text)
+            if m:
+                return m.group(1).split('/')[-1]
+            m = re.search(r'property="og:url" content="https?://www\.youtube\.com/channel/(UC[A-Za-z0-9_-]{20,})"', text)
+            if m:
+                return m.group(1)
+            # Another fallback: look for canonical link tag
+            m = re.search(r'<link rel="canonical" href="https?://www\.youtube\.com/channel/(UC[A-Za-z0-9_-]{20,})"', text)
+            if m:
+                return m.group(1)
+        except Exception:
+            logger.exception("[Follow] Error resolving YouTube handle")
         return None
 
 
@@ -122,6 +168,13 @@ class Follow(commands.Cog):
         try:
             if platform.lower() == 'youtube':
                 # Build feed URL similar to check_youtube
+                # handle-style identifiers may be like youtube.com/@handle or @handle
+                resolved_channel = None
+                if ('@' in identifier) or identifier.startswith('@') or ('/@' in identifier):
+                    try:
+                        resolved_channel = await self._resolve_youtube_handle(identifier)
+                    except Exception:
+                        logger.exception("[Follow] Error resolving youtube handle during follow validation")
                 if identifier.startswith('http'):
                     if 'channel/' in identifier:
                         channel_part = identifier.split('channel/')[-1].split('/')[0]
@@ -130,12 +183,20 @@ class Follow(commands.Cog):
                         user_part = identifier.split('user/')[-1].split('/')[0]
                         feed_url = f"https://www.youtube.com/feeds/videos.xml?user={user_part}"
                     else:
-                        feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={identifier}"
+                        # if we resolved a channel id from a handle, use that
+                        if resolved_channel:
+                            feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={resolved_channel}"
+                        else:
+                            feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={identifier}"
                 else:
                     if identifier.startswith('UC'):
                         feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={identifier}"
                     else:
-                        feed_url = f"https://www.youtube.com/feeds/videos.xml?user={identifier}"
+                        # if we resolved a channel id from a handle, use that
+                        if resolved_channel:
+                            feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={resolved_channel}"
+                        else:
+                            feed_url = f"https://www.youtube.com/feeds/videos.xml?user={identifier}"
                 # after building feed_url, verify the feed is reachable
                 feed_text = await self._fetch_text(feed_url)
                 if not feed_text:
@@ -521,181 +582,75 @@ class Follow(commands.Cog):
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def check_youtube(self, sub, guild_id, force: bool = False):
-        # support channel id or user or full URL
+        # Use YouTube Data API v3 to fetch the latest upload for a channel.
+        api_key = os.getenv("YOUTUBE_API_KEY")
+        if not api_key:
+            logger.warning("[Follow] Skipping YouTube check: YOUTUBE_API_KEY not set")
+            return
+
         ident = sub.get("identifier")
-        # minimal per-check logging: we'll log feed fetch and the final outcome
-        if ident.startswith("http"):
-            # try to extract channel_id or user param
-            if "channel/" in ident:
-                channel_part = ident.split("channel/")[-1].split("/")[0]
-                feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_part}"
-            elif "user/" in ident:
-                user_part = ident.split("user/")[-1].split("/")[0]
-                feed_url = f"https://www.youtube.com/feeds/videos.xml?user={user_part}"
-            else:
-                # fallback: attempt to use as channel_id
-                feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={ident}"
-        else:
-            # if looks like UC... treat as channel id, else treat as user
-            if ident.startswith("UC"):
-                feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={ident}"
-            else:
-                feed_url = f"https://www.youtube.com/feeds/videos.xml?user={ident}"
-        # log feed url for diagnostics
+        # Resolve handle-style identifiers to a channel id starting with UC...
         try:
-            logger.debug(f"[Follow] YouTube feed URL for {ident}: {feed_url}")
+            if ident and (ident.startswith('@') or ('/@' in ident) or '/@' in ident or (ident.startswith('http') and '/@' in ident)):
+                resolved = await self._resolve_youtube_handle(ident)
+                if resolved:
+                    ident = resolved
         except Exception:
-            pass
-        # RSS-only: fetch feed with retries/backoff
-        vid = None
-        title = None
-        video_url = None
-        # fetch feed with retries/backoff
-        # Some servers (YouTube) may respond differently depending on User-Agent; provide a common UA
-        headers = {'User-Agent': 'Mozilla/5.0 (compatible; jengbot/1.0)'}
-        text = await self._fetch_text(feed_url, headers=headers)
-        if text:
-            try:
-                logger.debug(f"[Follow] Fetched feed for {ident}: {len(text)} bytes; preview: {text[:400]}")
-            except Exception:
-                pass
-        if not text:
-            logger.debug(f"[Follow] Skipping YouTube check: failed to fetch feed for {ident} ({feed_url})")
-            return
-        # parse XML
-        try:
-            root = ET.fromstring(text)
-        except ET.ParseError:
-            logger.exception(f"[Follow] Failed to parse XML for {feed_url}")
-            logger.debug(f"[Follow] Raw feed content (truncated): {text[:2000]}")
-            return
-        # namespace handling (atom + youtube)
-        ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
-        # Find first entry
-        entry = root.find('atom:entry', ns)
-        if entry is None:
-            # no videos
-            return
-        # Extract video id robustly: prefer yt:videoId, fallback to link href (v= or last path segment)
-        try:
-            video_id_elem = entry.find('yt:videoId', ns)
-            if video_id_elem is not None and (video_id_elem.text and video_id_elem.text.strip()):
-                vid = video_id_elem.text.strip()
-            else:
-                # try link href patterns
-                link = entry.find('atom:link', ns)
-                if link is not None:
-                    href = link.attrib.get('href', '')
-                    # common patterns: https://www.youtube.com/watch?v=VIDEOID or https://youtu.be/VIDEOID
-                    if 'v=' in href:
-                        vid = href.split('v=')[-1].split('&')[0]
-                    else:
-                        # try last path segment
-                        parts = href.rstrip('/').split('/')
-                        if parts:
-                            vid = parts[-1]
-                else:
-                    # as a last resort, try parsing the entry text for youtube shortlinks
-                    txt = ET.tostring(entry, encoding='unicode')
-                    m = re.search(r'(?:youtu\.be/|v=)([A-Za-z0-9_-]{6,})', txt)
-                    if m:
-                        vid = m.group(1)
+            logger.exception("[Follow] Error resolving youtube handle in check_youtube")
 
-            # published date (if present) for diagnostics
-            pub_elem = entry.find('atom:published', ns)
-            published = pub_elem.text.strip() if (pub_elem is not None and pub_elem.text) else None
+        # If the identifier is a URL, try to pull out a channel id if present
+        if ident and ident.startswith('http'):
+            if 'channel/' in ident:
+                ident = ident.split('channel/')[-1].split('/')[0]
 
-            # title and video_url
-            title_elem = entry.find('title')
-            title = title_elem.text.strip() if (title_elem is not None and title_elem.text) else None
-            video_url = f"https://youtu.be/{vid}" if vid else None
-            # keep parsing internal; we'll only log a short summary later to reduce noise
-        except Exception:
-            logger.exception(f"[Follow] Exception extracting video id/title for {feed_url}")
-            logger.debug(f"[Follow] Entry raw XML: {ET.tostring(entry, encoding='unicode')}")
+        # Only channelId (UC...) is supported for the search endpoint with channel filtering
+        if not ident or not str(ident).startswith('UC'):
+            logger.debug(f"[Follow] YouTube check skipped: identifier {ident} is not a channel ID (UC...); please use a channel id or let handle resolution run during follow registration")
             return
 
-        # Normalize last_seen and vid to strings for reliable comparison
+        # Call the search endpoint to get the most recent upload for the channel
+        url = 'https://www.googleapis.com/youtube/v3/search'
+        params = {
+            'key': api_key,
+            'channelId': ident,
+            'part': 'snippet,id',
+            'order': 'date',
+            'maxResults': 1,
+            # restrict to video type only
+            'type': 'video'
+        }
+
+        data = await self._fetch_json(url, params=params)
+        if not data or 'items' not in data or not data['items']:
+            logger.debug(f"[Follow] YouTube API returned no items for channel {ident}")
+            return
+
+        item = data['items'][0]
+        vid = item.get('id', {}).get('videoId')
+        title = item.get('snippet', {}).get('title', 'New video')
+        if not vid:
+            logger.debug(f"[Follow] YouTube API item missing videoId for channel {ident}")
+            return
+
+        vid_norm = str(vid).strip()
         last = sub.get('last_seen')
         if last is not None:
             try:
                 last = str(last).strip()
             except Exception:
-                last = last
-        vid_norm = str(vid).strip() if vid else None
-        if not force and last and vid_norm and last == vid_norm:
+                pass
+
+        if not force and last and vid_norm == last:
             logger.debug(f"[Follow] YouTube no-new: {ident} (video {vid_norm}) already seen")
             return
 
-        # new video — build url and message
-        video_url = f"https://youtu.be/{vid}"
-        title_elem = entry.find('title')
-        title = title_elem.text if title_elem is not None else video_url
+        video_url = f"https://youtu.be/{vid_norm}"
 
-        # post to channel
-        guild = self.bot.get_guild(int(guild_id))
-        if not guild:
-            return
-        channel = guild.get_channel(sub.get('post_channel'))
-        if not channel:
-            return
+        # New video found → post
         try:
-            msg = sub.get('message', 'New content: {url}')
-            # build ping prefix from ping_target and ping_role
-            ping_target = sub.get('ping_target') or 'none'
-            ping_role_id = sub.get('ping_role')
-            ping_parts = []
-            if ping_target == 'everyone':
-                ping_parts.append('@everyone')
-            elif ping_target == 'role' and ping_role_id:
-                try:
-                    role = guild.get_role(int(ping_role_id)) if guild else None
-                except Exception:
-                    role = None
-                if role:
-                    ping_parts.append(role.mention)
-                else:
-                    ping_parts.append(f"<@&{ping_role_id}>")
-            ping_prefix = ' '.join(ping_parts)
-
-            # build content text from template and ensure the video URL is present
-            content_text = msg.replace('{url}', video_url).replace('{title}', title).replace('{channel}', ident)
-            # If the template doesn't already contain any YouTube link (youtu.be or youtube.com/watch),
-            # append the canonical youtu.be link to guarantee a clickable video URL appears.
-            contains_youtube_link = bool(re.search(r"(?i)(youtu\.be/|youtube\.com/watch\?|youtube\.com/shorts/|youtube\.com/)", content_text))
-            if vid_norm and not contains_youtube_link:
-                append_url = f"https://youtu.be/{vid_norm}"
-                content_text = content_text + ("\n" if content_text and not content_text.endswith("\n") else "") + append_url
-
-            # detect mentions anywhere in the content_text (handles Discord mention tokens and plain @role/user text)
-            body_has_mention = bool(re.search(r"(?i)(<@|<@&|@+everyone|@+here|(?<!\S)@+[\w-]+)", content_text))
-            final_content = ping_prefix if (ping_prefix and not body_has_mention) else None
-
-            # send ping first if needed (and template doesn't already include mention)
-            if final_content:
-                try:
-                    await channel.send(content=final_content)
-                except Exception:
-                    logger.exception(f"[Follow] Failed to send ping message to {channel}")
-
-            # send the plain message with the link and template replacements
-            try:
-                # check bot perms before sending
-                try:
-                    bot_member = guild.me
-                    perms = channel.permissions_for(bot_member) if bot_member else channel.permissions_for(guild.get_member(self.bot.user.id))
-                except Exception:
-                    logger.exception("[Follow] Failed to check bot perms")
-
-                await channel.send(content=content_text)
-                # update last_seen after successful post (store normalized vid)
-                sub['last_seen'] = vid_norm
-                save_followings(self.followings)
-                logger.info(f"[Follow] Posted new YouTube video for {ident} to {channel} (vid={vid_norm} url={video_url})")
-            except Exception:
-                logger.exception(f"[Follow] Failed to post to channel {channel}")
+            await self._post_youtube(sub, guild_id, vid_norm, video_url, title, ident)
         except Exception:
-            logger.exception(f"[Follow] Failed to post to channel {channel}")
+            logger.exception(f"[Follow] Failed to post YouTube video for {ident}")
 
     async def check_twitch(self, sub, guild_id):
         # Twitch support requires client id/secret and is optional
@@ -773,25 +728,40 @@ class Follow(commands.Cog):
 
         # build content and embed text
         content_text = msg.replace('{url}', url).replace('{title}', title).replace('{channel}', username)
+        # If the template doesn't already contain a twitch link, append the canonical channel URL so the link is always posted.
+        contains_twitch_link = bool(re.search(r"(?i)(twitch\.tv/|clips\.twitch\.tv/)", content_text))
+        if not contains_twitch_link:
+            append_url = url
+            content_text = content_text + ("\n" if content_text and not content_text.endswith("\n") else "") + append_url
+            logger.info(f"[Follow] Appended Twitch channel URL for {username}: {append_url}")
+
         # avoid double-pinging if the template already contains a mention anywhere (including plain @role/user)
         # detect mentions, including repeated leading @ like @@everyone
         body_has_mention = bool(re.search(r"(?i)(<@|<@&|@+everyone|@+here|(?<!\S)@+[\w-]+)", content_text))
         logger.debug(f"[Follow] Twitch post ping_role={ping_role_id} body_has_mention={body_has_mention}")
 
         final_content = ping_prefix if (ping_prefix and not body_has_mention) else None
-        # send ping first if needed
-        if final_content:
-            try:
-                await channel.send(content=final_content)
-            except Exception:
-                logger.exception(f"[Follow] Failed to send ping message to {channel}")
+        # send ping+message under the channel lock to avoid interleaving with other subs
+        lock = self._get_channel_lock(channel.id)
+        async with lock:
+            # send ping first if needed
+            if final_content:
+                try:
+                    logger.info(f"[Follow] Sending ping to {channel} for Twitch {username}: {final_content}")
+                    await channel.send(content=final_content)
+                except Exception:
+                    logger.exception(f"[Follow] Failed to send ping message to {channel}")
 
-        # send plain message (no embed) with the template replacements
-        try:
-            await channel.send(content=content_text)
-            logger.info(f"[Follow] Posted Twitch live for {username} to {channel}")
-        except Exception:
-            logger.exception(f"[Follow] Failed to post twitch to {channel}")
+            # send plain message (no embed) with the template replacements
+            try:
+                if not content_text or not str(content_text).strip():
+                    logger.info(f"[Follow] Skipping Twitch send: content_text empty for {username}")
+                else:
+                    logger.info(f"[Follow] Sending Twitch post to {channel} for {username}: title={title}")
+                    await channel.send(content=content_text)
+                    logger.info(f"[Follow] Posted Twitch live for {username} to {channel}")
+            except Exception:
+                logger.exception(f"[Follow] Failed to post twitch to {channel}")
 
         sub['last_seen'] = stream_id
         save_followings(self.followings)
@@ -800,12 +770,15 @@ class Follow(commands.Cog):
         for attempt in range(retries):
             try:
                 async with self.session.get(url, params=params, headers=headers, timeout=30) as resp:
-                    if resp.status == 200:
+                    status = resp.status
+                    if status != 200:
+                        logger.info(f"[Follow] fetch_text status={status} for {url}")
+                    if status == 200:
                         return await resp.text()
                     else:
-                        logger.debug(f"[Follow] fetch_text non-200 {resp.status} for {url}")
+                        logger.debug(f"[Follow] fetch_text non-200 {status} for {url}")
             except Exception as e:
-                logger.debug(f"[Follow] fetch_text error on attempt {attempt+1} for {url}: {e}")
+                logger.info(f"[Follow] fetch_text error on attempt {attempt+1} for {url}: {e}")
             await asyncio.sleep(backoff * (attempt + 1))
         return None
 
@@ -818,6 +791,124 @@ class Follow(commands.Cog):
         except Exception:
             logger.exception(f"[Follow] Failed to parse JSON from {url}")
             return None
+
+    async def _post_youtube(self, sub, guild_id, vid_norm, video_url, title, ident):
+        """Send the YouTube post to the configured channel and update last_seen."""
+        guild = self.bot.get_guild(int(guild_id))
+        if not guild:
+            logger.info(f"[Follow] Guild {guild_id} not found for posting YouTube {ident}")
+            return
+        channel = guild.get_channel(sub.get('post_channel'))
+        if not channel:
+            logger.info(f"[Follow] Channel {sub.get('post_channel')} not found for guild {guild_id}")
+            return
+
+        msg = sub.get('message', 'New content: {url}')
+        # build ping prefix from ping_target and ping_role
+        ping_target = sub.get('ping_target') or 'none'
+        ping_role_id = sub.get('ping_role')
+        ping_parts = []
+        if ping_target == 'everyone':
+            ping_parts.append('@everyone')
+        elif ping_target == 'role' and ping_role_id:
+            try:
+                role = guild.get_role(int(ping_role_id)) if guild else None
+            except Exception:
+                role = None
+            if role:
+                ping_parts.append(role.mention)
+            else:
+                ping_parts.append(f"<@&{ping_role_id}>")
+        ping_prefix = ' '.join(ping_parts)
+
+        # build content text from template and ensure the video URL is present
+        content_text = msg.replace('{url}', video_url).replace('{title}', title).replace('{channel}', ident)
+        contains_youtube_link = bool(re.search(r"(?i)(youtu\.be/|youtube\.com/watch\?|youtube\.com/shorts/|youtube\.com/)", content_text))
+        if vid_norm and not contains_youtube_link:
+            append_url = f"https://youtu.be/{vid_norm}"
+            content_text = content_text + ("\n" if content_text and not content_text.endswith("\n") else "") + append_url
+
+        # detect mentions anywhere in the content_text
+        body_has_mention = bool(re.search(r"(?i)(<@|<@&|@+everyone|@+here|(?<!\S)@+[\w-]+)", content_text))
+        final_content = ping_prefix if (ping_prefix and not body_has_mention) else None
+
+        # Serialize ping+message for this channel to avoid interleaving with other subs
+        lock = self._get_channel_lock(channel.id)
+        async with lock:
+            # send ping first if needed
+            if final_content:
+                try:
+                    logger.info(f"[Follow] Sending ping to {channel} for {ident}: {final_content}")
+                    await channel.send(content=final_content)
+                except Exception:
+                    logger.exception(f"[Follow] Failed to send ping message to {channel}")
+
+            # send the plain message with the link and template replacements
+            try:
+                # check bot perms before sending
+                try:
+                    bot_member = guild.me
+                    perms = channel.permissions_for(bot_member) if bot_member else channel.permissions_for(guild.get_member(self.bot.user.id))
+                except Exception:
+                    logger.exception("[Follow] Failed to check bot perms")
+
+                # guard against empty content
+                if not content_text or not str(content_text).strip():
+                    logger.info(f"[Follow] Skipping send: content_text empty for {ident} (vid={vid_norm})")
+                else:
+                    logger.info(f"[Follow] Sending YouTube post to {channel} for {ident}: vid={vid_norm} title={title}")
+                    await channel.send(content=content_text)
+                    # update last_seen after successful post (store id-only)
+                    if vid_norm:
+                        sub['last_seen'] = vid_norm
+                    save_followings(self.followings)
+                    logger.info(f"[Follow] Posted new YouTube video for {ident} to {channel} (vid={vid_norm} url={video_url})")
+            except Exception:
+                logger.exception(f"[Follow] Failed to post to channel {sub.get('post_channel')}")
+
+        # end lock
+
+    def _get_channel_lock(self, channel_id: int) -> asyncio.Lock:
+        # create or return an asyncio.Lock for the given channel id
+        try:
+            cid = int(channel_id)
+        except Exception:
+            cid = channel_id
+        lock = self._channel_locks.get(cid)
+        if not lock:
+            lock = asyncio.Lock()
+            self._channel_locks[cid] = lock
+        return lock
+
+    def _extract_video_id(self, s: str) -> str | None:
+        """Extract a YouTube video id from a full URL or return the id if already provided.
+
+        Returns None if no id is found. Handles patterns like:
+        - https://youtu.be/VIDEOID
+        - https://www.youtube.com/watch?v=VIDEOID
+        - /watch?v=VIDEOID&...
+        - plain VIDEOID
+        """
+        if not s:
+            return None
+        try:
+            txt = str(s).strip()
+            # common patterns
+            m = re.search(r'(?:v=|youtu\.be/)([A-Za-z0-9_-]{6,})', txt)
+            if m:
+                return m.group(1)
+            # try last path segment if it's a URL
+            if '/' in txt:
+                parts = txt.rstrip('/').split('/')
+                last = parts[-1]
+                if re.fullmatch(r'[A-Za-z0-9_-]{6,}', last):
+                    return last
+            # if it's already just an id
+            if re.fullmatch(r'[A-Za-z0-9_-]{6,}', txt):
+                return txt
+        except Exception:
+            pass
+        return None
 
     async def _get_twitch_token(self, client_id, client_secret):
         now = time.time()

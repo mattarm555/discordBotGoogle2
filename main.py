@@ -98,6 +98,12 @@ if TOKEN:
         print(f"{GREEN}🔒 TWITCH_CLIENT_SECRET loaded.{RESET}")
     else:
         print(f"{YELLOW}⚠️ TWITCH_CLIENT_SECRET not set.{RESET}")
+        # Show YouTube API key status (do not print the key itself)
+        YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
+        if YOUTUBE_API_KEY:
+            print(f"{GREEN}🔒 YOUTUBE_API_KEY loaded.{RESET}")
+        else:
+            print(f"{YELLOW}⚠️ YOUTUBE_API_KEY not set.{RESET}")
     bot.run(TOKEN)
 else:
     print(f"{RED}❌ TOKEN not found in .env{RESET}")

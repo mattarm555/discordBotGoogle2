@@ -87,6 +87,17 @@ async def on_message_delete(message):
 # --- Run the bot ---
 if TOKEN:
     print(f"{GREEN}🔒 Token loaded. Starting bot...{RESET}")
+    # Show Twitch credential status (do not print secret values)
+    TWITCH_CLIENT_ID = os.getenv('TWITCH_CLIENT_ID')
+    TWITCH_CLIENT_SECRET = os.getenv('TWITCH_CLIENT_SECRET')
+    if TWITCH_CLIENT_ID:
+        print(f"{GREEN}🔒 TWITCH_CLIENT_ID loaded.{RESET}")
+    else:
+        print(f"{YELLOW}⚠️ TWITCH_CLIENT_ID not set.{RESET}")
+    if TWITCH_CLIENT_SECRET:
+        print(f"{GREEN}🔒 TWITCH_CLIENT_SECRET loaded.{RESET}")
+    else:
+        print(f"{YELLOW}⚠️ TWITCH_CLIENT_SECRET not set.{RESET}")
     bot.run(TOKEN)
 else:
     print(f"{RED}❌ TOKEN not found in .env{RESET}")

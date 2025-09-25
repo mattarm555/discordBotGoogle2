@@ -257,6 +257,9 @@ class Misc(commands.Cog):
         community_embed.add_field(name="/event", value="Create an interactive RSVP event.", inline=False)
         community_embed.add_field(name="/welcomeconfig", value="Show current welcome message configuration.", inline=False)
         community_embed.add_field(name="/setwelcome", value="Configure the welcome message settings.", inline=False)
+        community_embed.add_field(name="/follow <platform> <identifier> <post_channel>", value="Follow a YouTube or Twitch channel and post new content to a channel.", inline=False)
+        community_embed.add_field(name="/removefollow <sub_id>", value="Remove a follow subscription by ID (from /followlist).", inline=False)
+        community_embed.add_field(name="/followlist", value="List follow subscriptions for this server.", inline=False)
         community_embed.set_footer(text="Page 4/5")
         pages.append(community_embed)
 

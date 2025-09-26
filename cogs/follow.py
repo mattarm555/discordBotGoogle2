@@ -132,7 +132,14 @@ class Follow(commands.Cog):
     ])
     @app_commands.describe(platform="Platform (choose YouTube or Twitch)", identifier="Channel id, username, or URL", post_channel="Text channel to post into", ping_target="Who to ping when posting updates", ping_role="Optional role to ping (required if you choose 'Choose a role')", message="Message template (use {url}, {title}, {channel})")
     async def follow(self, interaction: Interaction, platform: str, identifier: str, post_channel: discord.TextChannel, ping_target: app_commands.Choice[str], ping_role: discord.Role = None, message: str = "New content: {url}"):
+        # Restrict this command to guild administrators or the bot owner
+        # Defer early so the user sees a response promptly when unauthorized
         await interaction.response.defer(thinking=True)
+        is_admin = interaction.user.guild_permissions.administrator
+        app_owner = await self.bot.application_info()
+        if not (is_admin or interaction.user.id == app_owner.owner.id):
+            await interaction.followup.send("❌ You do not have permission to use this command.", ephemeral=True)
+            return
 
         guild_id = str(interaction.guild.id)
         subs = self.followings.setdefault(guild_id, [])
@@ -318,6 +325,14 @@ class Follow(commands.Cog):
     @app_commands.command(name="removefollow", description="Remove a follow subscription")
     @app_commands.describe(sub_id="Subscription id from /follow_list")
     async def follow_remove(self, interaction: Interaction, sub_id: str):
+        # Restrict this command to guild administrators or the bot owner
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        is_admin = interaction.user.guild_permissions.administrator
+        app_owner = await self.bot.application_info()
+        if not (is_admin or interaction.user.id == app_owner.owner.id):
+            await interaction.followup.send("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+
         # try to find the subscription and log the followed channel link
         import hashlib
 
@@ -406,8 +421,15 @@ class Follow(commands.Cog):
         """
         import hashlib
 
-        debug_command("followlist", interaction.user, guild=interaction.guild, channel=interaction.channel)
+        # Restrict this command to guild administrators or the bot owner
         await interaction.response.defer(thinking=True)
+        is_admin = interaction.user.guild_permissions.administrator
+        app_owner = await self.bot.application_info()
+        if not (is_admin or interaction.user.id == app_owner.owner.id):
+            await interaction.followup.send("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+
+        debug_command("followlist", interaction.user, guild=interaction.guild, channel=interaction.channel)
         guild_id = str(interaction.guild.id)
         subs = self.followings.get(guild_id, [])
         if not subs:
@@ -509,47 +531,7 @@ class Follow(commands.Cog):
         except Exception:
             logger.exception("[Follow] Manual follow_check failed")
             await interaction.followup.send("❌ Manual check failed; see logs.", ephemeral=True)
-
-    @app_commands.command(name="follow_force", description="(DEBUG) Force-post the latest entry for a subscription (bypasses last_seen). Admin/debug use only.")
-    @app_commands.describe(sub_id="Subscription id (short or full) to force-post")
-    async def follow_force(self, interaction: Interaction, sub_id: str):
-        # restricted: only server admins or bot owner should use this; we keep it for testing
-        await interaction.response.defer(thinking=True, ephemeral=True)
-        import hashlib
-
-        guild_id = str(interaction.guild.id)
-        subs = self.followings.get(guild_id, [])
-
-        # resolve short id
-        found = None
-        if sub_id and len(sub_id) == 8 and all(c in '0123456789abcdef' for c in sub_id.lower()):
-            matches = [s for s in subs if hashlib.sha1(s.get('id','').encode('utf-8')).hexdigest().startswith(sub_id.lower())]
-            if len(matches) == 1:
-                found = matches[0]
-        if not found:
-            found = next((s for s in subs if s.get('id') == sub_id or s.get('identifier') == sub_id), None)
-
-        if not found:
-            await interaction.followup.send(f"❌ Subscription `{sub_id}` not found for this server.", ephemeral=True)
-            return
-
-        # Only allow guild admins or the bot owner to run this
-        is_admin = interaction.user.guild_permissions.administrator
-        app_owner = await self.bot.application_info()
-        if not (is_admin or interaction.user.id == app_owner.owner.id):
-            await interaction.followup.send("❌ You do not have permission to use this debug command.", ephemeral=True)
-            return
-
-        # call check_youtube with force=True when platform is youtube
-        try:
-            if found.get('platform') == 'youtube':
-                await self.check_youtube(found, guild_id, force=True)
-                await interaction.followup.send(f"✅ Forced check executed for subscription `{found.get('id')}`.", ephemeral=True)
-            else:
-                await interaction.followup.send("❌ This debug command currently only supports YouTube subscriptions.", ephemeral=True)
-        except Exception:
-            logger.exception("[Follow] follow_force failed")
-            await interaction.followup.send("❌ Forced check failed; see logs.", ephemeral=True)
+    
 
     async def worker(self):
         await self.bot.wait_until_ready()

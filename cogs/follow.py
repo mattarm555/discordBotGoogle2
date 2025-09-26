@@ -166,7 +166,7 @@ class Follow(commands.Cog):
                 if identifier.startswith('http'):
                     display_link = identifier
                 else:
-                    display_link = f'https://twitch.tv/{identifier.rstrip('/')}'
+                    display_link = f"https://twitch.tv/{identifier.rstrip('/')}"
         except Exception:
             display_link = identifier
 
@@ -387,7 +387,7 @@ class Follow(commands.Cog):
                 if ident.startswith('http'):
                     display_link = ident
                 else:
-                    display_link = f'https://twitch.tv/{ident.rstrip('/')}'
+                    display_link = f"https://twitch.tv/{ident.rstrip('/')}"
         else:
             display_link = sub_id
 

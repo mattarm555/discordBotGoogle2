@@ -7,6 +7,7 @@ import logging
 import hashlib
 from typing import Optional
 import random
+from utils.debug import debug_command
 
 logger = logging.getLogger('jeng.reactionroles')
 logger.setLevel(logging.INFO)
@@ -22,7 +23,7 @@ COLOR_PALETTE = [
     ("White", "#FFFFFF"),
     ("Silver", "#C0C0C0"),
     ("Gray", "#808080"),
-    ("Black", "#000000"),
+    ("Black", "#020202"),
     ("Red", "#FF0000"),
     ("Maroon", "#800000"),
     ("Yellow", "#FFFF00"),
@@ -67,6 +68,7 @@ class ReactionRoles(commands.Cog):
     @app_commands.describe(count='Number of color roles to create (1-15)', base_name='Base name for the roles')
     async def create_roles(self, interaction: Interaction, count: int, base_name: Optional[str] = 'Color'):
         await interaction.response.defer(thinking=True)
+        debug_command('reactionroles_create', interaction.user, guild=interaction.guild, count=count, base_name=base_name)
         # permission check
         is_admin = interaction.user.guild_permissions.manage_roles or interaction.user.guild_permissions.administrator
         app_owner = await self.bot.application_info()
@@ -91,11 +93,13 @@ class ReactionRoles(commands.Cog):
 
         # determine the top role position of the bot
         bot_top_pos = bot_member.top_role.position
-        # pick a random subset of colors and emojis so repeated creations vary
+        # pick a random subset of colors while preserving the universal emoji->color mapping
         created = []
         try:
-            color_choices = random.sample(COLOR_PALETTE, k=count)
-            emoji_choices = random.sample(COLOR_EMOJIS, k=count)
+            # sample indices so emojis remain tied to their matching colors
+            indices = random.sample(range(len(COLOR_PALETTE)), k=count)
+            color_choices = [COLOR_PALETTE[i] for i in indices]
+            emoji_choices = [COLOR_EMOJIS[i] for i in indices]
             for idx, (color_name, hexcode) in enumerate(color_choices):
                 name = f"{color_name}"
                 # parse hex to int for discord.Color
@@ -146,6 +150,7 @@ class ReactionRoles(commands.Cog):
     @app_commands.describe(config_id='Config ID from reactionroles_create', channel='Channel to post in', message='Message to post')
     async def post_message(self, interaction: Interaction, config_id: str, channel: discord.TextChannel, message: str):
         await interaction.response.defer(thinking=True)
+        debug_command('reactionroles_post', interaction.user, guild=interaction.guild, channel=channel, config_id=config_id)
         is_admin = interaction.user.guild_permissions.manage_roles or interaction.user.guild_permissions.administrator
         app_owner = await self.bot.application_info()
         if not (is_admin or interaction.user.id == app_owner.owner.id):
@@ -193,16 +198,8 @@ class ReactionRoles(commands.Cog):
                 role = interaction.guild.get_role(role_id)
                 if not role:
                     continue
-                # find hex if available
-                hexcode = None
-                for rid_entry in cfg.get('roles', []):
-                    if isinstance(rid_entry, dict) and rid_entry.get('id') == role.id:
-                        hexcode = rid_entry.get('hex')
-                        break
-                value = f"{role.mention} — {role.name}"
-                if hexcode:
-                    value += f" ({hexcode})"
-                main_embed.add_field(name=str(emoji), value=value, inline=False)
+                # Only display the emoji and the role mention (no hexcode or color preview)
+                main_embed.add_field(name=f"{emoji} — {role.mention}", value='\u200b', inline=False)
 
             sent = await channel.send(embed=main_embed)
 
@@ -235,6 +232,7 @@ class ReactionRoles(commands.Cog):
     @app_commands.describe(config_id='Config ID from reactionroles_create')
     async def remove_roles(self, interaction: Interaction, config_id: str):
         await interaction.response.defer(thinking=True)
+        debug_command('reactionroles_remove', interaction.user, guild=interaction.guild, config_id=config_id)
         is_admin = interaction.user.guild_permissions.manage_roles or interaction.user.guild_permissions.administrator
         app_owner = await self.bot.application_info()
         if not (is_admin or interaction.user.id == app_owner.owner.id):

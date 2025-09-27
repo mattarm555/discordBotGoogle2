@@ -13,6 +13,9 @@ import random
 QUEUE_FILE = "saved_queues.json"
 COOKIE_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
 
+# Maximum allowed duration for a single video (8 hours)
+MAX_VIDEO_DURATION = 8 * 60 * 60
+
 queues = {}  # guild_id: [song dicts]
 last_channels = {}  # guild_id: last Interaction.channel
 
@@ -96,6 +99,44 @@ class Music(commands.Cog):
             print(f"{RED}❌ Voice connect failed: {e}{RESET}")
             raise
 
+    def _is_youtube_mix(self, url: str) -> bool:
+        """Return True if the URL appears to be a YouTube mix (auto-playlist) we want to reject.
+
+        A mix typically has a 'list' parameter that starts with 'RD' or contains 'mix'.
+        """
+        try:
+            from urllib.parse import urlparse, parse_qs
+            p = urlparse(url)
+            if 'youtube' not in p.netloc and 'youtu.be' not in p.netloc:
+                return False
+            qs = parse_qs(p.query)
+            list_val = qs.get('list', [''])[0]
+            if not list_val:
+                return False
+            lv = list_val.lower()
+            if lv.startswith('rd') or 'mix' in lv:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _is_watch_with_list(self, url: str) -> bool:
+        """Detect YouTube watch URLs that include both a video id and a playlist param.
+
+        Example to reject: https://www.youtube.com/watch?v=...&list=...
+        """
+        try:
+            from urllib.parse import urlparse, parse_qs
+            p = urlparse(url)
+            if 'youtube' not in p.netloc and 'youtu.be' not in p.netloc:
+                return False
+            qs = parse_qs(p.query)
+            if 'v' in qs and 'list' in qs:
+                return True
+            return False
+        except Exception:
+            return False
+
 
     def get_yt_info(self, query):
         is_playlist = "playlist" in query.lower() or "list=" in query.lower()
@@ -104,26 +145,45 @@ class Music(commands.Cog):
         ydl_opts = {
             'format': 'bestaudio/best',
             'quiet': True,
-            'default_search': 'ytsearch',
+            'no_warnings': True,
             'extract_flat': 'in_playlist' if is_playlist else False,
             'cookiefile': COOKIE_FILE,
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
         }
 
+        # Only set default_search to ytsearch for non-SoundCloud queries. SoundCloud
+        # search prefixes (scsearch/scsearch1) should be passed through directly.
+        qlow = query.lower()
+        if not (qlow.startswith('scsearch') or qlow.startswith('scsearch1')):
+            ydl_opts['default_search'] = 'ytsearch'
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(query, download=False)
 
     def get_stream_url(self, url: str):
+        # Prefer MP3 for SoundCloud targets to avoid HLS/unsupported streams
         ydl_opts = {
             'format': 'bestaudio[abr<=128]/bestaudio/best',
             'quiet': True,
+            'no_warnings': True,
             'noplaylist': True,
             'cookiefile': COOKIE_FILE,
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
         }
 
+        qlow = (url or '').lower()
+        if 'soundcloud.com' in qlow or qlow.startswith('scsearch'):
+            # prefer mp3 containers for SoundCloud to avoid HLS streams
+            ydl_opts['format'] = 'bestaudio[ext=mp3]/bestaudio/best'
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+            # Debug: show what URL/format we resolved to for easier troubleshooting
+            try:
+                fmt = info.get('format') or info.get('requested_formats')
+            except Exception:
+                fmt = None
+            print(f"[DEBUG] Resolved stream for target={url} title={info.get('title')} format={fmt} url={info.get('url')}")
             return info['url']
 
 
@@ -153,7 +213,7 @@ class Music(commands.Cog):
 
     @app_commands.command(name="play", description="Plays a song or playlist from YouTube or SoundCloud.")
     @app_commands.rename(url="search")
-    @app_commands.describe(url="YouTube/SoundCloud URL or search term (use 'sc:' for SoundCloud search)")
+    @app_commands.describe(url="YouTube/SoundCloud URL or search term (accepts both links, searches only YouTube)")
     async def play(self, interaction: Interaction, url: str):
         debug_command("play", interaction.user, interaction.guild, url=url)
         await interaction.response.defer(thinking=True)
@@ -166,26 +226,94 @@ class Music(commands.Cog):
         if guild_id not in queues:
             queues[guild_id] = []
 
-        if url.startswith("http"):
-            query = url
-        elif url.startswith("sc:"):
-            query = f"scsearch:{url[3:].strip()}"
-        else:
-            query = f"ytsearch:{url.strip()}"
+        # reject mixes and watch-with-list links up-front
+        if url.startswith("http") and (self._is_youtube_mix(url) or self._is_watch_with_list(url)):
+            if self._is_youtube_mix(url):
+                embed = Embed(title="❌ Cannot Accept YouTube Mixes", description="Sorry — I can't accept YouTube Mix/Auto-playlist links. Please provide a single video or an explicit playlist URL.", color=discord.Color.red())
+            else:
+                embed = Embed(title="❌ Provide the Playlist Link Instead", description=("It looks like you provided a video link that includes a playlist parameter. Please provide the playlist URL instead, for example:\nhttps://www.youtube.com/playlist?list=PLFCHGavqRG-q_2ZhmgU2XB2--ZY6irT1c"), color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
+            return
 
-        data = self.get_yt_info(query)
-        entries = data['entries'] if 'entries' in data else [data]
+        if url.startswith("sc:"):
+            # SoundCloud search prefix
+            query = f"scsearch1:{url[3:].strip()}"
+        elif url.startswith("http"):
+            # Direct link (YouTube, SoundCloud, etc.)
+            query = url
+        else:
+            # Default to YouTube search for plain text
+            query = f"ytsearch1:{url.strip()}"
+
+        # run blocking extraction in a thread to avoid blocking the event loop
+        try:
+            data = await asyncio.to_thread(self.get_yt_info, query)
+        except Exception as e:
+            embed = Embed(title="⚠️ Extraction Failed", description=f"Failed to retrieve info: {e}", color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
+            return
+
+        entries = data['entries'] if isinstance(data, dict) and 'entries' in data else [data]
         songs_added = []
+        skipped = []
+        is_sc_search = query.lower().startswith('scsearch')
 
         for info in entries:
+            dur = info.get('duration', 0) or 0
+            title = info.get('title', info.get('url', 'Unknown'))
+            if dur and dur > MAX_VIDEO_DURATION:
+                skipped.append(title)
+                continue
+
+            # Defer resolving the playable stream URL until playback time to avoid
+            # performing many expensive webpage/js extractions up-front.
+            # Ensure we always have a webpage_url even when extract_flat returns only an id
+            vid_id = info.get('id')
+            # Prefer the canonical webpage_url. If that's missing, prefer a raw http url
+            # that's not an api.soundcloud.com link. If we only have a SoundCloud
+            # internal id (soundcloud:tracks:...), try to construct a best-effort
+            # permalink using uploader/title (not perfect but often works).
+            webpage = info.get('webpage_url') or None
+            raw_url = info.get('url')
+            if not webpage and isinstance(raw_url, str):
+                if raw_url.startswith('http') and 'api.soundcloud.com' not in raw_url:
+                    webpage = raw_url
+
+            if not webpage and isinstance(vid_id, str):
+                if vid_id.startswith('soundcloud:tracks:'):
+                    sc_id = vid_id.split(':')[-1]
+                    uploader = info.get('uploader') or info.get('uploader_id') or info.get('creator') or 'unknown'
+                    title = info.get('title') or sc_id
+                    # minimal slugify for title
+                    title_slug = ''.join(ch if ch.isalnum() or ch == '-' else '-' for ch in title.replace(' ', '-')).strip('-').lower()
+                    webpage = f"https://soundcloud.com/{uploader}/{title_slug}"
+                else:
+                    webpage = (f"https://www.youtube.com/watch?v={vid_id}" if vid_id else None)
             song = {
-                'url': info['url'],
-                'title': info['title'],
+                'id': vid_id,
+                'webpage_url': webpage,
+                'stream_url': None,
+                # Keep the original search token so we can re-resolve if the
+                # stored webpage_url is an API URL (api.soundcloud.com) which
+                # yt-dlp can't extract directly.
+                'search_query': query if is_sc_search else None,
+                'title': info.get('title', 'Unknown'),
                 'thumbnail': info.get('thumbnail', ''),
-                'duration': info.get('duration', 0)
+                'duration': dur
             }
             queues[guild_id].append(song)
             songs_added.append(song)
+
+        # Notify about skipped too-long videos
+        if len(entries) == 1 and skipped:
+            embed = Embed(title="❌ Video Too Long", description="Sorry — I can't handle videos longer than 8 hours. Please provide a shorter video.", color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
+            return
+        if skipped:
+            short_list = '\n'.join(f'- {t}' for t in skipped[:5])
+            more = f"\n...and {len(skipped)-5} more" if len(skipped) > 5 else ''
+            embed = Embed(title="⚠️ Some videos skipped", description=f"The following videos were longer than 8 hours and were skipped:\n{short_list}{more}", color=discord.Color.orange())
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
         save_queues(queues)
 
@@ -218,16 +346,25 @@ class Music(commands.Cog):
 
             # 🟨 Fallback metadata if missing (e.g., from extract_flat)
             if not next_song.get("thumbnail") or not next_song.get("duration"):
+                webpage = next_song.get('webpage_url') or next_song.get('url')
+                if not webpage:
+                    print(f"{RED}⚠️ No webpage URL for {next_song.get('title')}, skipping{RESET}")
+                    await channel.send(embed=Embed(
+                        title="⚠️ Metadata Error",
+                        description=f"No URL available for **{next_song.get('title')}**, skipping...",
+                        color=discord.Color.orange()
+                    ))
+                    continue
                 try:
-                    full_info = self.get_yt_info(next_song["url"])
+                    full_info = self.get_yt_info(webpage)
                     next_song["title"] = full_info.get("title", next_song["title"])
                     next_song["thumbnail"] = full_info.get("thumbnail", "")
                     next_song["duration"] = full_info.get("duration", 0)
                 except Exception as e:
-                    print(f"{RED}⚠️ Failed to fetch full info for {next_song['title']}: {e}{RESET}")
+                    print(f"{RED}⚠️ Failed to fetch full info for {next_song.get('title')}: {e}{RESET}")
                     await channel.send(embed=Embed(
                         title="⚠️ Metadata Error",
-                        description=f"Could not fetch full info for **{next_song['title']}**, skipping...",
+                        description=f"Could not fetch full info for **{next_song.get('title')}**, skipping...",
                         color=discord.Color.orange()
                     ))
                     continue
@@ -239,7 +376,44 @@ class Music(commands.Cog):
             }
 
             try:
-                stream_url = self.get_stream_url(next_song['url'])
+                # Resolve stream URL on-demand (once) if it wasn't resolved at enqueue time.
+                if not next_song.get('stream_url'):
+                    try:
+                        # Determine what to resolve: prefer search_query for re-resolution,
+                        # otherwise use stored webpage_url/url.
+                        resolve_target = next_song.get('search_query') or next_song.get('webpage_url') or next_song.get('url')
+                        if not resolve_target:
+                            raise ValueError("No URL or search query to resolve stream")
+
+                        # If this is a SoundCloud search token, run the search now and
+                        # pick the first entry's webpage_url (so we pass a real
+                        # SoundCloud page URL to yt-dlp rather than an API URL).
+                        if isinstance(resolve_target, str) and resolve_target.lower().startswith('scsearch'):
+                            try:
+                                search_info = await asyncio.to_thread(self.get_yt_info, resolve_target)
+                                entries2 = search_info.get('entries') if isinstance(search_info, dict) and 'entries' in search_info else [search_info]
+                                if entries2:
+                                    first = entries2[0]
+                                    candidate = first.get('webpage_url') or first.get('url')
+                                    if candidate:
+                                        resolve_target = candidate
+                                        # persist the resolved webpage for future retries
+                                        next_song['webpage_url'] = candidate
+                            except Exception as e:
+                                print(f"{RED}⚠️ Failed to re-resolve SoundCloud search for {next_song.get('title')}: {e}{RESET}")
+
+                        stream = await asyncio.to_thread(self.get_stream_url, resolve_target)
+                        next_song['stream_url'] = stream
+                    except Exception as e:
+                        print(f"{RED}⚠️ Failed to resolve stream for {next_song.get('title')}: {e}{RESET}")
+                        await channel.send(embed=Embed(
+                            title="❌ Failed to Resolve Stream",
+                            description=f"Could not resolve a playable stream for **{next_song.get('title')}**, skipping...",
+                            color=discord.Color.red()
+                        ))
+                        continue
+
+                stream_url = next_song.get('stream_url')
                 source = self.get_audio_source(stream_url)
                 voice_client.play(source, after=lambda e: self._after_song(interaction))
 
@@ -281,7 +455,12 @@ class Music(commands.Cog):
 
 
     def _after_song(self, interaction: Interaction):
-        asyncio.run_coroutine_threadsafe(self.start_next(interaction), self.bot.loop)
+        # small delay to avoid racing with FFmpeg process shutdown when skipping
+        async def wrapper():
+            await asyncio.sleep(0.3)
+            await self.start_next(interaction)
+
+        asyncio.run_coroutine_threadsafe(wrapper(), self.bot.loop)
 
     @app_commands.command(name="np", description="Shows the currently playing song.")
     async def now_playing(self, interaction: Interaction):
@@ -437,26 +616,81 @@ class Music(commands.Cog):
         if guild_id not in queues:
             queues[guild_id] = []
 
-        if url.startswith("http"):
-            query = url
-        elif url.startswith("sc:"):
-            query = f"scsearch:{url[3:].strip()}"
-        else:
-            query = f"ytsearch:{url.strip()}"
+        # reject mixes and watch-with-list links up-front
+        if url.startswith("http") and (self._is_youtube_mix(url) or self._is_watch_with_list(url)):
+            if self._is_youtube_mix(url):
+                embed = Embed(title="❌ Cannot Accept YouTube Mixes", description="Sorry — I can't accept YouTube Mix/Auto-playlist links. Please provide a single video or an explicit playlist URL.", color=discord.Color.red())
+            else:
+                embed = Embed(title="❌ Provide the Playlist Link Instead", description=("It looks like you provided a video link that includes a playlist parameter. Please provide the playlist URL instead, for example:\nhttps://www.youtube.com/playlist?list=PLFCHGavqRG-q_2ZhmgU2XB2--ZY6irT1c"), color=discord.Color.red())
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
 
-        data = self.get_yt_info(query)
-        entries = data["entries"] if "entries" in data else [data]
+        if url.startswith("sc:"):
+            # SoundCloud search prefix
+            query = f"scsearch1:{url[3:].strip()}"
+        elif url.startswith("http"):
+            # Direct link (YouTube, SoundCloud, etc.)
+            query = url
+        else:
+            # Default to YouTube search for plain text
+            query = f"ytsearch1:{url.strip()}"
+        # run blocking extraction in a thread
+        try:
+            data = await asyncio.to_thread(self.get_yt_info, query)
+        except Exception as e:
+            await interaction.followup.send(embed=Embed(title="⚠️ Extraction Failed", description=f"Failed to retrieve info: {e}", color=discord.Color.red()), ephemeral=True)
+            return
+
+        entries = data["entries"] if isinstance(data, dict) and "entries" in data else [data]
         songs_added = []
+        skipped = []
+        is_sc_search = query.lower().startswith('scsearch')
 
         for info in entries:
+            dur = info.get('duration', 0) or 0
+            title = info.get('title', info.get('url', 'Unknown'))
+            if dur and dur > MAX_VIDEO_DURATION:
+                skipped.append(title)
+                continue
+
+            vid_id = info.get('id')
+            webpage = info.get('webpage_url') or None
+            raw_url = info.get('url')
+            if not webpage and isinstance(raw_url, str):
+                if raw_url.startswith('http') and 'api.soundcloud.com' not in raw_url:
+                    webpage = raw_url
+
+            if not webpage and isinstance(vid_id, str):
+                if vid_id.startswith('soundcloud:tracks:'):
+                    sc_id = vid_id.split(':')[-1]
+                    uploader = info.get('uploader') or info.get('uploader_id') or info.get('creator') or 'unknown'
+                    title = info.get('title') or sc_id
+                    title_slug = ''.join(ch if ch.isalnum() or ch == '-' else '-' for ch in title.replace(' ', '-')).strip('-').lower()
+                    webpage = f"https://soundcloud.com/{uploader}/{title_slug}"
+                else:
+                    webpage = (f"https://www.youtube.com/watch?v={vid_id}" if vid_id else None)
             song = {
-                "url": info["url"],
-                "title": info["title"],
-                "thumbnail": info.get("thumbnail", ""),
-                "duration": info.get("duration", 0)
+                'id': vid_id,
+                'webpage_url': webpage,
+                'stream_url': None,
+                'search_query': query if is_sc_search else None,
+                'title': info.get('title', 'Unknown'),
+                'thumbnail': info.get('thumbnail', ''),
+                'duration': dur
             }
             queues[guild_id].append(song)
             songs_added.append(song)
+
+        # notify user about skipped too-long videos
+        if len(entries) == 1 and skipped:
+            embed = Embed(title="❌ Video Too Long", description="Sorry — I can't handle videos longer than 8 hours. Please provide a shorter video.", color=discord.Color.red())
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+        if skipped:
+            short_list = '\n'.join(f'- {t}' for t in skipped[:5])
+            more = f"\n...and {len(skipped)-5} more" if len(skipped) > 5 else ''
+            embed = Embed(title="⚠️ Some videos skipped", description=f"The following videos were longer than 8 hours and were skipped:\n{short_list}{more}", color=discord.Color.orange())
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
         await asyncio.sleep(0.5)  # you can increase this to 0.5 if needed
 
@@ -543,7 +777,46 @@ class Music(commands.Cog):
     async def save_playlist(self, interaction: Interaction, name: str, link: str):
         debug_command("saveplaylist", interaction.user, interaction.guild, name=name, link=link)
         guild_id = str(interaction.guild.id)
+        # Reject YouTube mixes
+        if link.startswith('http') and self._is_youtube_mix(link):
+            embed = Embed(title="❌ Cannot Save YouTube Mixes", description="Sorry — I can't save YouTube Mix/Auto-playlist links as playlists. Please provide an explicit playlist URL (https://www.youtube.com/playlist?list=PL...).", color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Reject watch URLs that include a playlist parameter; ask for the canonical playlist link
+        if link.startswith('http') and self._is_watch_with_list(link):
+            embed = Embed(title="❌ Provide the Playlist Link Instead", description=("It looks like you provided a video link that includes a playlist parameter. "
+                                 "Please provide the playlist URL instead, for example:\n"
+                                 "https://www.youtube.com/playlist?list=PLFCHGavqRG-q_2ZhmgU2XB2--ZY6irT1c"), color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Require the link to be a playlist URL
+        if not (link.startswith('http') and ("list=" in link.lower() or "playlist" in link.lower())):
+            embed = Embed(title="❌ Not a Playlist URL", description="Please provide a playlist URL, for example: https://www.youtube.com/playlist?list=PL...", color=discord.Color.orange())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
         playlists = self.load_playlists()
+
+        # Validate the playlist lightly (cap handled in get_yt_info)
+        try:
+            info = self.get_yt_info(link)
+            if not info:
+                await interaction.response.send_message(embed=Embed(
+                    title="⚠️ Invalid Playlist",
+                    description="Could not validate the provided playlist link.",
+                    color=discord.Color.orange()
+                ), ephemeral=True)
+                return
+        except Exception as e:
+            await interaction.response.send_message(embed=Embed(
+                title="⚠️ Playlist Validation Failed",
+                description=f"Could not validate playlist: {e}",
+                color=discord.Color.orange()
+            ), ephemeral=True)
+            return
+
         if guild_id not in playlists:
             playlists[guild_id] = {}
         playlists[guild_id][name] = link

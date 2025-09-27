@@ -32,7 +32,7 @@ COLOR_PALETTE = [
     ("Teal", "#008080"),
     ("Blue", "#0000FF"),
     ("Navy", "#000080"),
-    ("Fuchsia", "#FF00FF"),
+    ("Pink", "#FF00FF"),
 ]
 
 
@@ -170,7 +170,10 @@ class ReactionRoles(commands.Cog):
         emojis = cfg.get('emojis', [])
         # send message and add reactions
         try:
-            sent = await channel.send(message)
+            # send the user's message inside an embed (no plain text)
+            main_embed = discord.Embed(description=message, color=discord.Color.blurple())
+            main_embed.set_author(name=f"{interaction.user.display_name}", icon_url=getattr(interaction.user, 'avatar.url', None) if hasattr(interaction.user, 'avatar') else None)
+            sent = await channel.send(embed=main_embed)
             for e in emojis:
                 try:
                     await sent.add_reaction(e)

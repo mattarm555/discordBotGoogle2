@@ -6,6 +6,7 @@ import json
 import logging
 import hashlib
 from typing import Optional
+import random
 
 logger = logging.getLogger('jeng.reactionroles')
 logger.setLevel(logging.INFO)
@@ -90,11 +91,12 @@ class ReactionRoles(commands.Cog):
 
         # determine the top role position of the bot
         bot_top_pos = bot_member.top_role.position
-        # create roles named from the palette and colored according to the hex values
+        # pick a random subset of colors and emojis so repeated creations vary
         created = []
         try:
-            for i in range(count):
-                color_name, hexcode = COLOR_PALETTE[i]
+            color_choices = random.sample(COLOR_PALETTE, k=count)
+            emoji_choices = random.sample(COLOR_EMOJIS, k=count)
+            for idx, (color_name, hexcode) in enumerate(color_choices):
                 name = f"{color_name}"
                 # parse hex to int for discord.Color
                 try:
@@ -122,8 +124,9 @@ class ReactionRoles(commands.Cog):
             cfg = {
                 'id': cfg_id,
                 'base_name': base_name,
-                'roles': [{'id': r.id, 'hex': COLOR_PALETTE[idx][1]} for idx, r in enumerate(created)],
-                'emojis': COLOR_EMOJIS[:len(created)]
+                # store role id and corresponding hex from the chosen colors
+                'roles': [{'id': r.id, 'hex': color_choices[idx][1]} for idx, r in enumerate(created)],
+                'emojis': emoji_choices
             }
             self.configs.setdefault(str(guild.id), []).append(cfg)
             save_reaction_configs(self.configs)
@@ -156,10 +159,14 @@ class ReactionRoles(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
-        # ensure roles still exist
+        # ensure roles still exist (support stored role entries as either int or {'id':..})
         roles = []
         for rid_entry in cfg.get('roles', []):
-            rid = rid_entry.get('id')
+            if isinstance(rid_entry, dict):
+                rid = rid_entry.get('id')
+            else:
+                # legacy stored as int
+                rid = int(rid_entry)
             r = interaction.guild.get_role(rid)
             if not r:
                 embed = discord.Embed(title='❌ Role Missing', description=f'Role with ID {rid} no longer exists. Aborting.', color=discord.Color.red())
@@ -170,11 +177,37 @@ class ReactionRoles(commands.Cog):
         emojis = cfg.get('emojis', [])
         # send message and add reactions
         try:
-            # send the user's message inside an embed (no plain text)
+            # build emoji->role mapping first (support legacy int entries)
+            emoji_map = {}
+            for e, rid_entry in zip(emojis, cfg.get('roles', [])):
+                if isinstance(rid_entry, dict):
+                    rid = rid_entry.get('id')
+                else:
+                    rid = int(rid_entry)
+                emoji_map[e] = rid
+
+            # send the user's message inside a single embed and include the mapping in the same embed
             main_embed = discord.Embed(description=message, color=discord.Color.blurple())
-            main_embed.set_author(name=f"{interaction.user.display_name}", icon_url=getattr(interaction.user, 'avatar.url', None) if hasattr(interaction.user, 'avatar') else None)
+            # add mapping fields into the same embed so users see emoji -> role mapping in one place
+            for emoji, role_id in emoji_map.items():
+                role = interaction.guild.get_role(role_id)
+                if not role:
+                    continue
+                # find hex if available
+                hexcode = None
+                for rid_entry in cfg.get('roles', []):
+                    if isinstance(rid_entry, dict) and rid_entry.get('id') == role.id:
+                        hexcode = rid_entry.get('hex')
+                        break
+                value = f"{role.mention} — {role.name}"
+                if hexcode:
+                    value += f" ({hexcode})"
+                main_embed.add_field(name=str(emoji), value=value, inline=False)
+
             sent = await channel.send(embed=main_embed)
-            for e in emojis:
+
+            # add reactions after sending
+            for e in emoji_map.keys():
                 try:
                     await sent.add_reaction(e)
                 except Exception:
@@ -185,31 +218,14 @@ class ReactionRoles(commands.Cog):
                 'guild_id': interaction.guild.id,
                 'channel_id': channel.id,
                 'message_id': sent.id,
-                'emoji_map': {e: rid_entry.get('id') for e, rid_entry in zip(emojis, cfg.get('roles', []))}
+                'emoji_map': emoji_map
             }
             self.configs.setdefault(str(interaction.guild.id), []).append({'posted': mapping})
             save_reaction_configs(self.configs)
 
-            embed = discord.Embed(title='✅ Reaction Roles Posted', description=f'Message posted in {channel.mention}', color=discord.Color.green())
+            embed = discord.Embed(title='✅ Reaction Roles Posted', description=f'Embedded message posted in {channel.mention}', color=discord.Color.green())
             embed.add_field(name='Message ID', value=str(sent.id))
             await interaction.followup.send(embed=embed, ephemeral=True)
-
-            # Send a mapping embed in-channel so users can see which emoji maps to which role
-            mapping_embed = discord.Embed(title='Reaction Roles Mapping', color=discord.Color.blue())
-            for emoji, role_entry in mapping['emoji_map'].items():
-                role = interaction.guild.get_role(role_entry)
-                if role:
-                    # find hex from cfg roles list
-                    hexcode = None
-                    for rid_entry in cfg.get('roles', []):
-                        if rid_entry.get('id') == role.id:
-                            hexcode = rid_entry.get('hex')
-                            break
-                    value = f"{role.mention} — {role.name}"
-                    if hexcode:
-                        value += f" ({hexcode})"
-                    mapping_embed.add_field(name=str(emoji), value=value, inline=False)
-            await channel.send(embed=mapping_embed)
         except Exception:
             logger.exception('[ReactionRoles] Failed to post reaction roles message')
             embed = discord.Embed(title='❌ Failed to post message', description='Check my permissions in the channel.', color=discord.Color.red())
@@ -243,7 +259,10 @@ class ReactionRoles(commands.Cog):
         # Delete the roles created by this config
         failed = []
         for rid_entry in cfg.get('roles', []):
-            rid = rid_entry.get('id')
+            if isinstance(rid_entry, dict):
+                rid = rid_entry.get('id')
+            else:
+                rid = int(rid_entry)
             role = interaction.guild.get_role(rid)
             if role:
                 try:

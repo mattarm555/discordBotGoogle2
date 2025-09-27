@@ -47,6 +47,15 @@ class Follow(commands.Cog):
         # Twitch token cache
         self._twitch_token = None
         self._twitch_token_expiry = 0.0
+        # per-subscription last-checked timestamps to throttle platform checks
+        # key: subscription id (the stored s.get('id')), value: epoch seconds
+        self._last_checked: dict[str, float] = {}
+        # minimum interval (seconds) between YouTube checks for the same subscription
+        # default 15 minutes; can be overridden with env var YOUTUBE_MIN_INTERVAL (seconds)
+        try:
+            self._youtube_min_interval = float(os.getenv('YOUTUBE_MIN_INTERVAL', '900'))
+        except Exception:
+            self._youtube_min_interval = 900.0
         # background worker
         # Use asyncio.create_task to schedule the worker on the running loop.
         # Using bot.loop.create_task can fail silently with some event loop setups.
@@ -351,7 +360,6 @@ class Follow(commands.Cog):
                 found = matches[0]
             elif len(matches) > 1:
                 # ambiguous short id
-                choices = '\n'.join([f"{hashlib.sha1(s.get('id','').encode('utf-8')).hexdigest()[:8]} — {s.get('id')}" for s in matches])
                 embed = discord.Embed(title="❌ Ambiguous ID", description=f"The short id `{sub_id}` matches multiple subscriptions:\n{choices}", color=discord.Color.orange())
                 await interaction.response.defer(thinking=True)
                 await interaction.followup.send(embed=embed, ephemeral=True)
@@ -370,7 +378,6 @@ class Follow(commands.Cog):
                 # ambiguous identifier (multiple subs for this identifier)
                 choices = '\n'.join([f"{hashlib.sha1(s.get('id','').encode('utf-8')).hexdigest()[:8]} — {s.get('id')}" for s in ident_matches])
                 embed = discord.Embed(title="❌ Ambiguous Identifier", description=f"The identifier `{sub_id}` matches multiple subscriptions:\n{choices}", color=discord.Color.orange())
-                await interaction.response.defer(thinking=True)
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
         if found:
@@ -392,7 +399,6 @@ class Follow(commands.Cog):
             display_link = sub_id
 
         debug_command("removefollow", interaction.user, guild=interaction.guild, channel=interaction.channel, target=display_link)
-        await interaction.response.defer(thinking=True)
         guild_id = str(interaction.guild.id)
         subs = self.followings.get(guild_id, [])
 
@@ -552,9 +558,19 @@ class Follow(commands.Cog):
                 async def _run(sub=sub, guild_id=guild_id):
                     async with self._sem:
                         try:
-                            if sub.get("platform") == "youtube":
+                            platform = sub.get("platform")
+                            sid = sub.get('id')
+                            now = time.time()
+                            # Throttle YouTube checks per-subscription to avoid rapid re-checks
+                            if platform == "youtube":
+                                last = self._last_checked.get(sid)
+                                if last and (now - last) < self._youtube_min_interval:
+                                    logger.debug(f"[Follow] Skipping YouTube check for {sid}; last checked {now-last:.1f}s ago")
+                                    return
+                                # mark as checked now (so concurrent runs won't duplicate work)
+                                self._last_checked[sid] = now
                                 await self.check_youtube(sub, guild_id)
-                            elif sub.get("platform") == "twitch":
+                            elif platform == "twitch":
                                 await self.check_twitch(sub, guild_id)
                         except Exception:
                             logger.exception(f"[Follow] Error checking {sub.get('id')}")
@@ -590,28 +606,54 @@ class Follow(commands.Cog):
             logger.debug(f"[Follow] YouTube check skipped: identifier {ident} is not a channel ID (UC...); please use a channel id or let handle resolution run during follow registration")
             return
 
-        # Call the search endpoint to get the most recent upload for the channel
-        url = 'https://www.googleapis.com/youtube/v3/search'
-        params = {
-            'key': api_key,
-            'channelId': ident,
-            'part': 'snippet,id',
-            'order': 'date',
-            'maxResults': 1,
-            # restrict to video type only
-            'type': 'video'
-        }
+        # update last-checked timestamp for this subscription unless this is a forced check
+        sid = sub.get('id')
+        if sid and not force:
+            # note: the caller (check_all) already sets _last_checked before invoking
+            # but ensure it's present for callers that call check_youtube directly
+            self._last_checked.setdefault(sid, time.time())
 
-        data = await self._fetch_json(url, params=params)
-        if not data or 'items' not in data or not data['items']:
-            logger.debug(f"[Follow] YouTube API returned no items for channel {ident}")
-            return
+        # Prefer using the uploads playlist for the channel (more efficient than search.list)
+        vid = None
+        title = None
+        playlist_id = sub.get('uploads_playlist')
+        try:
+            if not playlist_id:
+                playlist_id = await self._get_uploads_playlist(ident)
+                if playlist_id:
+                    sub['uploads_playlist'] = playlist_id
+                    save_followings(self.followings)
 
-        item = data['items'][0]
-        vid = item.get('id', {}).get('videoId')
-        title = item.get('snippet', {}).get('title', 'New video')
-        if not vid:
-            logger.debug(f"[Follow] YouTube API item missing videoId for channel {ident}")
+            if playlist_id:
+                res = await self._get_latest_from_playlist(playlist_id)
+                if res:
+                    vid, title = res
+                    title = title or 'New video'
+            # Fallback to search.list if uploads playlist approach failed
+            if not vid:
+                logger.debug(f"[Follow] Falling back to search.list for channel {ident}")
+                url = 'https://www.googleapis.com/youtube/v3/search'
+                params = {
+                    'key': api_key,
+                    'channelId': ident,
+                    'part': 'snippet,id',
+                    'order': 'date',
+                    'maxResults': 1,
+                    # restrict to video type only
+                    'type': 'video'
+                }
+                data = await self._fetch_json(url, params=params)
+                if not data or 'items' not in data or not data['items']:
+                    logger.debug(f"[Follow] YouTube API returned no items for channel {ident}")
+                    return
+                item = data['items'][0]
+                vid = item.get('id', {}).get('videoId')
+                title = item.get('snippet', {}).get('title', 'New video')
+                if not vid:
+                    logger.debug(f"[Follow] YouTube API item missing videoId for channel {ident}")
+                    return
+        except Exception:
+            logger.exception(f"[Follow] Exception while fetching latest YouTube video for {ident}")
             return
 
         vid_norm = str(vid).strip()
@@ -772,6 +814,47 @@ class Follow(commands.Cog):
             return json.loads(text)
         except Exception:
             logger.exception(f"[Follow] Failed to parse JSON from {url}")
+            return None
+
+    async def _get_uploads_playlist(self, channel_id: str) -> str | None:
+        """Return the uploads playlistId for a channel id (UC...).
+
+        Uses channels.list?part=contentDetails&id=<channelId>
+        """
+        api_key = os.getenv('YOUTUBE_API_KEY')
+        if not api_key:
+            return None
+        url = 'https://www.googleapis.com/youtube/v3/channels'
+        params = {'part': 'contentDetails', 'id': channel_id, 'key': api_key}
+        j = await self._fetch_json(url, params=params)
+        if not j or 'items' not in j or not j['items']:
+            logger.debug(f"[Follow] channels.list returned no items for {channel_id}")
+            return None
+        try:
+            uploads = j['items'][0]['contentDetails']['relatedPlaylists'].get('uploads')
+            return uploads
+        except Exception:
+            logger.exception(f"[Follow] Failed to extract uploads playlist for {channel_id}")
+            return None
+
+    async def _get_latest_from_playlist(self, playlist_id: str) -> tuple[str, str] | None:
+        """Return (videoId, title) for the newest item in a playlist using playlistItems.list."""
+        api_key = os.getenv('YOUTUBE_API_KEY')
+        if not api_key:
+            return None
+        url = 'https://www.googleapis.com/youtube/v3/playlistItems'
+        params = {'part': 'snippet', 'playlistId': playlist_id, 'maxResults': 1, 'key': api_key}
+        j = await self._fetch_json(url, params=params)
+        if not j or 'items' not in j or not j['items']:
+            logger.debug(f"[Follow] playlistItems.list returned no items for {playlist_id}")
+            return None
+        try:
+            item = j['items'][0]
+            video_id = item['snippet']['resourceId'].get('videoId')
+            title = item['snippet'].get('title')
+            return (video_id, title)
+        except Exception:
+            logger.exception(f"[Follow] Failed to parse playlistItems for {playlist_id}")
             return None
 
     async def _post_youtube(self, sub, guild_id, vid_norm, video_url, title, ident):

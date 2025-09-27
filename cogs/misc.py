@@ -260,6 +260,9 @@ class Misc(commands.Cog):
         community_embed.add_field(name="/follow <platform> <identifier> <post_channel>", value="Follow a YouTube or Twitch channel and post new content to a channel.", inline=False)
         community_embed.add_field(name="/removefollow <sub_id>", value="Remove a follow subscription by ID (from /followlist).", inline=False)
         community_embed.add_field(name="/followlist", value="List follow subscriptions for this server.", inline=False)
+        community_embed.add_field(name="/reactionroles_create <count> [base_name]", value="Create 1-15 color roles under the bot's top role.", inline=False)
+        community_embed.add_field(name="/reactionroles_post <config_id> <channel> <message>", value="Post a reaction-roles message for a previously created role set.", inline=False)
+        community_embed.add_field(name="/reactionroles_remove <config_id>", value="Remove a previously created color role set (deletes roles).", inline=False)
         community_embed.set_footer(text="Page 4/5")
         pages.append(community_embed)
 

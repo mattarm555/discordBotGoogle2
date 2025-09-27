@@ -59,6 +59,19 @@ class Follow(commands.Cog):
         # background worker
         # Use asyncio.create_task to schedule the worker on the running loop.
         # Using bot.loop.create_task can fail silently with some event loop setups.
+        # Initialize in-memory last-checked map from persisted followings (if present)
+        try:
+            for gid, subs in self.followings.items():
+                for s in subs:
+                    sid = s.get('id')
+                    if sid and s.get('last_checked') is not None:
+                        try:
+                            self._last_checked[sid] = float(s.get('last_checked'))
+                        except Exception:
+                            pass
+        except Exception:
+            logger.exception("[Follow] Failed to initialize last_checked from followings")
+
         self.worker_task = asyncio.create_task(self.worker())
 
     async def cog_unload(self):
@@ -569,6 +582,12 @@ class Follow(commands.Cog):
                                     return
                                 # mark as checked now (so concurrent runs won't duplicate work)
                                 self._last_checked[sid] = now
+                                # persist the last_checked timestamp on the subscription so it survives restarts
+                                try:
+                                    sub['last_checked'] = now
+                                    save_followings(self.followings)
+                                except Exception:
+                                    logger.exception(f"[Follow] Failed to persist last_checked for {sid}")
                                 await self.check_youtube(sub, guild_id)
                             elif platform == "twitch":
                                 await self.check_twitch(sub, guild_id)
@@ -612,6 +631,13 @@ class Follow(commands.Cog):
             # note: the caller (check_all) already sets _last_checked before invoking
             # but ensure it's present for callers that call check_youtube directly
             self._last_checked.setdefault(sid, time.time())
+        # ensure persisted timestamp is set for forced or direct calls
+        if sid and force:
+            try:
+                sub['last_checked'] = time.time()
+                save_followings(self.followings)
+            except Exception:
+                logger.exception(f"[Follow] Failed to persist forced last_checked for {sid}")
 
         # Prefer using the uploads playlist for the channel (more efficient than search.list)
         vid = None

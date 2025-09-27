@@ -13,7 +13,26 @@ logger.setLevel(logging.INFO)
 REACTION_FILE = 'reaction_roles.json'
 
 COLOR_EMOJIS = [
-    '🔴','🟠','🟡','🟢','🔵','🟣','🟤','⚫','⚪','🟥','🟧','🟨','🟩','🟦','🟪'
+    '⬜', '⚪', '⚫', '⬛', '❤️', '🟥', '💛', '🟫', '🟩', '💚', '🌊', '🔷', '💙', '🔵', '💖'
+]
+
+# 15 color names and hex codes (from user's list)
+COLOR_PALETTE = [
+    ("White", "#FFFFFF"),
+    ("Silver", "#C0C0C0"),
+    ("Gray", "#808080"),
+    ("Black", "#000000"),
+    ("Red", "#FF0000"),
+    ("Maroon", "#800000"),
+    ("Yellow", "#FFFF00"),
+    ("Olive", "#808000"),
+    ("Lime", "#00FF00"),
+    ("Green", "#008000"),
+    ("Aqua", "#00FFFF"),
+    ("Teal", "#008080"),
+    ("Blue", "#0000FF"),
+    ("Navy", "#000080"),
+    ("Fuchsia", "#FF00FF"),
 ]
 
 
@@ -71,32 +90,31 @@ class ReactionRoles(commands.Cog):
 
         # determine the top role position of the bot
         bot_top_pos = bot_member.top_role.position
-        # create roles
+        # create roles named from the palette and colored according to the hex values
         created = []
-        colors = [
-            discord.Color.red(), discord.Color.orange(), discord.Color.gold(), discord.Color.green(),
-            discord.Color.blue(), discord.Color.purple(), discord.Color.dark_gold(), discord.Color.default(),
-            discord.Color.light_grey(), discord.Color.from_rgb(183,28,28), discord.Color.from_rgb(230,81,0),
-            discord.Color.from_rgb(255,235,59), discord.Color.from_rgb(139,195,74), discord.Color.from_rgb(3,169,244),
-            discord.Color.from_rgb(171,71,188)
-        ]
         try:
             for i in range(count):
-                name = f"{base_name} {i+1}"
-                color = colors[i % len(colors)]
-                role = await guild.create_role(name=name, colour=color, reason=f'Reaction roles created by {interaction.user}')
+                color_name, hexcode = COLOR_PALETTE[i]
+                name = f"{color_name}"
+                # parse hex to int for discord.Color
+                try:
+                    v = int(hexcode.lstrip('#'), 16)
+                    colour = discord.Color(v)
+                except Exception:
+                    colour = discord.Color.default()
+                role = await guild.create_role(name=name, colour=colour, reason=f'Reaction roles created by {interaction.user}')
                 created.append(role)
 
             # attempt to move roles to just under the bot's top role
-            positions = []
-            # we want the highest created role to be just below bot_top_pos - 1, then lower for subsequent
+            # Build a dict mapping Role -> new_position as required by discord.py
             start_pos = max(0, bot_top_pos - 1)
+            positions = {}
             for idx, role in enumerate(created):
-                positions.append({'id': role.id, 'position': start_pos - idx})
+                positions[role] = start_pos - idx
             try:
                 await guild.edit_role_positions(positions=positions)
             except Exception:
-                # best-effort; ignore failures
+                # best-effort; ignore failures but log
                 logger.exception('[ReactionRoles] Failed to reorder roles')
 
             # persist this role set as a config
@@ -104,21 +122,22 @@ class ReactionRoles(commands.Cog):
             cfg = {
                 'id': cfg_id,
                 'base_name': base_name,
-                'roles': [r.id for r in created],
+                'roles': [{'id': r.id, 'hex': COLOR_PALETTE[idx][1]} for idx, r in enumerate(created)],
                 'emojis': COLOR_EMOJIS[:len(created)]
             }
             self.configs.setdefault(str(guild.id), []).append(cfg)
             save_reaction_configs(self.configs)
 
-            # reply with mapping
-            lines = [f"Config ID: `{cfg_id}`"]
+            # reply with mapping (embed)
+            embed = discord.Embed(title='✅ Reaction Roles Created', color=discord.Color.blurple())
+            embed.add_field(name='Config ID', value=f'`{cfg_id}`', inline=False)
             for e, r in zip(cfg['emojis'], created):
-                lines.append(f"{e} — {r.name}")
-
-            await interaction.followup.send('\n'.join(lines), ephemeral=True)
+                embed.add_field(name=f'{e} — {r.name}', value=f'Role ID: {r.id}', inline=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception:
             logger.exception('[ReactionRoles] Failed to create roles')
-            await interaction.followup.send('❌ Failed to create roles; check my permissions and role hierarchy.', ephemeral=True)
+            embed = discord.Embed(title='❌ Failed to create roles', description='Check my permissions and role hierarchy.', color=discord.Color.red())
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name='reactionroles_post', description='Post a reaction-roles message for a previously created role set')
     @app_commands.describe(config_id='Config ID from reactionroles_create', channel='Channel to post in', message='Message to post')
@@ -133,15 +152,18 @@ class ReactionRoles(commands.Cog):
         guild_cfgs = self.configs.get(str(interaction.guild.id), [])
         cfg = next((c for c in guild_cfgs if c.get('id') == config_id), None)
         if not cfg:
-            await interaction.followup.send('❌ Config ID not found for this server.', ephemeral=True)
+            embed = discord.Embed(title='❌ Config Not Found', description='Config ID not found for this server.', color=discord.Color.red())
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         # ensure roles still exist
         roles = []
-        for rid in cfg.get('roles', []):
+        for rid_entry in cfg.get('roles', []):
+            rid = rid_entry.get('id')
             r = interaction.guild.get_role(rid)
             if not r:
-                await interaction.followup.send(f'❌ Role with ID {rid} no longer exists. Aborting.', ephemeral=True)
+                embed = discord.Embed(title='❌ Role Missing', description=f'Role with ID {rid} no longer exists. Aborting.', color=discord.Color.red())
+                await interaction.followup.send(embed=embed, ephemeral=True)
                 return
             roles.append(r)
 
@@ -160,15 +182,88 @@ class ReactionRoles(commands.Cog):
                 'guild_id': interaction.guild.id,
                 'channel_id': channel.id,
                 'message_id': sent.id,
-                'emoji_map': {e: rid for e, rid in zip(emojis, cfg.get('roles', []))}
+                'emoji_map': {e: rid_entry.get('id') for e, rid_entry in zip(emojis, cfg.get('roles', []))}
             }
             self.configs.setdefault(str(interaction.guild.id), []).append({'posted': mapping})
             save_reaction_configs(self.configs)
 
-            await interaction.followup.send('✅ Reaction roles message posted.', ephemeral=True)
+            embed = discord.Embed(title='✅ Reaction Roles Posted', description=f'Message posted in {channel.mention}', color=discord.Color.green())
+            embed.add_field(name='Message ID', value=str(sent.id))
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+            # Send a mapping embed in-channel so users can see which emoji maps to which role
+            mapping_embed = discord.Embed(title='Reaction Roles Mapping', color=discord.Color.blue())
+            for emoji, role_entry in mapping['emoji_map'].items():
+                role = interaction.guild.get_role(role_entry)
+                if role:
+                    # find hex from cfg roles list
+                    hexcode = None
+                    for rid_entry in cfg.get('roles', []):
+                        if rid_entry.get('id') == role.id:
+                            hexcode = rid_entry.get('hex')
+                            break
+                    value = f"{role.mention} — {role.name}"
+                    if hexcode:
+                        value += f" ({hexcode})"
+                    mapping_embed.add_field(name=str(emoji), value=value, inline=False)
+            await channel.send(embed=mapping_embed)
         except Exception:
             logger.exception('[ReactionRoles] Failed to post reaction roles message')
-            await interaction.followup.send('❌ Failed to post message; check my permissions in the channel.', ephemeral=True)
+            embed = discord.Embed(title='❌ Failed to post message', description='Check my permissions in the channel.', color=discord.Color.red())
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name='reactionroles_remove', description='Remove a previously created color role set (deletes roles)')
+    @app_commands.describe(config_id='Config ID from reactionroles_create')
+    async def remove_roles(self, interaction: Interaction, config_id: str):
+        await interaction.response.defer(thinking=True)
+        is_admin = interaction.user.guild_permissions.manage_roles or interaction.user.guild_permissions.administrator
+        app_owner = await self.bot.application_info()
+        if not (is_admin or interaction.user.id == app_owner.owner.id):
+            embed = discord.Embed(title='❌ Permission Denied', description='You do not have permission to use this command.', color=discord.Color.red())
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        guild_cfgs = self.configs.get(str(interaction.guild.id), [])
+        cfg_index = None
+        cfg = None
+        for idx, c in enumerate(guild_cfgs):
+            if c.get('id') == config_id:
+                cfg_index = idx
+                cfg = c
+                break
+
+        if cfg is None:
+            embed = discord.Embed(title='❌ Config Not Found', description='Config ID not found for this server.', color=discord.Color.red())
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        # Delete the roles created by this config
+        failed = []
+        for rid_entry in cfg.get('roles', []):
+            rid = rid_entry.get('id')
+            role = interaction.guild.get_role(rid)
+            if role:
+                try:
+                    await role.delete(reason=f'ReactionRoles removal by {interaction.user}')
+                except Exception:
+                    logger.exception(f'[ReactionRoles] Failed to delete role {rid}')
+                    failed.append(rid)
+
+        # remove config
+        try:
+            if cfg_index is not None:
+                guild_cfgs.pop(cfg_index)
+            self.configs[str(interaction.guild.id)] = guild_cfgs
+            save_reaction_configs(self.configs)
+        except Exception:
+            logger.exception('[ReactionRoles] Failed to remove config')
+
+        if failed:
+            embed = discord.Embed(title='⚠️ Partial Failure', description=f'Failed to delete roles: {failed}', color=discord.Color.orange())
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            embed = discord.Embed(title='✅ Removed', description=f'Removed roles for config `{config_id}`', color=discord.Color.green())
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):

@@ -5,3 +5,4 @@ quotes.json
 welcome_config.json
 .env
 __pycache__/
+cogs/jengGPT.py

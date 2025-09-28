@@ -45,7 +45,8 @@ class CloseTicketButton(ui.View):
         # permission check: only owner, guild admins, or configured admin roles
         guild = interaction.guild
         if not guild:
-            await interaction.response.send_message('This interaction must be used in a guild.', ephemeral=True)
+            err = Embed(title='❌ Not in a Server', description='This interaction must be used in a guild.', color=discord.Color.red())
+            await interaction.response.send_message(embed=err, ephemeral=True)
             return
 
         # load configured admin roles
@@ -56,13 +57,15 @@ class CloseTicketButton(ui.View):
         is_admin = interaction.user.guild_permissions.administrator or any(r.id in admin_role_ids for r in interaction.user.roles)
 
         if not (is_owner or is_admin):
-            await interaction.response.send_message('❌ You do not have permission to close this ticket.', ephemeral=True)
+            err = Embed(title='❌ Permission Denied', description='You do not have permission to close this ticket.', color=discord.Color.red())
+            await interaction.response.send_message(embed=err, ephemeral=True)
             return
 
         # delete the ticket channel
         ch = interaction.channel
         if ch:
-            await interaction.response.send_message('Closing ticket...', ephemeral=True)
+            info = Embed(title='Closing Ticket', description='Closing ticket...', color=discord.Color.orange())
+            await interaction.response.send_message(embed=info, ephemeral=True)
             ticket_data = load_json(TICKETS_FILE)
             guild_tickets = ticket_data.get(str(guild.id), {})
             if self.ticket_id in guild_tickets:
@@ -81,7 +84,8 @@ class CloseTicketButton(ui.View):
             except Exception:
                 logger.exception('[Tickets] Failed to delete ticket channel')
         else:
-            await interaction.response.send_message('Could not determine ticket channel.', ephemeral=True)
+            err = Embed(title='❌ Error', description='Could not determine ticket channel.', color=discord.Color.red())
+            await interaction.response.send_message(embed=err, ephemeral=True)
 
 
 class Tickets(commands.Cog):
@@ -104,7 +108,8 @@ class Tickets(commands.Cog):
         await interaction.response.defer(thinking=True, ephemeral=True)
         guild = interaction.guild
         if not guild:
-            await interaction.followup.send(content='Must be used in a server.', ephemeral=True)
+            err = Embed(title='❌ Not in a Server', description='This command must be used in a server.', color=discord.Color.red())
+            await interaction.followup.send(embed=err, ephemeral=True)
             return
 
         # compute ticket id and channel name
@@ -175,7 +180,8 @@ class Tickets(commands.Cog):
             ch = await guild.create_text_channel(chan_name, overwrites=overwrites, category=category, reason=f'Ticket {ticket_id} created by {interaction.user}')
         except Exception:
             logger.exception('[Tickets] Failed to create ticket channel')
-            await interaction.followup.send(content='Failed to create ticket channel. Check my permissions.', ephemeral=True)
+            err = Embed(title='❌ Failed to Create Channel', description='Failed to create ticket channel. Check my permissions.', color=discord.Color.red())
+            await interaction.followup.send(embed=err, ephemeral=True)
             return
 
         # try to move the ticket channel to the top of its category (or top of guild if no category)
@@ -201,6 +207,7 @@ class Tickets(commands.Cog):
         embed = Embed(title=user_title, description='Thanks for submitting a ticket! A staff member will be with you as soon as possible.', color=discord.Color.blurple())
         view = CloseTicketButton(ticket_id, interaction.user.id)
         try:
+            # pinging the ticket opener is an allowed exception: include their mention along with the embed
             await ch.send(content=f'{interaction.user.mention}', embed=embed, view=view)
         except Exception:
             logger.exception('[Tickets] Failed to send initial ticket message')
@@ -210,7 +217,7 @@ class Tickets(commands.Cog):
         try:
             await interaction.followup.send(embed=user_embed, ephemeral=True)
         except Exception:
-            # fallback to a plain message if embed fails for any reason
+            # fallback to a plain message if embed fails for any reason (necessary fallback)
             await interaction.followup.send(content=f'Thanks for submitting a ticket. You can access your ticket here: {ch.mention}', ephemeral=True)
 
     # The closeticket app command has been removed. Ticket closure is handled via the Close Ticket button
@@ -221,12 +228,14 @@ class Tickets(commands.Cog):
     async def ticketlocation(self, interaction: Interaction, category: Optional[discord.CategoryChannel] = None):
         # permission check: only admins
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message('You must be a server administrator to run this command.', ephemeral=True)
+            err = Embed(title='❌ Permission Denied', description='You must be a server administrator to run this command.', color=discord.Color.red())
+            await interaction.response.send_message(embed=err, ephemeral=True)
             return
 
         guild = interaction.guild
         if not guild:
-            await interaction.response.send_message('This command must be used in a server.', ephemeral=True)
+            err = Embed(title='❌ Not in a Server', description='This command must be used in a server.', color=discord.Color.red())
+            await interaction.response.send_message(embed=err, ephemeral=True)
             return
 
         cfg = load_json(XP_CONFIG)
@@ -236,18 +245,27 @@ class Tickets(commands.Cog):
             guild_cfg.pop('ticket_default_category', None)
             cfg[str(guild.id)] = guild_cfg
             save_json(XP_CONFIG, cfg)
-            await interaction.response.send_message('Cleared default ticket category.', ephemeral=True)
+            info = Embed(title='Default Cleared', description='Cleared default ticket category.', color=discord.Color.green())
+            await interaction.response.send_message(embed=info, ephemeral=True)
             return
 
         # ensure category belongs to guild
         if getattr(category, 'guild', None) is None or category.guild.id != guild.id:
-            await interaction.response.send_message('That category is not in this server.', ephemeral=True)
+            err = Embed(title='❌ Invalid Category', description='That category is not in this server.', color=discord.Color.red())
+            await interaction.response.send_message(embed=err, ephemeral=True)
+            return
+
+        # If it's already set to this category, inform the admin instead of re-saving
+        if guild_cfg.get('ticket_default_category') == category.id:
+            info = Embed(title='No Change', description=f'The default ticket category is already set to {category.name}.', color=discord.Color.yellow())
+            await interaction.response.send_message(embed=info, ephemeral=True)
             return
 
         guild_cfg['ticket_default_category'] = category.id
         cfg[str(guild.id)] = guild_cfg
         save_json(XP_CONFIG, cfg)
-        await interaction.response.send_message(f'Set default ticket category to {category.name}.', ephemeral=True)
+        info = Embed(title='Default Set', description=f'Set default ticket category to {category.name}.', color=discord.Color.green())
+        await interaction.response.send_message(embed=info, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

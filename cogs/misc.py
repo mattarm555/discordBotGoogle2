@@ -68,7 +68,8 @@ class Misc(commands.Cog):
         guild_id = str(interaction.guild.id)
         perms = config.get(guild_id, {}).get("permissions_roles", [])
         if not perms:
-            await interaction.response.send_message("No roles have bot admin permissions.", ephemeral=True)
+            err = Embed(title='No Roles', description='No roles have bot admin permissions.', color=discord.Color.red())
+            await interaction.response.send_message(embed=err, ephemeral=True)
             return
         role_mentions = []
         for role_id in perms:
@@ -76,9 +77,11 @@ class Misc(commands.Cog):
             if role:
                 role_mentions.append(role.mention)
         if role_mentions:
-            await interaction.response.send_message("Roles with bot admin permissions: " + ", ".join(role_mentions), ephemeral=True)
+            info = Embed(title='Roles with Bot Admin Permissions', description=", ".join(role_mentions), color=discord.Color.green())
+            await interaction.response.send_message(embed=info, ephemeral=True)
         else:
-            await interaction.response.send_message("No valid roles found in bot admin permissions.", ephemeral=True)
+            err = Embed(title='No Valid Roles', description='No valid roles found in bot admin permissions.', color=discord.Color.red())
+            await interaction.response.send_message(embed=err, ephemeral=True)
     
     @app_commands.command(name="removepermissions", description="Remove a role from bot admin permissions for this server.")
     @app_commands.describe(role="Role to remove from bot admin permissions")
@@ -101,9 +104,11 @@ class Misc(commands.Cog):
         if str(role.id) in perms:
             perms.remove(str(role.id))
             save_json(CONFIG_FILE, config)
-            await interaction.response.send_message(f"Role {role.mention} removed from bot admin permissions.", ephemeral=True)
+            info = Embed(title='Role Removed', description=f'Role {role.mention} removed from bot admin permissions.', color=discord.Color.green())
+            await interaction.response.send_message(embed=info, ephemeral=True)
         else:
-            await interaction.response.send_message(f"Role {role.mention} is not a bot admin.", ephemeral=True)
+            err = Embed(title='Not a Bot Admin', description=f'Role {role.mention} is not a bot admin.', color=discord.Color.red())
+            await interaction.response.send_message(embed=err, ephemeral=True)
     
     @app_commands.command(name="setpermissions", description="Set a role as bot admin for this server.")
     @app_commands.describe(role="Role to grant bot admin permissions")
@@ -127,9 +132,11 @@ class Misc(commands.Cog):
         if str(role.id) not in perms:
             perms.append(str(role.id))
             save_json(CONFIG_FILE, config)
-            await interaction.response.send_message(f"Role {role.mention} added as bot admin.", ephemeral=True)
+            info = Embed(title='Role Added', description=f'Role {role.mention} added as bot admin.', color=discord.Color.green())
+            await interaction.response.send_message(embed=info, ephemeral=True)
         else:
-            await interaction.response.send_message(f"Role {role.mention} is already a bot admin.", ephemeral=True)
+            err = Embed(title='Already a Bot Admin', description=f'Role {role.mention} is already a bot admin.', color=discord.Color.yellow())
+            await interaction.response.send_message(embed=err, ephemeral=True)
 
     # /champ and /spam commands removed per request
 

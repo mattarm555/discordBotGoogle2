@@ -6,6 +6,7 @@ from datetime import datetime
 import pytz
 from utils.debug import debug_command
 import asyncio
+import logging
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -52,6 +53,8 @@ class HelpPaginator(ui.View):
             await interaction.response.defer()
 
 class Misc(commands.Cog):
+    logger = logging.getLogger('jeng.misc')
+    logger.setLevel(logging.INFO)
     @app_commands.command(name="listpermissions", description="List all roles with bot admin permissions for this server.")
     async def listpermissions(self, interaction: Interaction):
         CONFIG_FILE = "xp_config.json"
@@ -127,64 +130,8 @@ class Misc(commands.Cog):
             await interaction.response.send_message(f"Role {role.mention} added as bot admin.", ephemeral=True)
         else:
             await interaction.response.send_message(f"Role {role.mention} is already a bot admin.", ephemeral=True)
-    
-    def __init__(self, bot):
-        self.bot = bot
-        self.league_champions = [  # Truncated for brevity
-            "Ahri", "Akali", "Aatrox", "Alistar", "Amumu", "Anivia", "Annie", "Aphelios", "Ashe",
-    "Aurelion Sol", "Azir", "Bard", "Bel'Veth", "Blitzcrank", "Brand", "Braum", "Caitlyn", "Camille",
-    "Cassiopeia", "Cho'Gath", "Corki", "Darius", "Diana", "Dr. Mundo", "Draven", "Ekko",
-    "Elise", "Evelynn", "Ezreal", "Fiddlesticks", "Fiora", "Fizz", "Galio", "Gangplank",
-    "Garen", "Gnar", "Gragas", "Graves", "Gwen", "Hecarim", "Heimerdinger", "Hwei", "Illaoi",
-    "Irelia", "Ivern", "Janna", "Jarvan IV", "Jax", "Jayce", "Jhin", "Jinx", "Kai'Sa",
-    "Kalista", "Karma", "Karthus", "Kassadin", "Katarina", "Kayle", "Kayn", "Kennen",
-    "Kha'Zix", "Kindred", "Kled", "Kog'Maw", "LeBlanc", "Lee Sin", "Leona", "Lillia",
-    "Lissandra", "Lucian", "Lulu", "Lux", "Malphite", "Malzahar", "Maokai", "Mel", "Milio", "Master Yi",
-    "Miss Fortune", "Mordekaiser", "Morgana", "Naafiri", "Nami", "Nasus", "Nautilus", "Neeko",
-    "Nidalee", "Nilah", "Nocturne", "Nunu & Willump", "Olaf", "Orianna", "Ornn", "Pantheon",
-    "Poppy", "Pyke", "Qiyana", "Quinn", "Rakan", "Rammus", "Rek'Sai", "Rell", "Renata Glasc",
-    "Renekton", "Rengar", "Riven", "Rumble", "Ryze", "Samira", "Sejuani", "Senna", "Seraphine",
-    "Sett", "Shaco", "Shen", "Shyvana", "Singed", "Sion", "Sivir", "Skarner", "Smolder", "Sona",
-    "Soraka", "Swain", "Sylas", "Syndra", "Tahm Kench", "Taliyah", "Talon", "Taric",
-    "Teemo", "Thresh", "Tristana", "Trundle", "Tryndamere", "Twisted Fate", "Twitch",
-    "Udyr", "Urgot", "Varus", "Vayne", "Veigar", "Kel'Koz", "Vex", "Vi", "Viego",
-    "Viktor", "Vladimir", "Volibear", "Warwick", "Wukong", "Xayah", "Xerath", "Xin Zhao",
-    "Yasuo", "Yone", "Yorick", "Yuumi", "Zac", "Zed", "Zeri", "Ziggs", "Zilean", "Zoe",
-    "Zyra"
-        ]
 
-    @app_commands.command(name="champ", description="Randomly selects a League of Legends champion.")
-    async def champ(self, interaction: Interaction):
-        debug_command("champ", interaction.user, interaction.guild)
-
-        if not self.league_champions:
-            embed = Embed(title="⚠ No Champions", description="The champion list is currently empty.", color=discord.Color.orange())
-            await interaction.response.send_message(embed=embed)
-            return
-
-        champion = random.choice(self.league_champions)
-        embed = Embed(
-            title="🎮 Random League Champion",
-            description=f"Your champion is: **{champion}**!",
-            color=discord.Color.purple()
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="spam", description="Mentions a user multiple times.")
-    @app_commands.describe(user="The user to mention", count="Number of times to mention the user (max 20)")
-    async def spam(self, interaction: Interaction, user: discord.Member, count: int = 1):
-        debug_command("spam", interaction.user, interaction.guild, target=user.display_name, count=count)
-
-        if count > 20:
-            embed = Embed(title="⚠ Limit Exceeded", description="Please enter a number **20 or lower**.", color=discord.Color.red())
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        await interaction.response.send_message(f"{user.mention} wya")
-
-        for _ in range(count - 1):
-            await asyncio.sleep(0.75)
-            await interaction.channel.send(f"{user.mention} wya")
+    # /champ and /spam commands removed per request
 
     @app_commands.command(name="snipe", description="Retrieves the last deleted message in the current channel.")
     async def snipe(self, interaction: Interaction):
@@ -243,11 +190,7 @@ class Misc(commands.Cog):
 
         # Misc
         misc_embed = Embed(title="😂 Miscellaneous Commands", color=discord.Color.purple())
-        misc_embed.add_field(name="/champ", value="Selects a random champion.", inline=False)
-        misc_embed.add_field(name="/spam <user> <num>", value="Spams a user a specified number of times.", inline=False)
         misc_embed.add_field(name="/snipe", value="Retrieves the last deleted message in the current channel.", inline=False)
-        misc_embed.add_field(name="/askjeng <prompt> <model>", value="Ask your local AI anything.", inline=False)
-        misc_embed.add_field(name="/warmup <model>", value="Ping Ollama and warm up a specific model.", inline=False)
         misc_embed.set_footer(text="Page 3/5")
         pages.append(misc_embed)
 
@@ -260,7 +203,9 @@ class Misc(commands.Cog):
         community_embed.add_field(name="/follow <platform> <identifier> <post_channel>", value="Follow a YouTube or Twitch channel and post new content to a channel.", inline=False)
         community_embed.add_field(name="/removefollow <sub_id>", value="Remove a follow subscription by ID (from /followlist).", inline=False)
         community_embed.add_field(name="/followlist", value="List follow subscriptions for this server.", inline=False)
-        community_embed.add_field(name="/reactionroles_create <count> [base_name]", value="Create 1-15 color roles under the bot's top role.", inline=False)
+        community_embed.add_field(name="/ticket <subject>", value="Open a private ticket channel for support. Staff and admins can close tickets.", inline=False)
+        community_embed.add_field(name="/ticketlocation <category>", value="(Admin) Set the default category for new tickets in this server.", inline=False)
+        community_embed.add_field(name="/reactionroles_create <count> [base_name]", value="Create 1-75 color roles under the bot's top role.", inline=False)
         community_embed.add_field(name="/reactionroles_post <config_id> <channel> <message>", value="Post a reaction-roles message for a previously created role set.", inline=False)
         community_embed.add_field(name="/reactionroles_remove <config_id>", value="Remove a previously created color role set (deletes roles).", inline=False)
         community_embed.add_field(name="/reaction_list", value="Lists reaction configurations in server.", inline=False)
@@ -279,19 +224,13 @@ class Misc(commands.Cog):
 
         try:
             view = HelpPaginator(pages)
-            await interaction.user.send(embed=pages[0], view=view)
-
-            confirmation = Embed(
-                title="📬 Help Sent!",
-                description="Check your DMs for a list of commands.",
-                color=discord.Color.green()
-            )
-            await interaction.response.send_message(embed=confirmation, ephemeral=True)
-
-        except discord.Forbidden:
+            # send the help pages in-channel so others can see
+            await interaction.response.send_message(embed=pages[0], view=view)
+        except Exception:
+            self.logger.exception('[Misc] Failed to send help in channel')
             error = Embed(
                 title="❌ Couldn't Send Help",
-                description="Your DMs are closed! Please enable them and try again.",
+                description="I couldn't post the help message in this channel. Check my permissions or try again.",
                 color=discord.Color.red()
             )
             await interaction.response.send_message(embed=error, ephemeral=True)

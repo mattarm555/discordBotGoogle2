@@ -14,9 +14,12 @@ logger.setLevel(logging.INFO)
 
 REACTION_FILE = 'reaction_roles.json'
 
+# Curated palette from the user's provided list with emoji mappings.
+# Length must match between COLOR_EMOJIS and COLOR_PALETTE so indexes stay paired.
 COLOR_EMOJIS = [
+    # --- original standard colors (preserved) ---
     '⬜',  # White
-    '🟧',  # Orange
+    '�',  # Orange
     '▫️',  # Sand (small pale square)
     '⬛',  # Black
     '🟥',  # Red
@@ -28,12 +31,69 @@ COLOR_EMOJIS = [
     '🌊',  # Aqua
     '🔹',  # Teal-ish diamond
     '💙',  # Blue
-    '🔵',  # Navy (blue circle)
+    '�🔵',  # Navy (blue circle)
     '💖',  # Pink
+
+    # --- previously added curated colors (kept) ---
+    '🟪',  # Zero (deep blue / unique purple square)
+    '�',  # Acid green
+    '🔷',  # Aero (light blue diamond)
+    '💜',  # African violet
+    '💧',  # Air superiority blue (droplet)
+    '🩸',  # Alizarin (red droplet)
+    '🟫',  # Almond (pale/beige represented by brown square)
+    '�',  # Amber (orange circle)
+    '🔮',  # Amethyst (purple / crystal)
+    '🤖',  # Android green (fun robot)
+    '🕊️',  # Antique white (off-white / dove)
+    '🧿',  # Azure (nazar)
+    '�',  # Baby blue (dolphin)
+    '🧡',  # Coral
+    '🌲',  # Forest green
+    '❤️',  # Crimson
+
+    # --- batch 2 additions from the new list ---
+    '⚪',  # Gainsboro
+    '🔶',  # Gamboge
+    '🌱',  # Generic viridian
+    '✨',  # Ghost white (sparkle)
+    '💠',  # Glaucous
+    '🪴',  # GO green (plant)
+    '🥇',  # Gold (web)
+    '🌾',  # Goldenrod
+    '🪨',  # Granite gray
+    '🍏',  # Granny Smith apple
+    '🦎',  # Green Lizard
+    '⚙️',  # Gunmetal
+    '🌻',  # Harvest gold
+    '🔥',  # Heat Wave
+    '💮',  # Heliotrope
+    '🌀',  # Honolulu blue (swirl)
 ]
 
-# 15 color names and hex codes (from user's list)
+# --- appended batch 3 (more from user's list, non-repeating) ---
+COLOR_EMOJIS += [
+    '🌸',  # Nadeshiko pink
+    '🌕',  # Naples yellow
+    '🥖',  # Navajo white (bread/tan)
+    '🔵',  # Navy blue
+    '🇳',  # Navy blue (Crayola) - letter N as fallback
+    '💙',  # Neon blue
+    '🟢',  # Neon green
+    '💗',  # Neon fuchsia
+    '🚗',  # New Car
+    '🌆',  # New York pink
+    '🔩',  # Nickel
+    '💧',  # Non-photo blue
+    '🍃',  # Nyanza
+    '🟤',  # Ocher (Ochre)
+    '🍷',  # Old burgundy
+    '🥇',  # Old gold
+]
+
+# 16 curated color names and hex codes taken from the user's list (subset)
 COLOR_PALETTE = [
+    # --- original standard colors (preserved) ---
     ("White", "#FFFFFF"),
     ("Orange", "#FF8C00"),
     ("Sand", "#EDC9AF"),
@@ -49,7 +109,392 @@ COLOR_PALETTE = [
     ("Blue", "#0000FF"),
     ("Navy", "#000080"),
     ("Pink", "#FF00FF"),
+
+    # --- previously added curated colors (kept) ---
+    ("Zero", "#0048BA"),
+    ("Acid green", "#B0BF1A"),
+    ("Aero", "#7CB9E8"),
+    ("African violet", "#B284BE"),
+    ("Air superiority blue", "#72A0C1"),
+    ("Alizarin", "#DB2D43"),
+    ("Almond", "#EED9C4"),
+    ("Amber", "#FFBF00"),
+    ("Amethyst", "#9966CC"),
+    ("Android green", "#3DDC84"),
+    ("Antique white", "#FAEBD7"),
+    ("Azure", "#007FFF"),
+    ("Baby blue", "#89CFF0"),
+    ("Coral", "#FF7F50"),
+    ("Forest green", "#228B22"),
+    ("Crimson", "#DC143C"),
+
+    # --- batch 2 additions from the user's list ---
+    ("Gainsboro", "#DCDCDC"),
+    ("Gamboge", "#E49B0F"),
+    ("Generic viridian", "#007F66"),
+    ("Ghost white", "#F8F8FF"),
+    ("Glaucous", "#6082B6"),
+    ("GO green", "#00AB66"),
+    ("Gold (web)", "#FFD700"),
+    ("Goldenrod", "#DAA520"),
+    ("Granite gray", "#676767"),
+    ("Granny Smith apple", "#A8E4A0"),
+    ("Green Lizard", "#A7F432"),
+    ("Gunmetal", "#2a3439"),
+    ("Harvest gold", "#DA9100"),
+    ("Heat Wave", "#FF7A00"),
+    ("Heliotrope", "#DF73FF"),
+    ("Honolulu blue", "#006DB0"),
 ]
+
+# --- appended batch 3 palette entries (non-repeating) ---
+COLOR_PALETTE += [
+    ("Nadeshiko pink", "#F6ADC6"),
+    ("Naples yellow", "#FADA5E"),
+    ("Navajo white", "#FFDEAD"),
+    ("Navy blue", "#000080"),
+    ("Navy blue (Crayola)", "#1974D2"),
+    ("Neon blue", "#4666FF"),
+    ("Neon green", "#39FF14"),
+    ("Neon fuchsia", "#FE4164"),
+    ("New Car", "#214FC6"),
+    ("New York pink", "#D7837F"),
+    ("Nickel", "#727472"),
+    ("Non-photo blue", "#A4DDED"),
+    ("Nyanza", "#E9FFDB"),
+    ("Ocher (Ochre)", "#CC7722"),
+    ("Old burgundy", "#43302E"),
+    ("Old gold", "#CFB53B"),
+]
+
+# --- appended extra batch 4 (user-requested, no repeats) ---
+COLOR_EMOJIS += [
+    '🍇',  # Plum
+    '🟣',  # Plum (web)
+    '🦄',  # Plump Purple
+    '🎍',  # Polished Pine
+    '👑',  # Pomp and Power
+    '🌟',  # Popstar
+    '🟠',  # Portland Orange
+    '🧊',  # Powder blue
+    '🎓',  # Princeton orange
+    '🧪',  # Process Cyan
+    '🟦',  # Prussian blue
+    '🌈',  # Psychedelic purple
+]
+
+COLOR_PALETTE += [
+    ("Plum", "#8E4585"),
+    ("Plum (web)", "#DDA0DD"),
+    ("Plump Purple", "#5946B2"),
+    ("Polished Pine", "#5DA493"),
+    ("Pomp and Power", "#86608E"),
+    ("Popstar", "#BE4F62"),
+    ("Portland Orange", "#FF5A36"),
+    ("Powder blue", "#B0E0E6"),
+    ("Princeton orange", "#F58025"),
+    ("Process Cyan", "#00B9F2"),
+    ("Prussian blue", "#003153"),
+    ("Psychedelic purple", "#DF00FF"),
+]
+
+# --- appended extra batch 5 (Red..Rose) ---
+COLOR_EMOJIS += [
+    '🌶️',  # Red Salsa
+    '🔺',  # Red-violet
+    '🎨',  # Red-violet (Crayola)
+    '🟥',  # Red-violet (Color wheel)
+    '🌲',  # Redwood
+    '🔷',  # Resolution blue
+    '🎵',  # Rhythm
+    '⬛',  # Rich black
+    '⚫',  # Rich black (FOGRA29)
+    '◾',  # Rich black (FOGRA39)
+    '🥒',  # Rifle green
+    '🥚',  # Robin egg blue
+    '🚀',  # Rocket metallic
+    '🚩',  # Rojo Spanish red
+    '🪙',  # Roman silver
+    '🌹',  # Rose
+]
+
+COLOR_PALETTE += [
+    ("Red Salsa", "#FF2400"),
+    ("Red-violet", "#C71585"),
+    ("Red-violet (Crayola)", "#C0448F"),
+    ("Red-violet (Color wheel)", "#922B3E"),
+    ("Redwood", "#A45A52"),
+    ("Resolution blue", "#002387"),
+    ("Rhythm", "#777696"),
+    ("Rich black", "#004040"),
+    ("Rich black (FOGRA29)", "#010B13"),
+    ("Rich black (FOGRA39)", "#010203"),
+    ("Rifle green", "#444C38"),
+    ("Robin egg blue", "#00CCCC"),
+    ("Rocket metallic", "#8A7F80"),
+    ("Rojo Spanish red", "#A91101"),
+    ("Roman silver", "#838996"),
+    ("Rose", "#FF007F"),
+]
+
+# --- appended extra batch 6 (Safety..Seal) ---
+COLOR_EMOJIS += [
+    '🟨',  # Safety yellow
+    '🟡',  # Saffron
+    '🌿',  # Sage
+    '🇮',  # St. Patrick's blue (I as fallback)
+    '🍣',  # Salmon
+    '🌸',  # Salmon pink
+    '🏖️',  # Sand
+    '🏜️',  # Sand dune
+    '🟤',  # Sandy brown
+    '🌾',  # Sap green
+    '🔷',  # Sapphire
+    '🔵',  # Sapphire blue
+    '🔵',  # Sapphire (Crayola)
+    '🥇',  # Satin sheen gold
+    '🚩',  # Scarlet
+    '💗',  # Schauss pink
+    '🚌',  # School bus yellow
+    '💚',  # Screamin' Green
+    '🌊',  # Sea green
+    '🩵',  # Sea green (Crayola)
+    '🔮',  # Seance
+    '🟫',  # Seal brown
+]
+
+COLOR_PALETTE += [
+    ("Safety yellow", "#EED202"),
+    ("Saffron", "#F4C430"),
+    ("Sage", "#BCB88A"),
+    ("St. Patrick's blue", "#23297A"),
+    ("Salmon", "#FA8072"),
+    ("Salmon pink", "#FF91A4"),
+    ("Sand", "#C2B280"),
+    ("Sand dune", "#967117"),
+    ("Sandy brown", "#F4A460"),
+    ("Sap green", "#507D2A"),
+    ("Sapphire", "#0F52BA"),
+    ("Sapphire blue", "#0067A5"),
+    ("Sapphire (Crayola)", "#2D5DA1"),
+    ("Satin sheen gold", "#CBA135"),
+    ("Scarlet", "#FF2400"),
+    ("Schauss pink", "#FF91AF"),
+    ("School bus yellow", "#FFD800"),
+    ("Screamin' Green", "#66FF66"),
+    ("Sea green", "#2E8B57"),
+    ("Sea green (Crayola)", "#00FFCD"),
+    ("Seance", "#612086"),
+    ("Seal brown", "#59260B"),
+]
+
+# --- appended final batch 7 (Tyrian..Zomp) ---
+COLOR_EMOJIS += [
+    '🟪',  # Tyrian purple
+    '🔵',  # UA blue
+    '🔴',  # UA red
+    '🔮',  # Ultramarine
+    '🔷',  # Ultramarine blue
+    '🌸',  # Ultra pink
+    '🍒',  # Ultra red
+    '🌰',  # Umber
+    '🧴',  # Unbleached silk
+    '🌐',  # United Nations blue
+    '🎓',  # University of Pennsylvania red
+    '🟨',  # Unmellow yellow
+    '🌲',  # UP Forest green
+    '🟥',  # UP maroon
+    '🚩',  # Upsdell red
+    '🌊',  # Uranian blue
+    '🛩️', # USAFA blue
+    '🟫',  # Van Dyke brown
+    '🍦',  # Vanilla
+    '🍨',  # Vanilla ice
+    '🔵',  # Vantg blue
+    '🥇',  # Vegas gold
+    '🚗',  # Venetian red
+    '🪙',  # Verdigris
+    '🔶',  # Vermilion
+    '🔶',  # Vermilion (alt)
+    '🟪',  # Veronica
+    '🟣',  # Violet
+    '🟣',  # Violet (color wheel)
+    '🟪',  # Violet (crayola)
+    '🟪',  # Violet (RYB)
+    '💜',  # Violet (web)
+    '🔵',  # Violet-blue
+    '🔵',  # Violet-blue (Crayola)
+    '🌺',  # Violet-red
+    '🌺',  # Violet-red(PerBang)
+    '🫧',  # Viridian
+    '🟩',  # Viridian green
+    '🟥',  # Vivid burgundy
+    '🔵',  # Vivid sky blue
+    '🟠',  # Vivid tangerine
+    '🟪',  # Vivid violet
+    '⚡',  # Volt
+    '⬛',  # Warm black
+    '🔵',  # Weezy Blue
+    '🌾',  # Wheat
+    '⬜',  # White
+    '🔵',  # Wild blue yonder
+    '🌸',  # Wild orchid
+    '🍓',  # Wild Strawberry
+    '🍉',  # Wild watermelon
+    '🍊',  # Willpower orange
+    '🟫',  # Windsor tan
+    '🍷',  # Wine
+    '🟥',  # Wine Red
+    '🟫',  # Wine dregs
+    '❄️',  # Winter Sky
+    '🟩',  # Wintergreen Dream
+    '🌸',  # Wisteria
+    '🟫',  # Wood brown
+    '🟫',  # Xanadu
+    '🟨',  # Xanthic
+    '🟨',  # Xanthous
+    '🔵',  # Yale Blue
+    '🟨',  # Yellow
+    '🟨',  # Yellow (Crayola)
+    '🟨',  # Yellow (Munsell)
+    '🟨',  # Yellow (NCS)
+    '🟨',  # Yellow (Pantone)
+    '🟨',  # Yellow (process)
+    '🟨',  # Yellow (RYB)
+    '🟩',  # Yellow-green
+    '🟩',  # Yellow-green (Crayola)
+    '🟩',  # Yellow-green (Color Wheel)
+    '🟠',  # Yellow Orange
+    '🟠',  # Yellow Orange (Color Wheel)
+    '🟨',  # Yellow Rose
+    '🟨',  # Yellow Sunshine
+    '🔵',  # YInMn Blue
+    '🟦',  # Zaffer (Zaffre)
+    '🟠',  # Zarqa
+    '⬜',  # Zebra White
+    '⬜',  # Zinc white
+    '🟫',  # Zinnwaldite brown
+    '🟪',  # Zinzolin
+    '🟩',  # Zomp
+]
+
+COLOR_PALETTE += [
+    ("Tyrian purple", "#66023C"),
+    ("UA blue", "#0033AA"),
+    ("UA red", "#D9004C"),
+    ("Ultramarine", "#3F00FF"),
+    ("Ultramarine blue", "#4166F5"),
+    ("Ultra pink", "#FF6FFF"),
+    ("Ultra red", "#FC6C85"),
+    ("Umber", "#635147"),
+    ("Unbleached silk", "#FFDDCA"),
+    ("United Nations blue", "#009EDB"),
+    ("University of Pennsylvania red", "#A50021"),
+    ("Unmellow yellow", "#FFFF66"),
+    ("UP Forest green", "#014421"),
+    ("UP maroon", "#7B1113"),
+    ("Upsdell red", "#AE2029"),
+    ("Uranian blue", "#AFDBF5"),
+    ("USAFA blue", "#004F98"),
+    ("Van Dyke brown", "#664228"),
+    ("Vanilla", "#F3E5AB"),
+    ("Vanilla ice", "#F38FA9"),
+    ("Vantg blue", "#5271FF"),
+    ("Vegas gold", "#C5B358"),
+    ("Venetian red", "#C80815"),
+    ("Verdigris", "#43B3AE"),
+    ("Vermilion", "#E34234"),
+    ("Vermilion (alt)", "#D9381E"),
+    ("Veronica", "#A020F0"),
+    ("Violet", "#8F00FF"),
+    ("Violet (color wheel)", "#7F00FF"),
+    ("Violet (crayola)", "#963D7F"),
+    ("Violet (RYB)", "#8601AF"),
+    ("Violet (web)", "#EE82EE"),
+    ("Violet-blue", "#324AB2"),
+    ("Violet-blue (Crayola)", "#766EC8"),
+    ("Violet-red", "#F75394"),
+    ("Violet-red(PerBang)", "#F0599C"),
+    ("Viridian", "#40826D"),
+    ("Viridian green", "#009698"),
+    ("Vivid burgundy", "#9F1D35"),
+    ("Vivid sky blue", "#00CCFF"),
+    ("Vivid tangerine", "#FFA089"),
+    ("Vivid violet", "#9F00FF"),
+    ("Volt", "#CEFF00"),
+    ("Warm black", "#004242"),
+    ("Weezy Blue", "#189BCC"),
+    ("Wheat", "#F5DEB3"),
+    ("White", "#FFFFFF"),
+    ("Wild blue yonder", "#A2ADD0"),
+    ("Wild orchid", "#D470A2"),
+    ("Wild Strawberry", "#FF43A4"),
+    ("Wild watermelon", "#FC6C85"),
+    ("Willpower orange", "#FD5800"),
+    ("Windsor tan", "#A75502"),
+    ("Wine", "#722F37"),
+    ("Wine Red", "#B11226"),
+    ("Wine dregs", "#673147"),
+    ("Winter Sky", "#FF007C"),
+    ("Wintergreen Dream", "#56887D"),
+    ("Wisteria", "#C9A0DC"),
+    ("Wood brown", "#C19A6B"),
+    ("Xanadu", "#738678"),
+    ("Xanthic", "#EEED09"),
+    ("Xanthous", "#F1B42F"),
+    ("Yale Blue", "#00356B"),
+    ("Yellow", "#FFFF00"),
+    ("Yellow (Crayola)", "#FCE883"),
+    ("Yellow (Munsell)", "#EFCC00"),
+    ("Yellow (NCS)", "#FFD300"),
+    ("Yellow (Pantone)", "#FEDF00"),
+    ("Yellow (process)", "#FFEF00"),
+    ("Yellow (RYB)", "#FEFE33"),
+    ("Yellow-green", "#9ACD32"),
+    ("Yellow-green (Crayola)", "#C5E384"),
+    ("Yellow-green (Color Wheel)", "#30B21A"),
+    ("Yellow Orange", "#FFAE42"),
+    ("Yellow Orange (Color Wheel)", "#FF9505"),
+    ("Yellow Rose", "#FFF000"),
+    ("Yellow Sunshine", "#FFF700"),
+    ("YInMn Blue", "#2E5090"),
+    ("Zaffer (Zaffre)", "#0014A8"),
+    ("Zarqa", "#FF4500"),
+    ("Zebra White", "#F5F5F5"),
+    ("Zinc white", "#FDF8FF"),
+    ("Zinnwaldite brown", "#2C1608"),
+    ("Zinzolin", "#6C0277"),
+    ("Zomp", "#39A78E"),
+]
+
+# Normalize palette: remove minor/name-variant duplicates for specific canonical bases
+# Keep the first occurrence for each canonical base (e.g., 'Yellow', 'Violet'). This removes
+# entries like 'Yellow (Crayola)', 'Violet (color wheel)' while preserving the main 'Yellow' and 'Violet'.
+def _dedupe_by_base(palette, emojis, canonical_bases=None):
+    if canonical_bases is None:
+        canonical_bases = {'Yellow', 'Violet'}
+    keep = []
+    keep_emojis = []
+    seen_base = set()
+    for (name, hexv), emoji in zip(palette, emojis):
+        base = name.split('(', 1)[0].strip()
+        # if this base is canonical and we've already kept one, skip this variant
+        if base in canonical_bases:
+            if base in seen_base:
+                continue
+            seen_base.add(base)
+            keep.append((name, hexv))
+            keep_emojis.append(emoji)
+        else:
+            keep.append((name, hexv))
+            keep_emojis.append(emoji)
+    return keep, keep_emojis
+
+# Apply dedupe in-place
+COLOR_PALETTE, COLOR_EMOJIS = _dedupe_by_base(COLOR_PALETTE, COLOR_EMOJIS, canonical_bases={'Yellow', 'Violet'})
+
+# Maximum number of available colors (dynamic)
+MAX_COLOR_COUNT = min(len(COLOR_PALETTE), 75)
 
 
 def load_reaction_configs():
@@ -88,9 +533,9 @@ class ReactionRoles(commands.Cog):
         h = hashlib.sha1(f"{guild_id}:{base_name}:{os.urandom(8)}".encode('utf-8')).hexdigest()
         return h[:8]
 
-    @app_commands.command(name='reactionroles_create', description='Create 1-15 color roles under the bot\'s top role')
+    @app_commands.command(name='reactionroles_create', description='Create 1..N color roles under the bot\'s top role')
     @app_commands.checks.has_permissions(manage_roles=True)
-    @app_commands.describe(count='Number of color roles to create (1-15)', base_name='Base name for the roles')
+    @app_commands.describe(count=f'Number of color roles to create (1-{MAX_COLOR_COUNT})', base_name='Base name for the roles')
     async def create_roles(self, interaction: Interaction, count: int, base_name: Optional[str] = 'Color'):
         # Defer immediately (public response) so we can edit it later.
         await interaction.response.defer(thinking=True, ephemeral=False)
@@ -103,8 +548,11 @@ class ReactionRoles(commands.Cog):
             await interaction.edit_original_response(content='❌ You do not have permission to use this command.')
             return
 
-        if count < 1 or count > 15:
-            await interaction.edit_original_response(content='❌ Count must be between 1 and 15.')
+        # dynamic validation against available colors
+        # dynamic validation against available colors (cap at MAX_COLOR_COUNT)
+        max_count = min(len(COLOR_PALETTE), MAX_COLOR_COUNT)
+        if count < 1 or count > max_count:
+            await interaction.edit_original_response(content=f'❌ Count must be between 1 and {max_count}.')
             return
 
         guild = interaction.guild
@@ -118,8 +566,8 @@ class ReactionRoles(commands.Cog):
             await interaction.edit_original_response(content='❌ I need the Manage Roles permission to create roles.')
             return
 
-        # determine the top role position of the bot
-        bot_top_pos = bot_member.top_role.position
+    # NOTE: determine the bot's top role position AFTER creating roles to avoid stale data
+    # (we'll refetch the bot member after role creation and use that position)
         # pick a random subset of colors while preserving the universal emoji->color mapping
         created = []
         try:
@@ -139,16 +587,39 @@ class ReactionRoles(commands.Cog):
                 created.append(role)
 
             # attempt to move roles to just under the bot's top role
-            # Build a dict mapping Role -> new_position as required by discord.py
-            start_pos = max(0, bot_top_pos - 1)
-            positions = {}
-            for idx, role in enumerate(created):
-                positions[role] = start_pos - idx
+            # Re-fetch bot member to get an up-to-date top role position, then compute desired placements.
+                try:
+                    bot_member = await guild.fetch_member(self.bot.user.id)
+                except Exception:
+                    bot_member = guild.get_member(self.bot.user.id)
+                bot_top_pos = bot_member.top_role.position if bot_member else 0
+            def _build_positions_map(top_pos):
+                """Return a mapping of Role->position for the created roles given a top position."""
+                pos_map = {}
+                for idx, role in enumerate(created):
+                    pos = top_pos - 1 - idx
+                    if pos < 0:
+                        pos = 0
+                    pos_map[role] = pos
+                return pos_map
+
             try:
-                await guild.edit_role_positions(positions=positions)
+                positions_map = _build_positions_map(bot_top_pos)
+                # Submit the position edits in one call using Role->position mapping
+                await guild.edit_role_positions(positions=positions_map)
             except Exception:
-                # best-effort; ignore failures but log
-                logger.exception('[ReactionRoles] Failed to reorder roles')
+                logger.exception('[ReactionRoles] Failed to reorder roles; attempting a single retry after refetch')
+                # single retry: refetch bot member to refresh top role position and retry once
+                try:
+                    try:
+                        bot_member = await guild.fetch_member(self.bot.user.id)
+                    except Exception:
+                        bot_member = guild.get_member(self.bot.user.id)
+                    bot_top_pos = bot_member.top_role.position if bot_member else bot_top_pos
+                    positions_map = _build_positions_map(bot_top_pos)
+                    await guild.edit_role_positions(positions=positions_map)
+                except Exception:
+                    logger.exception('[ReactionRoles] Retry to reorder roles failed')
 
             # persist this role set as a config. store choices as paired entries
             cfg_id = self._make_config_id(guild.id, base_name)
@@ -169,29 +640,45 @@ class ReactionRoles(commands.Cog):
             self.configs.setdefault(str(guild.id), []).append(cfg)
             save_reaction_configs(self.configs)
 
-            # reply with mapping (embed) arranged in 3 columns to reduce vertical scrolling
-            embed = discord.Embed(title='✅ Reaction Roles Created', color=discord.Color.blurple())
-            embed.add_field(name='Config ID', value=f'`{cfg_id}`', inline=False)
-            # build rows of up to 3 inline fields
-            row = []
+            # reply with mapping split into pages of up to 25 fields (Discord limit)
+            def build_embed_page(title_suffix, items):
+                e = discord.Embed(title=f'✅ Reaction Roles Created {title_suffix}', color=discord.Color.blurple())
+                e.add_field(name='Config ID', value=f'`{cfg_id}`', inline=False)
+                # add items as fields, grouping 3 per visual row but counting fields directly
+                for name, val in items:
+                    e.add_field(name=name, value=val, inline=True)
+                return e
+
+            # prepare list of display items
+            display_items = []
             for choice in cfg['choices']:
                 role = guild.get_role(choice['id'])
                 if not role:
                     continue
-                row.append((f"{choice['emoji']} — {role.name}", '\u200b'))
-                if len(row) == 3:
-                    for name, val in row:
-                        embed.add_field(name=name, value=val, inline=True)
-                    row = []
-            # flush remaining
-            if row:
-                # pad to 3 so columns align visually
-                while len(row) < 3:
-                    row.append(('\u200b', '\u200b'))
-                for name, val in row:
-                    embed.add_field(name=name, value=val, inline=True)
-            # replace the deferred response with the success embed
-            await interaction.edit_original_response(embed=embed)
+                display_items.append((f"{choice['emoji']} — {role.name}", '\u200b'))
+
+            # paginate into chunks where each embed has at most 25 fields (we already reserve 1 for cfg id)
+            max_fields_per_embed = 25
+            # available slots for choice fields per embed
+            slots = max_fields_per_embed - 1
+            pages = [display_items[i:i+slots] for i in range(0, len(display_items), slots)]
+
+            # send first page with edit_original_response
+            if pages:
+                first_embed = build_embed_page(f'(1/{len(pages)})', pages[0])
+                await interaction.edit_original_response(embed=first_embed)
+                # send subsequent pages as followups
+                for idx, page_items in enumerate(pages[1:], start=2):
+                    e = build_embed_page(f'({idx}/{len(pages)})', page_items)
+                    try:
+                        await interaction.followup.send(embed=e)
+                    except Exception:
+                        logger.exception('[ReactionRoles] Failed to send followup embed for additional page')
+            else:
+                # no display items; still confirm
+                embed = discord.Embed(title='✅ Reaction Roles Created', color=discord.Color.blurple())
+                embed.add_field(name='Config ID', value=f'`{cfg_id}`', inline=False)
+                await interaction.edit_original_response(embed=embed)
         except Exception:
             logger.exception('[ReactionRoles] Failed to create roles')
             embed = discord.Embed(title='❌ Failed to create roles', description='Check my permissions and role hierarchy.', color=discord.Color.red())
@@ -236,54 +723,82 @@ class ReactionRoles(commands.Cog):
         # send message and add reactions
         try:
             # build emoji->role mapping from choices list (preserves pairing)
-            emoji_map = {c['emoji']: c['id'] for c in choices if c.get('emoji')}
-
-            # send the user's message inside a single embed and include the mapping in the same embed
-            # include title if provided
-            if title:
-                main_embed = discord.Embed(title=title, description=message, color=discord.Color.blurple())
-            else:
-                main_embed = discord.Embed(description=message, color=discord.Color.blurple())
-            # add mapping fields into the same embed so users see emoji -> role mapping in one place
-            # arrange into 3 columns (inline fields) so the message is compact
-            row = []
+            # We'll paginate the mapping across multiple embeds so none exceed Discord's 25-field limit.
+            items = []  # list of (emoji, role_id, role_name)
             for c in choices:
                 emoji = c.get('emoji')
                 role_id = c.get('id')
                 role = interaction.guild.get_role(role_id)
                 if not role or not emoji:
                     continue
-                row.append((f"{emoji} — {role.name}", '\u200b'))
-                if len(row) == 3:
-                    for name, val in row:
-                        main_embed.add_field(name=name, value=val, inline=True)
-                    row = []
-            if row:
-                while len(row) < 3:
-                    row.append(('\u200b', '\u200b'))
-                for name, val in row:
-                    main_embed.add_field(name=name, value=val, inline=True)
+                items.append((emoji, role_id, role.name))
 
-            sent = await channel.send(embed=main_embed)
+            if not items:
+                # nothing to post (no valid roles/emojis)
+                embed = discord.Embed(title='❌ Nothing to Post', description='No valid role/emojis found for this config.', color=discord.Color.orange())
+                await interaction.edit_original_response(embed=embed)
+                return
 
-            # add reactions after sending
-            for e in emoji_map.keys():
+            # Discord limits: max 25 embed fields per embed, and max 20 distinct reactions per message.
+            # We must ensure we never attempt to add more than 20 reactions per message, so page size
+            # is set to 20 (safe for both embed and reaction limits).
+            page_size = 20
+            pages = [items[i:i+page_size] for i in range(0, len(items), page_size)]
+
+            posted_entries = []
+            for page_index, page_items in enumerate(pages, start=1):
+                if page_index == 1:
+                    if title:
+                        e = discord.Embed(title=title + f' ({page_index}/{len(pages)})', description=message, color=discord.Color.blurple())
+                    else:
+                        e = discord.Embed(description=message, color=discord.Color.blurple())
+                        e.title = f'({page_index}/{len(pages)})'
+                else:
+                    e = discord.Embed(title=f'({page_index}/{len(pages)})', color=discord.Color.blurple())
+
+                # add mapping fields (inline=True for compactness)
+                for emoji, rid, rname in page_items:
+                    e.add_field(name=f"{emoji} — {rname}", value='\u200b', inline=True)
+
                 try:
-                    await sent.add_reaction(e)
+                    sent = await channel.send(embed=e)
                 except Exception:
-                    logger.exception(f'[ReactionRoles] Failed to add reaction {e} to message')
+                    logger.exception('[ReactionRoles] Failed to send paginated embed page')
+                    # on failure, continue to attempt remaining pages but record nothing for this page
+                    continue
 
-            # persist mapping: message_id -> guild, channel, emoji->role
-            mapping = {
-                'guild_id': interaction.guild.id,
-                'channel_id': channel.id,
-                'message_id': sent.id,
-                'emoji_map': emoji_map
-            }
-            self.configs.setdefault(str(interaction.guild.id), []).append({'posted': mapping})
-            save_reaction_configs(self.configs)
-            embed = discord.Embed(title='✅ Reaction Roles Posted', description=f'Embedded message posted in {channel.mention}', color=discord.Color.green())
-            # edit the original deferred ephemeral response with confirmation
+                # add reactions for emojis on this page
+                emoji_map_page = {}
+                for emoji, rid, _ in page_items:
+                    try:
+                        await sent.add_reaction(emoji)
+                    except Exception:
+                        logger.exception(f'[ReactionRoles] Failed to add reaction {emoji} to message {sent.id}')
+                    emoji_map_page[emoji] = rid
+
+                # persist mapping for this posted message
+                mapping = {
+                    'guild_id': interaction.guild.id,
+                    'channel_id': channel.id,
+                    'message_id': sent.id,
+                    'emoji_map': emoji_map_page,
+                    'config_id': config_id
+                }
+                self.configs.setdefault(str(interaction.guild.id), []).append({'posted': mapping})
+                posted_entries.append(mapping)
+
+            # save all posted mappings (if any)
+            try:
+                save_reaction_configs(self.configs)
+            except Exception:
+                logger.exception('[ReactionRoles] Failed to save posted mappings')
+
+            # confirmation embed
+            if posted_entries:
+                embed = discord.Embed(title='✅ Reaction Roles Posted', description=f'Posted {len(posted_entries)} message(s) in {channel.mention}', color=discord.Color.green())
+            else:
+                embed = discord.Embed(title='❌ Failed to Post', description='Unable to send any pages to the channel.', color=discord.Color.red())
+
             await interaction.edit_original_response(embed=embed)
         except Exception:
             logger.exception('[ReactionRoles] Failed to post reaction roles message')

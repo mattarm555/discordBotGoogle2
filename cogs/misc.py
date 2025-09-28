@@ -263,6 +263,7 @@ class Misc(commands.Cog):
         community_embed.add_field(name="/reactionroles_create <count> [base_name]", value="Create 1-15 color roles under the bot's top role.", inline=False)
         community_embed.add_field(name="/reactionroles_post <config_id> <channel> <message>", value="Post a reaction-roles message for a previously created role set.", inline=False)
         community_embed.add_field(name="/reactionroles_remove <config_id>", value="Remove a previously created color role set (deletes roles).", inline=False)
+        community_embed.add_field(name="/reactionroles_list <config_id>", value="List posted reaction-role messages and their reactions for a config.", inline=False)
         community_embed.set_footer(text="Page 4/5")
         pages.append(community_embed)
 

@@ -738,6 +738,7 @@ class ReactionRoles(commands.Cog):
         if cfg is None:
             embed = discord.Embed(title='❌ Config Not Found', description='Config ID not found for this server.', color=discord.Color.red())
             await interaction.edit_original_response(embed=embed)
+            return
 
     
 

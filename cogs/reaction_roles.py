@@ -18,8 +18,9 @@ REACTION_FILE = 'reaction_roles.json'
 # Length must match between COLOR_EMOJIS and COLOR_PALETTE so indexes stay paired.
 COLOR_EMOJIS = [
     # --- original standard colors (preserved) ---
+
     '⬜',  # White
-    '�',  # Orange
+    '🟧',  # Orange (orange square)
     '▫️',  # Sand (small pale square)
     '⬛',  # Black
     '🟥',  # Red
@@ -31,23 +32,23 @@ COLOR_EMOJIS = [
     '🌊',  # Aqua
     '🔹',  # Teal-ish diamond
     '💙',  # Blue
-    '�🔵',  # Navy (blue circle)
+    '🔵',  # Navy (blue circle)
     '💖',  # Pink
 
     # --- previously added curated colors (kept) ---
     '🟪',  # Zero (deep blue / unique purple square)
-    '�',  # Acid green
+    '🟩',  # Acid green (lime square as closest)
     '🔷',  # Aero (light blue diamond)
     '💜',  # African violet
     '💧',  # Air superiority blue (droplet)
     '🩸',  # Alizarin (red droplet)
-    '🟫',  # Almond (pale/beige represented by brown square)
-    '�',  # Amber (orange circle)
+    '🟫',  # Almond (brown square)
+    '🟠',  # Amber (orange square)
     '🔮',  # Amethyst (purple / crystal)
     '🤖',  # Android green (fun robot)
     '🕊️',  # Antique white (off-white / dove)
     '🧿',  # Azure (nazar)
-    '�',  # Baby blue (dolphin)
+    '🐬',  # Baby blue (dolphin)
     '🧡',  # Coral
     '🌲',  # Forest green
     '❤️',  # Crimson
@@ -747,14 +748,21 @@ class ReactionRoles(commands.Cog):
 
             posted_entries = []
             for page_index, page_items in enumerate(pages, start=1):
-                if page_index == 1:
+                # Only show (x/y) if more than one page
+                if len(pages) > 1:
+                    if page_index == 1:
+                        if title:
+                            e = discord.Embed(title=title + f' ({page_index}/{len(pages)})', description=message, color=discord.Color.blurple())
+                        else:
+                            e = discord.Embed(description=message, color=discord.Color.blurple())
+                            e.title = f'({page_index}/{len(pages)})'
+                    else:
+                        e = discord.Embed(title=f'({page_index}/{len(pages)})', color=discord.Color.blurple())
+                else:
                     if title:
-                        e = discord.Embed(title=title + f' ({page_index}/{len(pages)})', description=message, color=discord.Color.blurple())
+                        e = discord.Embed(title=title, description=message, color=discord.Color.blurple())
                     else:
                         e = discord.Embed(description=message, color=discord.Color.blurple())
-                        e.title = f'({page_index}/{len(pages)})'
-                else:
-                    e = discord.Embed(title=f'({page_index}/{len(pages)})', color=discord.Color.blurple())
 
                 # add mapping fields (inline=True for compactness)
                 for emoji, rid, rname in page_items:

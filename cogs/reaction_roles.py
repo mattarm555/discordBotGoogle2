@@ -7,6 +7,8 @@ import logging
 import hashlib
 from typing import Optional
 import random
+import asyncio
+import time
 from utils.debug import debug_command
 
 logger = logging.getLogger('jeng.reactionroles')
@@ -380,9 +382,21 @@ class ReactionRoles(commands.Cog):
             else:
                 # sample indices so emojis remain tied to their matching colors
                 indices = random.sample(range(len(COLOR_PALETTE)), k=count)
+            # Build lists and create roles one-by-one with per-role timeout and robust error handling.
             color_choices = [COLOR_PALETTE[i] for i in indices]
             emoji_choices = [COLOR_EMOJIS[i] for i in indices]
-            for idx, (color_name, hexcode) in enumerate(color_choices):
+            success_indices = []
+            failed = []
+            total = len(indices)
+            last_progress_update = 0
+            # Preflight: ensure we won't exceed Discord's hard role limit (250 roles)
+            existing_role_count = len(guild.roles)
+            if existing_role_count + len(indices) > 250:
+                await interaction.edit_original_response(content=f'❌ Creating {len(indices)} roles would exceed Discord\'s maximum of 250 roles per guild (current: {existing_role_count}). Reduce the count and try again.')
+                return
+
+            for pos, palette_idx in enumerate(indices, start=1):
+                color_name, hexcode = COLOR_PALETTE[palette_idx]
                 name = f"{color_name}"
                 # parse hex to int for discord.Color
                 try:
@@ -390,8 +404,68 @@ class ReactionRoles(commands.Cog):
                     colour = discord.Color(v)
                 except Exception:
                     colour = discord.Color.default()
-                role = await guild.create_role(name=name, colour=colour, reason=f'Reaction roles created by {interaction.user}')
-                created.append(role)
+
+                # Retry loop with exponential backoff and a reasonable per-role total timeout
+                start_time = time.monotonic()
+                max_total = 60.0  # seconds per role maximum
+                attempt = 0
+                succeeded = False
+                # If a role with the intended name already exists, skip creation but record it
+                existing = {r.name: r for r in guild.roles}
+                if name in existing:
+                    # Use the existing role object for mappings
+                    role = existing[name]
+                    created.append(role)
+                    success_indices.append(palette_idx)
+                    succeeded = True
+                    # small sleep to avoid tight loops contributing to rate limits
+                    try:
+                        await asyncio.sleep(1.5)
+                    except Exception:
+                        pass
+                else:
+                    while attempt < 5 and (time.monotonic() - start_time) < max_total:
+                        attempt += 1
+                        try:
+                            # allow a single attempt to complete within 30s
+                            role = await asyncio.wait_for(
+                                guild.create_role(name=name, colour=colour, reason=f'Reaction roles created by {interaction.user}'),
+                                timeout=30.0
+                            )
+                            created.append(role)
+                            success_indices.append(palette_idx)
+                            succeeded = True
+                            break
+                        except asyncio.TimeoutError:
+                            # likely waiting on internal rate-limit sleep; back off and retry
+                            logger.warning(f'[ReactionRoles] Timeout creating role for {name} (palette index {palette_idx}), attempt {attempt}')
+                        except discord.Forbidden:
+                            logger.exception(f'[ReactionRoles] Forbidden creating role for {name} (palette index {palette_idx})')
+                            failed.append({'index': palette_idx, 'name': name, 'reason': 'forbidden'})
+                            break
+                        except Exception:
+                            logger.exception(f'[ReactionRoles] Error creating role for {name} (palette index {palette_idx}), attempt {attempt}')
+                        # backoff before retrying
+                        remaining = max_total - (time.monotonic() - start_time)
+                        if remaining <= 0:
+                            break
+                        backoff = min(2 ** attempt, 10, remaining)
+                        try:
+                            await asyncio.sleep(backoff)
+                        except Exception:
+                            break
+
+                if not succeeded and not any(f['index'] == palette_idx for f in failed):
+                    failed.append({'index': palette_idx, 'name': name, 'reason': 'timeout_or_error'})
+
+                # Periodically update progress so the user doesn't see a long 'thinking' state
+                if pos - last_progress_update >= 10 or pos == total:
+                    try:
+                        await interaction.edit_original_response(content=f'Creating roles... {pos}/{total} completed', embed=None)
+                    except Exception:
+                        # ignore edit failures; continue
+                        pass
+                    last_progress_update = pos
 
             # attempt to move roles to just under the bot's top role
             # Re-fetch bot member to get an up-to-date top role position, then compute desired placements.

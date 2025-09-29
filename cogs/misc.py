@@ -215,7 +215,7 @@ class Misc(commands.Cog):
         community_embed.add_field(name="/followlist", value="List follow subscriptions for this server.", inline=False)
         community_embed.add_field(name="/ticket <subject>", value="Open a private ticket channel for support. Staff and admins can close tickets.", inline=False)
         community_embed.add_field(name="/ticketlocation <category>", value="(Admin) Set the default category for new tickets in this server.", inline=False)
-        community_embed.add_field(name="/reactionroles_create <count> [base_name]", value="Create 1-75 color roles under the bot's top role.", inline=False)
+        community_embed.add_field(name="/reactionroles_create <count> <interactive> [base_name]", value="Lets user create reaction roles. If interactive is true, users can select amount of colors chosen interactively.", inline=False)
         community_embed.add_field(name="/reactionroles_post <config_id> <channel> <message>", value="Post a reaction-roles message for a previously created role set.", inline=False)
         community_embed.add_field(name="/reactionroles_remove <config_id>", value="Remove a previously created color role set (deletes roles).", inline=False)
         community_embed.add_field(name="/reaction_list", value="Lists reaction configurations in server.", inline=False)

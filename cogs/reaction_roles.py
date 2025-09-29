@@ -39,7 +39,7 @@ COLOR_EMOJIS = [
 # Curated 100 human-readable color names (no variants) and hex codes.
 COLOR_PALETTE = [
     ("White", "#FFFFFF"),
-    ("Black", "#000000"),
+    ("Black", "#010000"),
     ("Red", "#FF0000"),
     ("Green", "#008000"),
     ("Blue", "#0000FF"),
@@ -141,7 +141,8 @@ COLOR_PALETTE = [
 ]
 
 # Maximum number of available colors (dynamic)
-MAX_COLOR_COUNT = min(len(COLOR_PALETTE), 75)
+# Allow up to the full curated palette (previously capped at 75)
+MAX_COLOR_COUNT = len(COLOR_PALETTE)
 
 
 class ColorPickerView(discord.ui.View):
@@ -323,7 +324,7 @@ class ReactionRoles(commands.Cog):
         h = hashlib.sha1(f"{guild_id}:{base_name}:{os.urandom(8)}".encode('utf-8')).hexdigest()
         return h[:8]
 
-    @app_commands.command(name='reactionroles_create', description='Create 1..N color roles under the bot\'s top role')
+    @app_commands.command(name='reactionroles_create', description='Create 1..100 color roles.')
     @app_commands.checks.has_permissions(manage_roles=True)
     @app_commands.describe(count=f'Number of color roles to create (1-{MAX_COLOR_COUNT})', base_name='Base name for the roles', interactive='Use interactive picker to choose colors')
     async def create_roles(self, interaction: Interaction, count: int, base_name: Optional[str] = 'Color', interactive: Optional[bool] = False):
@@ -363,15 +364,19 @@ class ReactionRoles(commands.Cog):
         try:
             # allow interactive selection of colors (picker) or random sampling
             if interactive:
-                view = ColorPickerView(COLOR_PALETTE, COLOR_EMOJIS, required=count, user_id=interaction.user.id)
-                message = await interaction.edit_original_response(embed=view.build_embed(), view=view)
-                # wait for the view to finish (confirm/cancel or timeout)
-                await view.wait()
-                if not view.value:
-                    # cancelled or timed out
-                    await interaction.followup.send('Color selection cancelled or timed out.', ephemeral=True)
-                    return
-                indices = view.value
+                # If user asked for the full palette, just use all colors — no need for interactive selection
+                if count >= len(COLOR_PALETTE):
+                    indices = list(range(len(COLOR_PALETTE)))
+                else:
+                    view = ColorPickerView(COLOR_PALETTE, COLOR_EMOJIS, required=count, user_id=interaction.user.id)
+                    message = await interaction.edit_original_response(embed=view.build_embed(), view=view)
+                    # wait for the view to finish (confirm/cancel or timeout)
+                    await view.wait()
+                    if not view.value:
+                        # cancelled or timed out
+                        await interaction.followup.send('Color selection cancelled or timed out.', ephemeral=True)
+                        return
+                    indices = view.value
             else:
                 # sample indices so emojis remain tied to their matching colors
                 indices = random.sample(range(len(COLOR_PALETTE)), k=count)
@@ -675,21 +680,48 @@ class ReactionRoles(commands.Cog):
                     logger.exception(f'[ReactionRoles] Failed to delete role {rid}')
                     failed.append(rid)
 
-        # remove config and any posted mappings that referenced the removed roles
+        # Update config and posted mappings based on which roles were actually deleted.
         try:
-            if cfg_index is not None:
-                guild_cfgs.pop(cfg_index)
+            # compute which roles were successfully deleted
+            failed_set = set(failed)
+            deleted_role_ids = {rid for rid in removed_role_ids if rid not in failed_set}
 
-            # remove posted entries that reference the removed role ids
-            to_remove = []
-            for idx, entry in enumerate(list(guild_cfgs)):
+            if cfg_index is not None:
+                if failed:
+                    # Partial failure: remove only the successfully deleted roles from the stored config
+                    # Update 'choices' to remove deleted ids
+                    if isinstance(cfg, dict) and cfg.get('choices'):
+                        cfg['choices'] = [ch for ch in cfg.get('choices', []) if int(ch.get('id')) not in deleted_role_ids]
+                    # Update legacy 'roles' list as well
+                    if isinstance(cfg, dict) and cfg.get('roles'):
+                        new_roles = []
+                        for r in cfg.get('roles', []):
+                            try:
+                                rid = r.get('id') if isinstance(r, dict) else int(r)
+                            except Exception:
+                                rid = None
+                            if rid is None or rid not in deleted_role_ids:
+                                new_roles.append(r)
+                        cfg['roles'] = new_roles
+                    # write back the updated cfg
+                    guild_cfgs[cfg_index] = cfg
+                else:
+                    # All roles deleted successfully: remove the entire config
+                    guild_cfgs.pop(cfg_index)
+
+            # For posted mappings, remove emoji entries that referenced deleted roles; if a posted mapping has no emojis left,
+            # attempt to delete the posted message and remove that mapping entry entirely.
+            to_remove_entries = []
+            for entry in list(guild_cfgs):
                 if entry.get('posted'):
                     mapping = entry['posted']
-                    emoji_map = mapping.get('emoji_map', {})
-                    # if any role id in emoji_map matches removed roles, remove this posted mapping
-                    mapped_role_ids = {int(v) for v in emoji_map.values() if isinstance(v, int) or (isinstance(v, str) and v.isdigit())}
-                    if removed_role_ids & mapped_role_ids:
-                        # attempt to delete the posted message from the channel (best-effort)
+                    emoji_map = mapping.get('emoji_map', {}) or {}
+                    # keys where mapped role id is in deleted_role_ids
+                    keys_to_remove = [k for k, v in list(emoji_map.items()) if (isinstance(v, int) and v in deleted_role_ids) or (isinstance(v, str) and v.isdigit() and int(v) in deleted_role_ids)]
+                    for k in keys_to_remove:
+                        emoji_map.pop(k, None)
+                    if not emoji_map:
+                        # no emojis left; best-effort delete the posted message then remove the mapping
                         try:
                             ch = self.bot.get_channel(mapping.get('channel_id'))
                             if ch:
@@ -697,26 +729,30 @@ class ReactionRoles(commands.Cog):
                                 try:
                                     await msg.delete()
                                 except Exception:
-                                    # ignore delete failures
                                     logger.exception('[ReactionRoles] Failed to delete posted reaction roles message')
                         except Exception:
-                            # ignore fetch/delete failures and continue to remove mapping
                             logger.exception('[ReactionRoles] Error while attempting to remove posted mapping')
-                        to_remove.append(entry)
+                        to_remove_entries.append(entry)
+                    else:
+                        # update mapping's emoji_map to the pruned map
+                        mapping['emoji_map'] = emoji_map
 
-            for entry in to_remove:
+            for entry in to_remove_entries:
                 try:
                     guild_cfgs.remove(entry)
                 except ValueError:
                     pass
 
+            # save updated configs
             self.configs[str(interaction.guild.id)] = guild_cfgs
             save_reaction_configs(self.configs)
         except Exception:
-            logger.exception('[ReactionRoles] Failed to remove config')
+            logger.exception('[ReactionRoles] Failed to update config after role removal')
 
+        # Inform the user of the result
         if failed:
             embed = discord.Embed(title='⚠️ Partial Failure', description=f'Failed to delete roles: {failed}', color=discord.Color.orange())
+            embed.add_field(name='Note', value='Config updated to remove successfully deleted roles; entries for any remaining roles were preserved so you can retry removal after fixing permissions.', inline=False)
             await interaction.edit_original_response(embed=embed)
         else:
             embed = discord.Embed(title='✅ Removed', description=f'Removed roles for config `{config_id}`', color=discord.Color.green())

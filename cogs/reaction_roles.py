@@ -439,6 +439,17 @@ class ReactionRoles(commands.Cog):
                         except asyncio.TimeoutError:
                             # likely waiting on internal rate-limit sleep; back off and retry
                             logger.warning(f'[ReactionRoles] Timeout creating role for {name} (palette index {palette_idx}), attempt {attempt}')
+                            # Double-check: sometimes Discord created the role but the confirmation reply was slow.
+                            try:
+                                existing_role = discord.utils.get(guild.roles, name=name)
+                            except Exception:
+                                existing_role = None
+                            if existing_role:
+                                logger.info(f'[ReactionRoles] Role {name} found after timeout; treating as success')
+                                created.append(existing_role)
+                                success_indices.append(palette_idx)
+                                succeeded = True
+                                break
                         except discord.Forbidden:
                             logger.exception(f'[ReactionRoles] Forbidden creating role for {name} (palette index {palette_idx})')
                             failed.append({'index': palette_idx, 'name': name, 'reason': 'forbidden'})
@@ -457,6 +468,13 @@ class ReactionRoles(commands.Cog):
 
                 if not succeeded and not any(f['index'] == palette_idx for f in failed):
                     failed.append({'index': palette_idx, 'name': name, 'reason': 'timeout_or_error'})
+
+                # After a successful creation or reuse, pause briefly to avoid bursting the API
+                if succeeded:
+                    try:
+                        await asyncio.sleep(1.5)
+                    except Exception:
+                        pass
 
                 # Periodically update progress so the user doesn't see a long 'thinking' state
                 if pos - last_progress_update >= 10 or pos == total:

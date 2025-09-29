@@ -13,489 +13,278 @@ logger = logging.getLogger('jeng.reactionroles')
 logger.setLevel(logging.INFO)
 
 REACTION_FILE = 'reaction_roles.json'
+# NOTE: The file previously contained a very large, variant-filled palette.
+# To simplify and make names human-readable and unique, we override that
+# earlier palette here with a curated set of 100 distinct color names
+# (no variant qualifiers) and 100 emoji placeholders. This preserves the
+# rest of the module while ensuring COLOR_EMOJIS/COLOR_PALETTE are clean.
 
-# Curated palette from the user's provided list with emoji mappings.
-# Length must match between COLOR_EMOJIS and COLOR_PALETTE so indexes stay paired.
+# Simple emoji set (100 entries) — cycled from a small base set to provide
+# readable reaction icons; these are intentionally generic and can be
+# customized later if you prefer different emoji choices.
 COLOR_EMOJIS = [
-    # --- original standard colors (preserved) ---
-
-    '⬜',  # White
-    '🟧',  # Orange (orange square)
-    '▫️',  # Sand (small pale square)
-    '⬛',  # Black
-    '🟥',  # Red
-    '🍷',  # Maroon (wine glass)
-    '🟨',  # Yellow
-    '🌿',  # Olive (leaf)
-    '🟩',  # Lime
-    '💚',  # Green
-    '🌊',  # Aqua
-    '🔹',  # Teal-ish diamond
-    '💙',  # Blue
-    '🔵',  # Navy (blue circle)
-    '💖',  # Pink
-
-    # --- previously added curated colors (kept) ---
-    '🟪',  # Zero (deep blue / unique purple square)
-    '🟩',  # Acid green (lime square as closest)
-    '🔷',  # Aero (light blue diamond)
-    '💜',  # African violet
-    '💧',  # Air superiority blue (droplet)
-    '🩸',  # Alizarin (red droplet)
-    '🟫',  # Almond (brown square)
-    '🟠',  # Amber (orange square)
-    '🔮',  # Amethyst (purple / crystal)
-    '🤖',  # Android green (fun robot)
-    '🕊️',  # Antique white (off-white / dove)
-    '🧿',  # Azure (nazar)
-    '🐬',  # Baby blue (dolphin)
-    '🧡',  # Coral
-    '🌲',  # Forest green
-    '❤️',  # Crimson
-
-    # --- batch 2 additions from the new list ---
-    '⚪',  # Gainsboro
-    '🔶',  # Gamboge
-    '🌱',  # Generic viridian
-    '✨',  # Ghost white (sparkle)
-    '💠',  # Glaucous
-    '🪴',  # GO green (plant)
-    '🥇',  # Gold (web)
-    '🌾',  # Goldenrod
-    '🪨',  # Granite gray
-    '🍏',  # Granny Smith apple
-    '🦎',  # Green Lizard
-    '⚙️',  # Gunmetal
-    '🌻',  # Harvest gold
-    '🔥',  # Heat Wave
-    '💮',  # Heliotrope
-    '🌀',  # Honolulu blue (swirl)
+    # 100 curated, display-friendly emojis mapped 1:1 to COLOR_PALETTE above
+    '⬜','⬛','🟥','🟩','🟦','🟨','🟧','🟪','💗','🟫',
+    '⚪','🌫️','🟤','🔵','🔵','🔵','🟦','🟢','🟩','🔵',
+    '🔶','🔷','🔸','🔹','⭐','🌟','✨','⚡','💥','💫',
+    '💢','❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎',
+    '🌈','🌊','🍊','🍎','🍐','🍋','🍇','🍓','🍒','🍑',
+    '🍍','🥥','🥝','🥭','🍌','🍉','🍅','🥕','🌽','🥦',
+    '🍆','🍄','🌶️','🌸','🌹','🌺','🌻','🌼','🌷','🌱',
+    '🌲','🎄','🌳','🌵','🌴','🎋','🍀','🎍','🍁','🍂',
+    '🍃','🪴','🌐','🧊','🧿','🪙','⚙️','🧸','🧶','🪄',
+    '🪅','🪆','🪮','🎨','🎭','🎵','🎯','🏵️','🎗️','🎖️',
 ]
 
-# --- appended batch 3 (more from user's list, non-repeating) ---
-COLOR_EMOJIS += [
-    '🌸',  # Nadeshiko pink
-    '🌕',  # Naples yellow
-    '🥖',  # Navajo white (bread/tan)
-    '🔵',  # Navy blue
-    '🇳',  # Navy blue (Crayola) - letter N as fallback
-    '💙',  # Neon blue
-    '🟢',  # Neon green
-    '💗',  # Neon fuchsia
-    '🚗',  # New Car
-    '🌆',  # New York pink
-    '🔩',  # Nickel
-    '💧',  # Non-photo blue
-    '🍃',  # Nyanza
-    '🟤',  # Ocher (Ochre)
-    '🍷',  # Old burgundy
-    '🥇',  # Old gold
-]
-
-# 16 curated color names and hex codes taken from the user's list (subset)
+# Curated 100 human-readable color names (no variants) and hex codes.
 COLOR_PALETTE = [
-    # --- original standard colors (preserved) ---
     ("White", "#FFFFFF"),
-    ("Orange", "#FF8C00"),
-    ("Sand", "#EDC9AF"),
-    ("Black", "#020202"),
+    ("Black", "#000000"),
     ("Red", "#FF0000"),
-    ("Maroon", "#800000"),
+    ("Green", "#008000"),
+    ("Blue", "#0000FF"),
     ("Yellow", "#FFFF00"),
+    ("Orange", "#FFA500"),
+    ("Purple", "#800080"),
+    ("Hot Pink", "#FF1493"),
+    ("Saddle Brown", "#8B4513"),
+    ("Gray", "#808080"),
+    ("Teal", "#008080"),
+    ("Navy", "#000080"),
+    ("Maroon", "#800000"),
     ("Olive", "#808000"),
     ("Lime", "#00FF00"),
-    ("Green", "#008000"),
     ("Aqua", "#00FFFF"),
-    ("Teal", "#008080"),
-    ("Blue", "#0000FF"),
-    ("Navy", "#000080"),
-    ("Pink", "#FF00FF"),
-
-    # --- previously added curated colors (kept) ---
-    ("Zero", "#0048BA"),
-    ("Acid green", "#B0BF1A"),
-    ("Aero", "#7CB9E8"),
-    ("African violet", "#B284BE"),
-    ("Air superiority blue", "#72A0C1"),
-    ("Alizarin", "#DB2D43"),
-    ("Almond", "#EED9C4"),
-    ("Amber", "#FFBF00"),
-    ("Amethyst", "#9966CC"),
-    ("Android green", "#3DDC84"),
-    ("Antique white", "#FAEBD7"),
-    ("Azure", "#007FFF"),
-    ("Baby blue", "#89CFF0"),
-    ("Coral", "#FF7F50"),
-    ("Forest green", "#228B22"),
-    ("Crimson", "#DC143C"),
-
-    # --- batch 2 additions from the user's list ---
-    ("Gainsboro", "#DCDCDC"),
-    ("Gamboge", "#E49B0F"),
-    ("Generic viridian", "#007F66"),
-    ("Ghost white", "#F8F8FF"),
-    ("Glaucous", "#6082B6"),
-    ("GO green", "#00AB66"),
-    ("Gold (web)", "#FFD700"),
-    ("Goldenrod", "#DAA520"),
-    ("Granite gray", "#676767"),
-    ("Granny Smith apple", "#A8E4A0"),
-    ("Green Lizard", "#A7F432"),
-    ("Gunmetal", "#2a3439"),
-    ("Harvest gold", "#DA9100"),
-    ("Heat Wave", "#FF7A00"),
-    ("Heliotrope", "#DF73FF"),
-    ("Honolulu blue", "#006DB0"),
-]
-
-# --- appended batch 3 palette entries (non-repeating) ---
-COLOR_PALETTE += [
-    ("Nadeshiko pink", "#F6ADC6"),
-    ("Naples yellow", "#FADA5E"),
-    ("Navajo white", "#FFDEAD"),
-    ("Navy blue", "#000080"),
-    ("Navy blue (Crayola)", "#1974D2"),
-    ("Neon blue", "#4666FF"),
-    ("Neon green", "#39FF14"),
-    ("Neon fuchsia", "#FE4164"),
-    ("New Car", "#214FC6"),
-    ("New York pink", "#D7837F"),
-    ("Nickel", "#727472"),
-    ("Non-photo blue", "#A4DDED"),
-    ("Nyanza", "#E9FFDB"),
-    ("Ocher (Ochre)", "#CC7722"),
-    ("Old burgundy", "#43302E"),
-    ("Old gold", "#CFB53B"),
-]
-
-# --- appended extra batch 4 (user-requested, no repeats) ---
-COLOR_EMOJIS += [
-    '🍇',  # Plum
-    '🟣',  # Plum (web)
-    '🦄',  # Plump Purple
-    '🎍',  # Polished Pine
-    '👑',  # Pomp and Power
-    '🌟',  # Popstar
-    '🟠',  # Portland Orange
-    '🧊',  # Powder blue
-    '🎓',  # Princeton orange
-    '🧪',  # Process Cyan
-    '🟦',  # Prussian blue
-    '🌈',  # Psychedelic purple
-]
-
-COLOR_PALETTE += [
+    ("Turquoise", "#40E0D0"),
+    ("Indigo", "#4B0082"),
+    ("Violet", "#EE82EE"),
+    ("Magenta", "#FF00FF"),
+    ("Dark Turquoise", "#00CED1"),
+    ("Beige", "#F5F5DC"),
+    ("Tan", "#D2B48C"),
+    ("Gold", "#FFD700"),
+    ("Silver", "#C0C0C0"),
+    ("Bronze", "#CD7F32"),
+    ("Lavender", "#E6E6FA"),
     ("Plum", "#8E4585"),
-    ("Plum (web)", "#DDA0DD"),
-    ("Plump Purple", "#5946B2"),
-    ("Polished Pine", "#5DA493"),
-    ("Pomp and Power", "#86608E"),
-    ("Popstar", "#BE4F62"),
-    ("Portland Orange", "#FF5A36"),
-    ("Powder blue", "#B0E0E6"),
-    ("Princeton orange", "#F58025"),
-    ("Process Cyan", "#00B9F2"),
-    ("Prussian blue", "#003153"),
-    ("Psychedelic purple", "#DF00FF"),
-]
-
-# --- appended extra batch 5 (Red..Rose) ---
-COLOR_EMOJIS += [
-    '🌶️',  # Red Salsa
-    '🔺',  # Red-violet
-    '🎨',  # Red-violet (Crayola)
-    '🟥',  # Red-violet (Color wheel)
-    '🌲',  # Redwood
-    '🔷',  # Resolution blue
-    '🎵',  # Rhythm
-    '⬛',  # Rich black
-    '⚫',  # Rich black (FOGRA29)
-    '◾',  # Rich black (FOGRA39)
-    '🥒',  # Rifle green
-    '🥚',  # Robin egg blue
-    '🚀',  # Rocket metallic
-    '🚩',  # Rojo Spanish red
-    '🪙',  # Roman silver
-    '🌹',  # Rose
-]
-
-COLOR_PALETTE += [
-    ("Red Salsa", "#FF2400"),
-    ("Red-violet", "#C71585"),
-    ("Red-violet (Crayola)", "#C0448F"),
-    ("Red-violet (Color wheel)", "#922B3E"),
-    ("Redwood", "#A45A52"),
-    ("Resolution blue", "#002387"),
-    ("Rhythm", "#777696"),
-    ("Rich black", "#004040"),
-    ("Rich black (FOGRA29)", "#010B13"),
-    ("Rich black (FOGRA39)", "#010203"),
-    ("Rifle green", "#444C38"),
-    ("Robin egg blue", "#00CCCC"),
-    ("Rocket metallic", "#8A7F80"),
-    ("Rojo Spanish red", "#A91101"),
-    ("Roman silver", "#838996"),
-    ("Rose", "#FF007F"),
-]
-
-# --- appended extra batch 6 (Safety..Seal) ---
-COLOR_EMOJIS += [
-    '🟨',  # Safety yellow
-    '🟡',  # Saffron
-    '🌿',  # Sage
-    '🇮',  # St. Patrick's blue (I as fallback)
-    '🍣',  # Salmon
-    '🌸',  # Salmon pink
-    '🏖️',  # Sand
-    '🏜️',  # Sand dune
-    '🟤',  # Sandy brown
-    '🌾',  # Sap green
-    '🔷',  # Sapphire
-    '🔵',  # Sapphire blue
-    '🔵',  # Sapphire (Crayola)
-    '🥇',  # Satin sheen gold
-    '🚩',  # Scarlet
-    '💗',  # Schauss pink
-    '🚌',  # School bus yellow
-    '💚',  # Screamin' Green
-    '🌊',  # Sea green
-    '🩵',  # Sea green (Crayola)
-    '🔮',  # Seance
-    '🟫',  # Seal brown
-]
-
-COLOR_PALETTE += [
-    ("Safety yellow", "#EED202"),
-    ("Saffron", "#F4C430"),
-    ("Sage", "#BCB88A"),
-    ("St. Patrick's blue", "#23297A"),
+    ("Mint", "#98FF98"),
+    ("Peach", "#FFE5B4"),
+    ("Apricot", "#FBCEB1"),
     ("Salmon", "#FA8072"),
-    ("Salmon pink", "#FF91A4"),
+    ("Coral", "#FF7F50"),
+    ("Crimson", "#DC143C"),
+    ("Burgundy", "#800020"),
+    ("Chocolate", "#D2691E"),
+    ("Coffee", "#6F4E37"),
+    ("Mustard", "#FFDB58"),
+    ("Khaki", "#F0E68C"),
+    ("Charcoal", "#36454F"),
+    ("Slate Gray", "#708090"),
+    ("Steel Blue", "#4682B4"),
+    ("Sky Blue", "#87CEEB"),
+    ("Ocean Blue", "#0077BE"),
+    ("Midnight Blue", "#191970"),
+    ("Forest Green", "#228B22"),
+    ("Pine Green", "#01796F"),
+    ("Moss", "#8A9A5B"),
+    ("Emerald", "#50C878"),
+    ("Jade", "#00A86B"),
+    ("Seafoam", "#9FE2BF"),
+    ("Teal Green", "#3EB489"),
+    ("Lilac", "#C8A2C8"),
+    ("Rose", "#FF007F"),
+    ("Raspberry", "#E30B5C"),
+    ("Copper", "#B87333"),
+    ("Rust", "#B7410E"),
     ("Sand", "#C2B280"),
-    ("Sand dune", "#967117"),
-    ("Sandy brown", "#F4A460"),
-    ("Sap green", "#507D2A"),
+    ("Dune", "#967117"),
+    ("Ivory", "#FFFFF0"),
+    ("Almond", "#FFEBCD"),
+    ("Deep Ocean", "#006994"),
+    ("Ice", "#F0FFFF"),
+    ("Frost", "#E0FFFF"),
+    ("Lemon", "#FFF44F"),
+    ("Canary", "#FFEF00"),
+    ("Amber", "#FFBF00"),
+    ("Flame", "#E25822"),
+    ("Firebrick", "#B22222"),
+    ("Berry", "#8A2BE2"),
+    ("Orchid", "#DA70D6"),
+    ("Periwinkle", "#CCCCFF"),
+    ("Mint Cream", "#F5FFFA"),
+    ("Celeste", "#B2FFFF"),
+    ("Cerulean", "#007BA7"),
     ("Sapphire", "#0F52BA"),
-    ("Sapphire blue", "#0067A5"),
-    ("Sapphire (Crayola)", "#2D5DA1"),
-    ("Satin sheen gold", "#CBA135"),
-    ("Scarlet", "#FF2400"),
-    ("Schauss pink", "#FF91AF"),
-    ("School bus yellow", "#FFD800"),
-    ("Screamin' Green", "#66FF66"),
-    ("Sea green", "#2E8B57"),
-    ("Sea green (Crayola)", "#00FFCD"),
-    ("Seance", "#612086"),
-    ("Seal brown", "#59260B"),
-]
-
-# --- appended final batch 7 (Tyrian..Zomp) ---
-COLOR_EMOJIS += [
-    '🟪',  # Tyrian purple
-    '🔵',  # UA blue
-    '🔴',  # UA red
-    '🔮',  # Ultramarine
-    '🔷',  # Ultramarine blue
-    '🌸',  # Ultra pink
-    '🍒',  # Ultra red
-    '🌰',  # Umber
-    '🧴',  # Unbleached silk
-    '🌐',  # United Nations blue
-    '🎓',  # University of Pennsylvania red
-    '🟨',  # Unmellow yellow
-    '🌲',  # UP Forest green
-    '🟥',  # UP maroon
-    '🚩',  # Upsdell red
-    '🌊',  # Uranian blue
-    '🛩️', # USAFA blue
-    '🟫',  # Van Dyke brown
-    '🍦',  # Vanilla
-    '🍨',  # Vanilla ice
-    '🔵',  # Vantg blue
-    '🥇',  # Vegas gold
-    '🚗',  # Venetian red
-    '🪙',  # Verdigris
-    '🔶',  # Vermilion
-    '🔶',  # Vermilion (alt)
-    '🟪',  # Veronica
-    '🟣',  # Violet
-    '🟣',  # Violet (color wheel)
-    '🟪',  # Violet (crayola)
-    '🟪',  # Violet (RYB)
-    '💜',  # Violet (web)
-    '🔵',  # Violet-blue
-    '🔵',  # Violet-blue (Crayola)
-    '🌺',  # Violet-red
-    '🌺',  # Violet-red(PerBang)
-    '🫧',  # Viridian
-    '🟩',  # Viridian green
-    '🟥',  # Vivid burgundy
-    '🔵',  # Vivid sky blue
-    '🟠',  # Vivid tangerine
-    '🟪',  # Vivid violet
-    '⚡',  # Volt
-    '⬛',  # Warm black
-    '🔵',  # Weezy Blue
-    '🌾',  # Wheat
-    '⬜',  # White
-    '🔵',  # Wild blue yonder
-    '🌸',  # Wild orchid
-    '🍓',  # Wild Strawberry
-    '🍉',  # Wild watermelon
-    '🍊',  # Willpower orange
-    '🟫',  # Windsor tan
-    '🍷',  # Wine
-    '🟥',  # Wine Red
-    '🟫',  # Wine dregs
-    '❄️',  # Winter Sky
-    '🟩',  # Wintergreen Dream
-    '🌸',  # Wisteria
-    '🟫',  # Wood brown
-    '🟫',  # Xanadu
-    '🟨',  # Xanthic
-    '🟨',  # Xanthous
-    '🔵',  # Yale Blue
-    '🟨',  # Yellow
-    '🟨',  # Yellow (Crayola)
-    '🟨',  # Yellow (Munsell)
-    '🟨',  # Yellow (NCS)
-    '🟨',  # Yellow (Pantone)
-    '🟨',  # Yellow (process)
-    '🟨',  # Yellow (RYB)
-    '🟩',  # Yellow-green
-    '🟩',  # Yellow-green (Crayola)
-    '🟩',  # Yellow-green (Color Wheel)
-    '🟠',  # Yellow Orange
-    '🟠',  # Yellow Orange (Color Wheel)
-    '🟨',  # Yellow Rose
-    '🟨',  # Yellow Sunshine
-    '🔵',  # YInMn Blue
-    '🟦',  # Zaffer (Zaffre)
-    '🟠',  # Zarqa
-    '⬜',  # Zebra White
-    '⬜',  # Zinc white
-    '🟫',  # Zinnwaldite brown
-    '🟪',  # Zinzolin
-    '🟩',  # Zomp
-]
-
-COLOR_PALETTE += [
-    ("Tyrian purple", "#66023C"),
-    ("UA blue", "#0033AA"),
-    ("UA red", "#D9004C"),
-    ("Ultramarine", "#3F00FF"),
-    ("Ultramarine blue", "#4166F5"),
-    ("Ultra pink", "#FF6FFF"),
-    ("Ultra red", "#FC6C85"),
-    ("Umber", "#635147"),
-    ("Unbleached silk", "#FFDDCA"),
-    ("United Nations blue", "#009EDB"),
-    ("University of Pennsylvania red", "#A50021"),
-    ("Unmellow yellow", "#FFFF66"),
-    ("UP Forest green", "#014421"),
-    ("UP maroon", "#7B1113"),
-    ("Upsdell red", "#AE2029"),
-    ("Uranian blue", "#AFDBF5"),
-    ("USAFA blue", "#004F98"),
-    ("Van Dyke brown", "#664228"),
-    ("Vanilla", "#F3E5AB"),
-    ("Vanilla ice", "#F38FA9"),
-    ("Vantg blue", "#5271FF"),
-    ("Vegas gold", "#C5B358"),
-    ("Venetian red", "#C80815"),
-    ("Verdigris", "#43B3AE"),
-    ("Vermilion", "#E34234"),
-    ("Vermilion (alt)", "#D9381E"),
-    ("Veronica", "#A020F0"),
-    ("Violet", "#8F00FF"),
-    ("Violet (color wheel)", "#7F00FF"),
-    ("Violet (crayola)", "#963D7F"),
-    ("Violet (RYB)", "#8601AF"),
-    ("Violet (web)", "#EE82EE"),
-    ("Violet-blue", "#324AB2"),
-    ("Violet-blue (Crayola)", "#766EC8"),
-    ("Violet-red", "#F75394"),
-    ("Violet-red(PerBang)", "#F0599C"),
-    ("Viridian", "#40826D"),
-    ("Viridian green", "#009698"),
-    ("Vivid burgundy", "#9F1D35"),
-    ("Vivid sky blue", "#00CCFF"),
-    ("Vivid tangerine", "#FFA089"),
-    ("Vivid violet", "#9F00FF"),
-    ("Volt", "#CEFF00"),
-    ("Warm black", "#004242"),
-    ("Weezy Blue", "#189BCC"),
+    ("Cobalt", "#0047AB"),
+    ("Azure", "#007FFF"),
+    ("Cornflower", "#6495ED"),
+    ("Sandstone", "#786D5F"),
+    ("Taupe", "#483C32"),
     ("Wheat", "#F5DEB3"),
-    ("White", "#FFFFFF"),
-    ("Wild blue yonder", "#A2ADD0"),
-    ("Wild orchid", "#D470A2"),
-    ("Wild Strawberry", "#FF43A4"),
-    ("Wild watermelon", "#FC6C85"),
-    ("Willpower orange", "#FD5800"),
-    ("Windsor tan", "#A75502"),
-    ("Wine", "#722F37"),
-    ("Wine Red", "#B11226"),
-    ("Wine dregs", "#673147"),
-    ("Winter Sky", "#FF007C"),
-    ("Wintergreen Dream", "#56887D"),
-    ("Wisteria", "#C9A0DC"),
-    ("Wood brown", "#C19A6B"),
-    ("Xanadu", "#738678"),
-    ("Xanthic", "#EEED09"),
-    ("Xanthous", "#F1B42F"),
-    ("Yale Blue", "#00356B"),
-    ("Yellow", "#FFFF00"),
-    ("Yellow (Crayola)", "#FCE883"),
-    ("Yellow (Munsell)", "#EFCC00"),
-    ("Yellow (NCS)", "#FFD300"),
-    ("Yellow (Pantone)", "#FEDF00"),
-    ("Yellow (process)", "#FFEF00"),
-    ("Yellow (RYB)", "#FEFE33"),
-    ("Yellow-green", "#9ACD32"),
-    ("Yellow-green (Crayola)", "#C5E384"),
-    ("Yellow-green (Color Wheel)", "#30B21A"),
-    ("Yellow Orange", "#FFAE42"),
-    ("Yellow Orange (Color Wheel)", "#FF9505"),
-    ("Yellow Rose", "#FFF000"),
-    ("Yellow Sunshine", "#FFF700"),
-    ("YInMn Blue", "#2E5090"),
-    ("Zaffer (Zaffre)", "#0014A8"),
-    ("Zarqa", "#FF4500"),
-    ("Zebra White", "#F5F5F5"),
-    ("Zinc white", "#FDF8FF"),
-    ("Zinnwaldite brown", "#2C1608"),
-    ("Zinzolin", "#6C0277"),
-    ("Zomp", "#39A78E"),
+    ("Oat", "#E6D8AD"),
+    ("Lemon Chiffon", "#FFFACD"),
+    ("Powder Blue", "#B0E0E6"),
+    ("Slate Blue", "#6A5ACD"),
+    ("Denim", "#1560BD"),
+    ("Spring Green", "#00FF7F"),
+    ("Olive Drab", "#6B8E23"),
+    ("Chartreuse", "#7FFF00"),
+    ("Pistachio", "#93C572"),
+    ("Peacock", "#33A1C9"),
+    ("Arctic Blue", "#CDEBFF"),
+    ("Sunset", "#FD5E53"),
+    ("Tangerine", "#FF9408"),
+    ("Mahogany", "#C04000"),
+    ("Sangria", "#92000A"),
+    ("Pewter", "#99AABB"),
+    ("Smoke", "#848482"),
 ]
-
-# Normalize palette: remove minor/name-variant duplicates for specific canonical bases
-# Keep the first occurrence for each canonical base (e.g., 'Yellow', 'Violet'). This removes
-# entries like 'Yellow (Crayola)', 'Violet (color wheel)' while preserving the main 'Yellow' and 'Violet'.
-def _dedupe_by_base(palette, emojis, canonical_bases=None):
-    if canonical_bases is None:
-        canonical_bases = {'Yellow', 'Violet'}
-    keep = []
-    keep_emojis = []
-    seen_base = set()
-    for (name, hexv), emoji in zip(palette, emojis):
-        base = name.split('(', 1)[0].strip()
-        # if this base is canonical and we've already kept one, skip this variant
-        if base in canonical_bases:
-            if base in seen_base:
-                continue
-            seen_base.add(base)
-            keep.append((name, hexv))
-            keep_emojis.append(emoji)
-        else:
-            keep.append((name, hexv))
-            keep_emojis.append(emoji)
-    return keep, keep_emojis
-
-# Apply dedupe in-place
-COLOR_PALETTE, COLOR_EMOJIS = _dedupe_by_base(COLOR_PALETTE, COLOR_EMOJIS, canonical_bases={'Yellow', 'Violet'})
 
 # Maximum number of available colors (dynamic)
 MAX_COLOR_COUNT = min(len(COLOR_PALETTE), 75)
+
+
+class ColorPickerView(discord.ui.View):
+    """Interactive color picker: paginate through the hardcoded palette and allow the
+    command user to pick exactly `required` colors. Includes Prev/Next navigation,
+    per-item select buttons, Random quick-pick, Confirm, and Cancel.
+    """
+    def __init__(self, palette, emojis, required: int, user_id: int, *, timeout: int = 120):
+        super().__init__(timeout=timeout)
+        self.palette = palette
+        self.emojis = emojis
+        self.required = required
+        self.user_id = user_id
+        self.page_size = 10
+        self.page = 0
+        self.selected = set()
+        self.value = None  # final list of indices when confirmed
+
+        # persistent controls
+        self.prev_btn = discord.ui.Button(label='◀', style=discord.ButtonStyle.secondary)
+        self.next_btn = discord.ui.Button(label='▶', style=discord.ButtonStyle.secondary)
+        self.random_btn = discord.ui.Button(label='Random', style=discord.ButtonStyle.primary)
+        self.confirm_btn = discord.ui.Button(label='Confirm', style=discord.ButtonStyle.success, disabled=True)
+        self.cancel_btn = discord.ui.Button(label='Cancel', style=discord.ButtonStyle.danger)
+
+        # assign callbacks
+        self.prev_btn.callback = self.on_prev
+        self.next_btn.callback = self.on_next
+        self.random_btn.callback = self.on_random
+        self.confirm_btn.callback = self.on_confirm
+        self.cancel_btn.callback = self.on_cancel
+
+        # initial children: item buttons will be added by update_page_items
+        self.add_item(self.prev_btn)
+        self.add_item(self.next_btn)
+        self.add_item(self.random_btn)
+        self.add_item(self.confirm_btn)
+        self.add_item(self.cancel_btn)
+        self.update_page_items()
+
+    def update_page_items(self):
+        # remove any existing item buttons (custom_id starts with 'item-')
+        for child in list(self.children):
+            cid = getattr(child, 'custom_id', None)
+            if isinstance(cid, str) and cid.startswith('item-'):
+                self.remove_item(child)
+
+        start = self.page * self.page_size
+        end = min(start + self.page_size, len(self.palette))
+        for i in range(start, end):
+            emoji = self.emojis[i] if i < len(self.emojis) else '❔'
+            name = self.palette[i][0]
+            label = f"{emoji} {name}"
+            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, custom_id=f'item-{i}')
+
+            async def item_callback(interaction: discord.Interaction, i=i):
+                if interaction.user.id != self.user_id:
+                    await interaction.response.send_message('Only the command invoker can use this picker.', ephemeral=True)
+                    return
+                if i in self.selected:
+                    self.selected.remove(i)
+                else:
+                    if len(self.selected) >= self.required:
+                        # inform user they can't select more
+                        await interaction.response.send_message(f'You can only select {self.required} colors.', ephemeral=True)
+                        return
+                    self.selected.add(i)
+                # update confirm enabled state
+                self.confirm_btn.disabled = (len(self.selected) != self.required)
+                await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+            btn.callback = item_callback
+            # insert item buttons before navigation controls (so they appear first)
+            # add at front: use insert at position 0 repeatedly to keep order
+            self.add_item(btn)
+
+    def build_embed(self):
+        start = self.page * self.page_size
+        end = min(start + self.page_size, len(self.palette))
+        e = discord.Embed(title=f'Select colors ({len(self.selected)}/{self.required}) — page {self.page+1}/{(len(self.palette)-1)//self.page_size+1}', color=discord.Color.blurple())
+        for i in range(start, end):
+            emoji = self.emojis[i] if i < len(self.emojis) else '❔'
+            name, hexv = self.palette[i]
+            selected_mark = ' ✅' if i in self.selected else ''
+            e.add_field(name=f"{emoji} {name}{selected_mark}", value=f'`{hexv}`', inline=True)
+        # footer hint
+        e.set_footer(text='Click an item to toggle selection. Use Random to auto-pick. Confirm becomes enabled when selections match the requested count.')
+        return e
+
+    async def on_prev(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message('Only the command invoker can use this picker.', ephemeral=True)
+            return
+        if self.page > 0:
+            self.page -= 1
+            self.update_page_items()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_next(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message('Only the command invoker can use this picker.', ephemeral=True)
+            return
+        max_page = (len(self.palette)-1) // self.page_size
+        if self.page < max_page:
+            self.page += 1
+            self.update_page_items()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_random(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message('Only the command invoker can use this picker.', ephemeral=True)
+            return
+        # choose random indices
+        self.selected = set(random.sample(range(len(self.palette)), k=self.required))
+        self.confirm_btn.disabled = False
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_confirm(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message('Only the command invoker can use this picker.', ephemeral=True)
+            return
+        if len(self.selected) != self.required:
+            await interaction.response.send_message(f'Please select exactly {self.required} colors before confirming.', ephemeral=True)
+            return
+        self.value = list(self.selected)
+        await interaction.response.edit_message(content='Selection confirmed — creating roles...', embed=None, view=None)
+        self.stop()
+
+    async def on_cancel(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message('Only the command invoker can use this picker.', ephemeral=True)
+            return
+        await interaction.response.edit_message(content='Selection cancelled.', embed=None, view=None)
+        self.value = None
+        self.stop()
+
+    async def on_timeout(self):
+        # when timing out, just stop and leave the message as-is
+        try:
+            self.stop()
+        except Exception:
+            pass
+
 
 
 def load_reaction_configs():
@@ -536,8 +325,8 @@ class ReactionRoles(commands.Cog):
 
     @app_commands.command(name='reactionroles_create', description='Create 1..N color roles under the bot\'s top role')
     @app_commands.checks.has_permissions(manage_roles=True)
-    @app_commands.describe(count=f'Number of color roles to create (1-{MAX_COLOR_COUNT})', base_name='Base name for the roles')
-    async def create_roles(self, interaction: Interaction, count: int, base_name: Optional[str] = 'Color'):
+    @app_commands.describe(count=f'Number of color roles to create (1-{MAX_COLOR_COUNT})', base_name='Base name for the roles', interactive='Use interactive picker to choose colors')
+    async def create_roles(self, interaction: Interaction, count: int, base_name: Optional[str] = 'Color', interactive: Optional[bool] = False):
         # Defer immediately (public response) so we can edit it later.
         await interaction.response.defer(thinking=True, ephemeral=False)
         debug_command('reactionroles_create', interaction.user, guild=interaction.guild, count=count, base_name=base_name)
@@ -572,8 +361,20 @@ class ReactionRoles(commands.Cog):
         # pick a random subset of colors while preserving the universal emoji->color mapping
         created = []
         try:
-            # sample indices so emojis remain tied to their matching colors
-            indices = random.sample(range(len(COLOR_PALETTE)), k=count)
+            # allow interactive selection of colors (picker) or random sampling
+            if interactive:
+                view = ColorPickerView(COLOR_PALETTE, COLOR_EMOJIS, required=count, user_id=interaction.user.id)
+                message = await interaction.edit_original_response(embed=view.build_embed(), view=view)
+                # wait for the view to finish (confirm/cancel or timeout)
+                await view.wait()
+                if not view.value:
+                    # cancelled or timed out
+                    await interaction.followup.send('Color selection cancelled or timed out.', ephemeral=True)
+                    return
+                indices = view.value
+            else:
+                # sample indices so emojis remain tied to their matching colors
+                indices = random.sample(range(len(COLOR_PALETTE)), k=count)
             color_choices = [COLOR_PALETTE[i] for i in indices]
             emoji_choices = [COLOR_EMOJIS[i] for i in indices]
             for idx, (color_name, hexcode) in enumerate(color_choices):
@@ -687,8 +488,8 @@ class ReactionRoles(commands.Cog):
 
     @app_commands.command(name='reactionroles_post', description='Post a reaction-roles message for a previously created role set')
     @app_commands.checks.has_permissions(manage_roles=True)
-    @app_commands.describe(config_id='Config ID from reactionroles_create', channel='Channel to post in', message='Message to post', title='Optional title for the posted embed')
-    async def post_message(self, interaction: Interaction, config_id: str, channel: discord.TextChannel, message: str, title: Optional[str] = None):
+    @app_commands.describe(config_id='Config ID from reactionroles_create', channel='Channel to post in', message='Optional message to post (leave blank to omit description)', title='Optional title for the posted embed')
+    async def post_message(self, interaction: Interaction, config_id: str, channel: discord.TextChannel, message: Optional[str] = None, title: Optional[str] = None):
         # Defer immediately (public response) so we can edit it later.
         await interaction.response.defer(thinking=True, ephemeral=False)
         debug_command('reactionroles_post', interaction.user, guild=interaction.guild, channel=channel, config_id=config_id)
@@ -748,21 +549,22 @@ class ReactionRoles(commands.Cog):
 
             posted_entries = []
             for page_index, page_items in enumerate(pages, start=1):
-                # Only show (x/y) if more than one page
-                if len(pages) > 1:
-                    if page_index == 1:
-                        if title:
+                if page_index == 1:
+                    # If a title is provided, use it; otherwise use a page counter as the title.
+                    if title:
+                        if message:
                             e = discord.Embed(title=title + f' ({page_index}/{len(pages)})', description=message, color=discord.Color.blurple())
                         else:
+                            e = discord.Embed(title=title + f' ({page_index}/{len(pages)})', color=discord.Color.blurple())
+                    else:
+                        if message:
                             e = discord.Embed(description=message, color=discord.Color.blurple())
                             e.title = f'({page_index}/{len(pages)})'
-                    else:
-                        e = discord.Embed(title=f'({page_index}/{len(pages)})', color=discord.Color.blurple())
+                        else:
+                            # No title and no message: use page counter as title and no description
+                            e = discord.Embed(title=f'({page_index}/{len(pages)})', color=discord.Color.blurple())
                 else:
-                    if title:
-                        e = discord.Embed(title=title, description=message, color=discord.Color.blurple())
-                    else:
-                        e = discord.Embed(description=message, color=discord.Color.blurple())
+                    e = discord.Embed(title=f'({page_index}/{len(pages)})', color=discord.Color.blurple())
 
                 # add mapping fields (inline=True for compactness)
                 for emoji, rid, rname in page_items:

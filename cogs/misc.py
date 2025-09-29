@@ -55,6 +55,9 @@ class HelpPaginator(ui.View):
 class Misc(commands.Cog):
     logger = logging.getLogger('jeng.misc')
     logger.setLevel(logging.INFO)
+
+    def __init__(self, bot):
+        self.bot = bot
     @app_commands.command(name="listpermissions", description="List all roles with bot admin permissions for this server.")
     async def listpermissions(self, interaction: Interaction):
         CONFIG_FILE = "xp_config.json"

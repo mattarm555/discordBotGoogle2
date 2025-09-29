@@ -318,6 +318,9 @@ class ReactionRoles(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.configs = load_reaction_configs()  # guild_id -> list of configs
+        # in-memory per-guild cooldowns when we detect long Retry-After values
+        # maps guild_id -> unix timestamp (time.time()) until which bulk creations should be avoided
+        self._guild_cooldowns = {}
 
     async def cog_unload(self):
         pass
@@ -328,8 +331,8 @@ class ReactionRoles(commands.Cog):
 
     @app_commands.command(name='reactionroles_create', description='Create 1..100 color roles.')
     @app_commands.checks.has_permissions(manage_roles=True)
-    @app_commands.describe(count=f'Number of color roles to create (1-{MAX_COLOR_COUNT})', base_name='Base name for the roles', interactive='Use interactive picker to choose colors')
-    async def create_roles(self, interaction: Interaction, count: int, base_name: Optional[str] = 'Color', interactive: Optional[bool] = False):
+    @app_commands.describe(count=f'Number of color roles to create (1-{MAX_COLOR_COUNT})', base_name='Base name for the roles', interactive='Use interactive picker to choose colors', batch_size='Create roles in batches of this size to avoid rate limits')
+    async def create_roles(self, interaction: Interaction, count: int, base_name: Optional[str] = 'Color', interactive: Optional[bool] = False, batch_size: Optional[int] = 10):
         # Defer immediately (public response) so we can edit it later.
         await interaction.response.defer(thinking=True, ephemeral=False)
         debug_command('reactionroles_create', interaction.user, guild=interaction.guild, count=count, base_name=base_name)
@@ -348,10 +351,26 @@ class ReactionRoles(commands.Cog):
             await interaction.edit_original_response(content=f'❌ Count must be between 1 and {max_count}.')
             return
 
+        # validate batch_size
+        try:
+            batch_size = int(batch_size) if batch_size is not None else 10
+        except Exception:
+            batch_size = 10
+        if batch_size < 1:
+            batch_size = 1
+
         guild = interaction.guild
         bot_member = guild.get_member(self.bot.user.id)
         if not bot_member:
             await interaction.edit_original_response(content='❌ Could not determine bot member in this guild.')
+            return
+
+        # check for a recent large rate-limit cooldown for this guild
+        now_ts = time.time()
+        cooldown_until = self._guild_cooldowns.get(guild.id)
+        if cooldown_until and cooldown_until > now_ts:
+            remaining = int(cooldown_until - now_ts)
+            await interaction.edit_original_response(content=f'❌ This server is currently rate-limited for bulk role creation. Try again in {remaining}s.')
             return
 
         # check manage_roles permission
@@ -395,118 +414,126 @@ class ReactionRoles(commands.Cog):
                 await interaction.edit_original_response(content=f'❌ Creating {len(indices)} roles would exceed Discord\'s maximum of 250 roles per guild (current: {existing_role_count}). Reduce the count and try again.')
                 return
 
-            for pos, palette_idx in enumerate(indices, start=1):
-                color_name, hexcode = COLOR_PALETTE[palette_idx]
-                name = f"{color_name}"
-                # parse hex to int for discord.Color
-                try:
-                    v = int(hexcode.lstrip('#'), 16)
-                    colour = discord.Color(v)
-                except Exception:
-                    colour = discord.Color.default()
-
-                # Retry loop with exponential backoff and a reasonable per-role total timeout
-                start_time = time.monotonic()
-                max_total = 60.0  # seconds per role maximum
-                attempt = 0
-                succeeded = False
-                # If a role with the intended name already exists, skip creation but record it
-                existing = {r.name: r for r in guild.roles}
-                if name in existing:
-                    # Use the existing role object for mappings
-                    role = existing[name]
-                    created.append(role)
-                    success_indices.append(palette_idx)
-                    succeeded = True
-                    # small sleep to avoid tight loops contributing to rate limits
+            # process indices in batches to avoid hammering the API
+            total = len(indices)
+            processed = 0
+            for batch_start in range(0, total, batch_size):
+                batch = indices[batch_start:batch_start+batch_size]
+                for palette_idx in batch:
+                    processed += 1
+                    color_name, hexcode = COLOR_PALETTE[palette_idx]
+                    name = f"{color_name}"
+                    # parse hex to int for discord.Color
                     try:
-                        await asyncio.sleep(1.5)
+                        v = int(hexcode.lstrip('#'), 16)
+                        colour = discord.Color(v)
                     except Exception:
-                        pass
-                else:
-                    while attempt < 5 and (time.monotonic() - start_time) < max_total:
+                        colour = discord.Color.default()
+
+                    # If a role with the intended name already exists, reuse it and record success
+                    existing = {r.name: r for r in guild.roles}
+                    if name in existing:
+                        role = existing[name]
+                        created.append(role)
+                        success_indices.append(palette_idx)
+                        # Sleep to avoid contributing to rate limits
+                        try:
+                            await asyncio.sleep(3.0)
+                        except Exception:
+                            pass
+                        # update progress using actual created/failed counts
+                        if (len(created) + len(failed)) - last_progress_update >= 5 or (len(created) + len(failed)) == total:
+                            try:
+                                await interaction.edit_original_response(content=f'Creating roles... {len(created)}/{total} succeeded, {len(failed)} failed', embed=None)
+                            except Exception:
+                                pass
+                            last_progress_update = len(created) + len(failed)
+                        continue
+
+                    # Attempt to create the role with retry on explicit rate limits
+                    per_role_start = time.monotonic()
+                    per_role_timeout = 120.0  # allow up to 2 minutes trying this role (including wait-on-rate-limit)
+                    attempt = 0
+                    while True:
                         attempt += 1
                         try:
-                            # allow a single attempt to complete within 30s
-                            role = await asyncio.wait_for(
-                                guild.create_role(name=name, colour=colour, reason=f'Reaction roles created by {interaction.user}'),
-                                timeout=30.0
-                            )
+                            role = await guild.create_role(name=name, colour=colour, reason=f'Reaction roles created by {interaction.user}')
                             created.append(role)
                             success_indices.append(palette_idx)
-                            succeeded = True
-                            break
-                        except asyncio.TimeoutError:
-                            # likely waiting on internal rate-limit sleep; back off and retry
-                            logger.warning(f'[ReactionRoles] Timeout creating role for {name} (palette index {palette_idx}), attempt {attempt}')
-                            # Double-check: sometimes Discord created the role but the confirmation reply was slow.
+                            # brief throttle after success
                             try:
-                                existing_role = discord.utils.get(guild.roles, name=name)
+                                await asyncio.sleep(3.0)
                             except Exception:
-                                existing_role = None
-                            if existing_role:
-                                logger.info(f'[ReactionRoles] Role {name} found after timeout; treating as success')
-                                created.append(existing_role)
-                                success_indices.append(palette_idx)
-                                succeeded = True
-                                break
-                        except discord.Forbidden:
-                            logger.exception(f'[ReactionRoles] Forbidden creating role for {name} (palette index {palette_idx})')
-                            failed.append({'index': palette_idx, 'name': name, 'reason': 'forbidden'})
+                                pass
                             break
                         except discord.HTTPException as http_exc:
-                            # Handle explicit HTTP errors, including rate limits
+                            # Extract retry information if present
                             try:
                                 status = getattr(http_exc, 'status', None)
                                 retry_after = getattr(http_exc, 'retry_after', None) or getattr(http_exc, 'retry_after_seconds', None)
                             except Exception:
                                 status = None
                                 retry_after = None
-                            if status == 429 or (retry_after is not None):
-                                # If Discord communicates a Retry-After, honor it.
-                                try:
-                                    ra = float(retry_after) if retry_after is not None else None
-                                except Exception:
-                                    ra = None
+
+                            # If Discord indicates a Retry-After, honor it and retry the same role
+                            ra = None
+                            try:
+                                ra = float(retry_after) if retry_after is not None else None
+                            except Exception:
+                                ra = None
+
+                            if status == 429 or (ra is not None):
                                 if ra and ra > 0:
-                                    logger.warning(f'[ReactionRoles] Rate limited when creating role {name}; sleeping for {ra:.1f}s')
+                                    logger.warning(f'[ReactionRoles] Rate limited when creating role {name}; retry-after {ra:.1f}s')
+                                    # set guild cooldown for long retry-after durations
+                                    if ra > 5:
+                                        try:
+                                            self._guild_cooldowns[guild.id] = time.time() + ra
+                                        except Exception:
+                                            pass
+                                    # inform user of rate-limit and wait, then retry this role
                                     try:
-                                        await asyncio.sleep(min(ra + 0.5, 300))
+                                        await interaction.edit_original_response(content=f'Rate-limited by Discord; waiting {int(ra)}s before retrying...', embed=None)
                                     except Exception:
-                                        pass
-                                    # continue to next attempt
-                                    continue
-                            logger.exception(f'[ReactionRoles] HTTP error creating role for {name} (palette index {palette_idx}), attempt {attempt}')
-                        except Exception:
-                            logger.exception(f'[ReactionRoles] Error creating role for {name} (palette index {palette_idx}), attempt {attempt}')
-                        # backoff before retrying
-                        remaining = max_total - (time.monotonic() - start_time)
-                        if remaining <= 0:
+                                        logger.exception('[ReactionRoles] Failed to notify user about rate limit')
+                                    # Sleep the indicated retry_after but ensure we don't block forever per-role
+                                    sleep_for = min(ra, per_role_timeout)
+                                    await asyncio.sleep(sleep_for)
+                                    # continue retrying this role
+                                    if time.monotonic() - per_role_start > per_role_timeout:
+                                        logger.warning(f'[ReactionRoles] Giving up on role {name} after timeout waiting through rate-limits')
+                                        failed.append({'index': palette_idx, 'name': name, 'reason': 'rate_limit_timeout'})
+                                        break
+                                    else:
+                                        continue
+                                else:
+                                    # No useful retry_after; treat as failed HTTP error
+                                    logger.exception(f'[ReactionRoles] HTTP error creating role for {name} (palette index {palette_idx})')
+                                    failed.append({'index': palette_idx, 'name': name, 'reason': 'http_exception'})
+                                    break
+                            else:
+                                logger.exception(f'[ReactionRoles] HTTP error creating role for {name} (palette index {palette_idx})')
+                                failed.append({'index': palette_idx, 'name': name, 'reason': 'http_exception'})
+                                break
+                        except Exception as e:
+                            logger.exception(f'[ReactionRoles] Error creating role for {name} (palette index {palette_idx}): {e}')
+                            failed.append({'index': palette_idx, 'name': name, 'reason': 'error'})
                             break
-                        backoff = min(2 ** attempt, 10, remaining)
+
+                    # update progress using actual created/failed counts
+                    if (len(created) + len(failed)) - last_progress_update >= 5 or (len(created) + len(failed)) == total:
                         try:
-                            await asyncio.sleep(backoff)
+                            await interaction.edit_original_response(content=f'Creating roles... {len(created)}/{total} succeeded, {len(failed)} failed', embed=None)
                         except Exception:
-                            break
+                            pass
+                        last_progress_update = len(created) + len(failed)
 
-                if not succeeded and not any(f['index'] == palette_idx for f in failed):
-                    failed.append({'index': palette_idx, 'name': name, 'reason': 'timeout_or_error'})
-
-                # After a successful creation or reuse, pause briefly to avoid bursting the API
-                if succeeded:
+                # after finishing a batch, pause a bit to allow Discord some breathing room between batches
+                if (batch_start + batch_size) < total:
                     try:
-                        await asyncio.sleep(1.5)
+                        await asyncio.sleep(2.0)
                     except Exception:
                         pass
-
-                # Periodically update progress so the user doesn't see a long 'thinking' state
-                if pos - last_progress_update >= 10 or pos == total:
-                    try:
-                        await interaction.edit_original_response(content=f'Creating roles... {pos}/{total} completed', embed=None)
-                    except Exception:
-                        # ignore edit failures; continue
-                        pass
-                    last_progress_update = pos
 
             # attempt to move roles to just under the bot's top role
             # Re-fetch bot member to get an up-to-date top role position, then compute desired placements.

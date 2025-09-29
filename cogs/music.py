@@ -160,10 +160,12 @@ class Music(commands.Cog):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(query, download=False)
 
-    def get_stream_url(self, url: str):
+    def get_stream_url(self, url: str, format_pref: str = None):
+        # Prefer progressive (non-HLS) formats by default to avoid m3u8 segment URLs
+        default_format = 'bestaudio[ext=mp4]/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best'
         # Prefer MP3 for SoundCloud targets to avoid HLS/unsupported streams
         ydl_opts = {
-            'format': 'bestaudio[abr<=128]/bestaudio/best',
+            'format': format_pref or default_format,
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
@@ -206,7 +208,8 @@ class Music(commands.Cog):
 
     def get_audio_source(self, url):
         ffmpeg_opts = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            # Ensure ffmpeg seeks to the start to avoid HLS/segment URLs starting mid-stream
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss 0',
             'options': '-vn'
         }
         return discord.FFmpegPCMAudio(url, **ffmpeg_opts)
@@ -377,41 +380,57 @@ class Music(commands.Cog):
 
             try:
                 # Resolve stream URL on-demand (once) if it wasn't resolved at enqueue time.
-                if not next_song.get('stream_url'):
+                try:
+                    # Always re-resolve the stream URL immediately before playback to avoid
+                    # reusing an expired HLS/segment URL that might start mid-stream.
+                    resolve_target = next_song.get('search_query') or next_song.get('webpage_url') or next_song.get('url')
+                    if not resolve_target:
+                        raise ValueError("No URL or search query to resolve stream")
+
+                    # If this is a SoundCloud search token, run the search now and pick the first real page URL
+                    if isinstance(resolve_target, str) and resolve_target.lower().startswith('scsearch'):
+                        try:
+                            search_info = await asyncio.to_thread(self.get_yt_info, resolve_target)
+                            entries2 = search_info.get('entries') if isinstance(search_info, dict) and 'entries' in search_info else [search_info]
+                            if entries2:
+                                first = entries2[0]
+                                candidate = first.get('webpage_url') or first.get('url')
+                                if candidate:
+                                    resolve_target = candidate
+                                    next_song['webpage_url'] = candidate
+                        except Exception as e:
+                            print(f"{RED}⚠️ Failed to re-resolve SoundCloud search for {next_song.get('title')}: {e}{RESET}")
+
+                    # blocking extraction in thread; prefer progressive formats to avoid HLS
+                    stream = await asyncio.to_thread(self.get_stream_url, resolve_target)
+                    # If yt-dlp still returned an HLS (.m3u8) playlist URL, retry once with explicit non-HLS preference
                     try:
-                        # Determine what to resolve: prefer search_query for re-resolution,
-                        # otherwise use stored webpage_url/url.
-                        resolve_target = next_song.get('search_query') or next_song.get('webpage_url') or next_song.get('url')
-                        if not resolve_target:
-                            raise ValueError("No URL or search query to resolve stream")
-
-                        # If this is a SoundCloud search token, run the search now and
-                        # pick the first entry's webpage_url (so we pass a real
-                        # SoundCloud page URL to yt-dlp rather than an API URL).
-                        if isinstance(resolve_target, str) and resolve_target.lower().startswith('scsearch'):
+                        if isinstance(stream, str) and stream.lower().endswith('.m3u8'):
+                            print(f"[DEBUG] Got HLS stream (.m3u8) for {next_song.get('title')}, retrying with non-HLS preference")
+                            retry_pref = 'bestaudio[ext=mp4]/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best'
                             try:
-                                search_info = await asyncio.to_thread(self.get_yt_info, resolve_target)
-                                entries2 = search_info.get('entries') if isinstance(search_info, dict) and 'entries' in search_info else [search_info]
-                                if entries2:
-                                    first = entries2[0]
-                                    candidate = first.get('webpage_url') or first.get('url')
-                                    if candidate:
-                                        resolve_target = candidate
-                                        # persist the resolved webpage for future retries
-                                        next_song['webpage_url'] = candidate
+                                stream_retry = await asyncio.to_thread(self.get_stream_url, resolve_target, retry_pref)
+                                if isinstance(stream_retry, str) and not stream_retry.lower().endswith('.m3u8'):
+                                    stream = stream_retry
+                                    print(f"[DEBUG] Retry returned non-HLS stream for {next_song.get('title')}")
+                                else:
+                                    print(f"[DEBUG] Retry still returned HLS (or non-progressive) for {next_song.get('title')}, proceeding with original stream")
                             except Exception as e:
-                                print(f"{RED}⚠️ Failed to re-resolve SoundCloud search for {next_song.get('title')}: {e}{RESET}")
+                                print(f"[DEBUG] Retry to avoid HLS failed: {e}")
+                    except Exception:
+                        # Defensive: if stream isn't a string or something unexpected, ignore and proceed
+                        pass
 
-                        stream = await asyncio.to_thread(self.get_stream_url, resolve_target)
-                        next_song['stream_url'] = stream
-                    except Exception as e:
-                        print(f"{RED}⚠️ Failed to resolve stream for {next_song.get('title')}: {e}{RESET}")
-                        await channel.send(embed=Embed(
-                            title="❌ Failed to Resolve Stream",
-                            description=f"Could not resolve a playable stream for **{next_song.get('title')}**, skipping...",
-                            color=discord.Color.red()
-                        ))
-                        continue
+                    # overwrite stream_url so we always use a fresh playable URL
+                    next_song['stream_url'] = stream
+                except Exception as e:
+                    print(f"{RED}⚠️ Failed to resolve stream for {next_song.get('title')}: {e}{RESET}")
+                    await channel.send(embed=Embed(
+                        title="❌ Failed to Resolve Stream",
+                        description=f"Could not resolve a playable stream for **{next_song.get('title')}**, skipping...",
+                        color=discord.Color.red()
+                    ))
+                    continue
 
                 stream_url = next_song.get('stream_url')
                 source = self.get_audio_source(stream_url)

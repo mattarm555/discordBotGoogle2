@@ -485,38 +485,43 @@ class ReactionRoles(commands.Cog):
                             if status == 429 or (ra is not None):
                                 if ra and ra > 0:
                                     logger.warning(f'[ReactionRoles] Rate limited when creating role {name}; retry-after {ra:.1f}s')
+                                    print(f"[DEBUG][ReactionRoles] Rate limited creating '{name}' (retry-after {ra:.1f}s)")
                                     # set guild cooldown for long retry-after durations
                                     if ra > 5:
                                         try:
                                             self._guild_cooldowns[guild.id] = time.time() + ra
                                         except Exception:
                                             pass
-                                    # inform user of rate-limit and wait, then retry this role
+                                    # notify the user and sleep the indicated retry_after, then retry the same role
                                     try:
                                         await interaction.edit_original_response(content=f'Rate-limited by Discord; waiting {int(ra)}s before retrying...', embed=None)
                                     except Exception:
                                         logger.exception('[ReactionRoles] Failed to notify user about rate limit')
-                                    # Sleep the indicated retry_after but ensure we don't block forever per-role
+                                    print(f"[DEBUG][ReactionRoles] Sleeping {min(ra, per_role_timeout)}s before retrying role '{name}'")
                                     sleep_for = min(ra, per_role_timeout)
                                     await asyncio.sleep(sleep_for)
-                                    # continue retrying this role
+                                    # If we've exceeded the per-role patience window, record failure and stop retrying this role
                                     if time.monotonic() - per_role_start > per_role_timeout:
                                         logger.warning(f'[ReactionRoles] Giving up on role {name} after timeout waiting through rate-limits')
+                                        print(f"[DEBUG][ReactionRoles] Giving up on role '{name}' after waiting through rate-limits")
                                         failed.append({'index': palette_idx, 'name': name, 'reason': 'rate_limit_timeout'})
                                         break
-                                    else:
-                                        continue
+                                    # otherwise retry this role
+                                    continue
                                 else:
-                                    # No useful retry_after; treat as failed HTTP error
+                                    # No useful retry_after; treat as a failed HTTP error
                                     logger.exception(f'[ReactionRoles] HTTP error creating role for {name} (palette index {palette_idx})')
+                                    print(f"[DEBUG][ReactionRoles] HTTP error creating role '{name}' (index {palette_idx})")
                                     failed.append({'index': palette_idx, 'name': name, 'reason': 'http_exception'})
                                     break
                             else:
                                 logger.exception(f'[ReactionRoles] HTTP error creating role for {name} (palette index {palette_idx})')
+                                print(f"[DEBUG][ReactionRoles] HTTP error creating role '{name}' (index {palette_idx})")
                                 failed.append({'index': palette_idx, 'name': name, 'reason': 'http_exception'})
                                 break
                         except Exception as e:
                             logger.exception(f'[ReactionRoles] Error creating role for {name} (palette index {palette_idx}): {e}')
+                            print(f"[DEBUG][ReactionRoles] Exception creating role '{name}' (index {palette_idx}): {e}")
                             failed.append({'index': palette_idx, 'name': name, 'reason': 'error'})
                             break
 

@@ -454,6 +454,29 @@ class ReactionRoles(commands.Cog):
                             logger.exception(f'[ReactionRoles] Forbidden creating role for {name} (palette index {palette_idx})')
                             failed.append({'index': palette_idx, 'name': name, 'reason': 'forbidden'})
                             break
+                        except discord.HTTPException as http_exc:
+                            # Handle explicit HTTP errors, including rate limits
+                            try:
+                                status = getattr(http_exc, 'status', None)
+                                retry_after = getattr(http_exc, 'retry_after', None) or getattr(http_exc, 'retry_after_seconds', None)
+                            except Exception:
+                                status = None
+                                retry_after = None
+                            if status == 429 or (retry_after is not None):
+                                # If Discord communicates a Retry-After, honor it.
+                                try:
+                                    ra = float(retry_after) if retry_after is not None else None
+                                except Exception:
+                                    ra = None
+                                if ra and ra > 0:
+                                    logger.warning(f'[ReactionRoles] Rate limited when creating role {name}; sleeping for {ra:.1f}s')
+                                    try:
+                                        await asyncio.sleep(min(ra + 0.5, 300))
+                                    except Exception:
+                                        pass
+                                    # continue to next attempt
+                                    continue
+                            logger.exception(f'[ReactionRoles] HTTP error creating role for {name} (palette index {palette_idx}), attempt {attempt}')
                         except Exception:
                             logger.exception(f'[ReactionRoles] Error creating role for {name} (palette index {palette_idx}), attempt {attempt}')
                         # backoff before retrying

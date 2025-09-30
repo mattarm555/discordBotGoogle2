@@ -3,6 +3,32 @@ from discord.ext import commands
 from discord import app_commands, Interaction, Embed, ui
 import asyncio
 import yt_dlp
+from utils.youtube_api import yt_api_search, yt_api_videos, yt_api_playlist_items
+from urllib.parse import urlparse, parse_qs
+
+
+def parse_iso8601_duration(iso: str) -> int:
+    """Parse a simple ISO8601 duration (e.g. PT1H2M3S) into seconds. Returns 0 on failure."""
+    if not iso or not isinstance(iso, str):
+        return 0
+    try:
+        import re
+        total = 0
+        d = re.search(r"(\d+)D", iso)
+        h = re.search(r"(\d+)H", iso)
+        m = re.search(r"(\d+)M", iso)
+        s = re.search(r"(\d+)S", iso)
+        if d:
+            total += int(d.group(1)) * 86400
+        if h:
+            total += int(h.group(1)) * 3600
+        if m:
+            total += int(m.group(1)) * 60
+        if s:
+            total += int(s.group(1))
+        return total
+    except Exception:
+        return 0
 import math
 import json
 import os
@@ -249,12 +275,74 @@ class Music(commands.Cog):
             query = f"ytsearch1:{url.strip()}"
 
         # run blocking extraction in a thread to avoid blocking the event loop
+        # Prefer YouTube Data API for plain searches or YouTube URLs to avoid heavy yt_dlp metadata runs
+        data = None
         try:
-            data = await asyncio.to_thread(self.get_yt_info, query)
-        except Exception as e:
-            embed = Embed(title="⚠️ Extraction Failed", description=f"Failed to retrieve info: {e}", color=discord.Color.red())
-            await interaction.edit_original_response(embed=embed)
-            return
+            if url.startswith('http'):
+                # If YouTube URL, try to parse video id and fetch via API
+                p = urlparse(url)
+                host = p.netloc.lower()
+                if 'youtube' in host or 'youtu.be' in host:
+                    # get v= query or path short id
+                    qs = parse_qs(p.query)
+                    vid = None
+                    if 'v' in qs:
+                        vid = qs.get('v')[0]
+                    else:
+                        # youtu.be short link -> path component
+                        path = p.path.strip('/')
+                        if path:
+                            vid = path
+                    if vid:
+                        api_res = yt_api_videos(vid)
+                        items = api_res.get('items', [])
+                        if items:
+                            it = items[0]
+                            snip = it.get('snippet', {})
+                            # Try to parse ISO 8601 duration
+                            dur = 0
+                            try:
+                                cd = it.get('contentDetails', {})
+                                iso = cd.get('duration')
+                                if iso:
+                                    dur = parse_iso8601_duration(iso)
+                            except Exception:
+                                dur = 0
+                            # construct a dict similar to yt_dlp output for downstream code
+                            data = {'entries': [{'id': vid, 'webpage_url': url, 'title': snip.get('title'), 'thumbnail': snip.get('thumbnails', {}).get('high', {}).get('url') or snip.get('thumbnails', {}).get('default', {}).get('url'), 'duration': dur}]}
+            else:
+                # Plain text search: use YouTube Data API search (may cost quota)
+                q = url.strip()
+                api_res = yt_api_search(q, max_results=1)
+                items = api_res.get('items', [])
+                if items:
+                    vid = items[0]['id']['videoId']
+                    vres = yt_api_videos(vid)
+                    vitems = vres.get('items', [])
+                    if vitems:
+                        it = vitems[0]
+                        snip = it.get('snippet', {})
+                        dur = 0
+                        try:
+                            cd = it.get('contentDetails', {})
+                            iso = cd.get('duration')
+                            if iso:
+                                dur = parse_iso8601_duration(iso)
+                        except Exception:
+                            dur = 0
+                        url_v = f"https://www.youtube.com/watch?v={vid}"
+                        data = {'entries': [{'id': vid, 'webpage_url': url_v, 'title': snip.get('title'), 'thumbnail': snip.get('thumbnails', {}).get('high', {}).get('url') or snip.get('thumbnails', {}).get('default', {}).get('url'), 'duration': dur}]}
+        except Exception:
+            data = None
+
+        # fallback to yt_dlp metadata extraction when API didn't return usable data
+        if not data:
+            try:
+                data = await asyncio.to_thread(self.get_yt_info, query)
+            except Exception as e:
+                embed = Embed(title="⚠️ Extraction Failed", description=f"Failed to retrieve info: {e}", color=discord.Color.red())
+                await interaction.edit_original_response(embed=embed)
+                return
 
         entries = data['entries'] if isinstance(data, dict) and 'entries' in data else [data]
         songs_added = []

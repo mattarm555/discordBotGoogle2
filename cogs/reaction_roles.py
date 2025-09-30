@@ -420,9 +420,6 @@ class ReactionRoles(commands.Cog):
                 save_reaction_configs(self.configs)
             except Exception:
                 logger.exception('[ReactionRoles] Failed to save initial partial config')
-
-            # mapping lookup from palette index -> (emoji, hex, name)
-            palette_map = {pidx: (COLOR_EMOJIS[indices.index(pidx)] if indices.count(pidx) else COLOR_EMOJIS[indices.index(pidx)], COLOR_PALETTE[indices.index(pidx)][1], COLOR_PALETTE[indices.index(pidx)][0]) for pidx in indices}
             # Preflight: ensure we won't exceed Discord's hard role limit (250 roles)
             existing_role_count = len(guild.roles)
             if existing_role_count + len(indices) > 250:
@@ -541,7 +538,7 @@ class ReactionRoles(commands.Cog):
                             break
 
                     # If succeeded, record mapping into the partial cfg and persist immediately
-                    if 'role' in locals() and role and (len(cfg.get('choices', [])) < total):
+                    if 'role' in locals() and role and (palette_idx in success_indices):
                         try:
                             # find mapping info
                             try:
@@ -613,24 +610,45 @@ class ReactionRoles(commands.Cog):
                 except Exception:
                     logger.exception('[ReactionRoles] Retry to reorder roles failed')
 
-            # persist this role set as a config. store choices as paired entries
-            cfg_id = self._make_config_id(guild.id, base_name)
-            cfg = {
-                'id': cfg_id,
-                'base_name': base_name,
-                # choices is a list of {'emoji', 'id', 'hex', 'name'} so emoji/color/role stay together
-                'choices': [
-                    {
-                        'emoji': emoji_choices[idx],
-                        'id': r.id,
-                        'hex': color_choices[idx][1],
-                        'name': color_choices[idx][0]
-                    }
-                    for idx, r in enumerate(created)
-                ]
-            }
-            self.configs.setdefault(str(guild.id), []).append(cfg)
-            save_reaction_configs(self.configs)
+            # Update the initial partial cfg in-place with the final created choices.
+            # We rely on the partial cfg that was appended earlier; find it and replace its choices
+            try:
+                # build choices list from created roles in the same order
+                final_choices = []
+                for r in created:
+                    # try to find matching palette entry by role name or id
+                    # fall back to None for emoji/hex/name if not resolvable
+                    entry = next((ch for ch in cfg.get('choices', []) if int(ch.get('id')) == r.id), None)
+                    if entry:
+                        final_choices.append(entry)
+                    else:
+                        # best-effort: try to match by name to color_choices
+                        matched = None
+                        for idx, cr in enumerate(created):
+                            if cr.id == r.id:
+                                try:
+                                    final_choices.append({'emoji': emoji_choices[idx], 'id': r.id, 'hex': color_choices[idx][1], 'name': color_choices[idx][0]})
+                                except Exception:
+                                    final_choices.append({'emoji': None, 'id': r.id, 'hex': None, 'name': r.name})
+                                matched = True
+                                break
+                        if not matched:
+                            final_choices.append({'emoji': None, 'id': r.id, 'hex': None, 'name': r.name})
+
+                cfg['choices'] = final_choices
+                # ensure this cfg remains the sole authoritative entry for this config; remove any other empty duplicates
+                guild_list = self.configs.setdefault(str(guild.id), [])
+                # remove any other entries that have the same base_name but different id and empty choices
+                for other in list(guild_list):
+                    if other is not cfg and other.get('base_name') == base_name and not other.get('choices'):
+                        try:
+                            guild_list.remove(other)
+                        except Exception:
+                            pass
+                # persist
+                save_reaction_configs(self.configs)
+            except Exception:
+                logger.exception('[ReactionRoles] Failed to finalize and save config')
 
             # reply with mapping split into pages of up to 25 fields (Discord limit)
             def build_embed_page(title_suffix, items):
@@ -671,10 +689,25 @@ class ReactionRoles(commands.Cog):
                 embed = discord.Embed(title='✅ Reaction Roles Created', color=discord.Color.blurple())
                 embed.add_field(name='Config ID', value=f'`{cfg_id}`', inline=False)
                 await interaction.edit_original_response(embed=embed)
-        except Exception:
-            logger.exception('[ReactionRoles] Failed to create roles')
-            embed = discord.Embed(title='❌ Failed to create roles', description='Check my permissions and role hierarchy.', color=discord.Color.red())
+        except discord.Forbidden as e:
+            # Explicitly handle missing permissions / hierarchy issues so operator sees the reason
+            logger.exception('[ReactionRoles] Permission error while creating roles')
+            print(f"[ERROR][ReactionRoles] Forbidden: {e}")
+            embed = discord.Embed(title='❌ Failed to create roles - Permission Error', description='I do not have sufficient permissions or my role is too low in the hierarchy to create/manage roles.', color=discord.Color.red())
             await interaction.edit_original_response(embed=embed)
+        except Exception as e:
+            # Log and surfacing exception details so failure is not silently swallowed
+            logger.exception('[ReactionRoles] Failed to create roles')
+            print(f"[ERROR][ReactionRoles] Exception during create_roles: {e}")
+            embed = discord.Embed(title='❌ Failed to create roles', description=f'An unexpected error occurred: {type(e).__name__}: {e}', color=discord.Color.red())
+            try:
+                await interaction.edit_original_response(embed=embed)
+            except Exception:
+                # if we cannot edit the original response, attempt a followup
+                try:
+                    await interaction.followup.send(embed=embed)
+                except Exception:
+                    logger.exception('[ReactionRoles] Additionally failed to notify user about the create_roles failure')
 
     @app_commands.command(name='reactionroles_post', description='Post a reaction-roles message for a previously created role set')
     @app_commands.checks.has_permissions(manage_roles=True)

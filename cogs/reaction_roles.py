@@ -144,7 +144,7 @@ COLOR_PALETTE = [
 
 # Maximum number of available colors (dynamic)
 # Allow up to the full curated palette (previously capped at 75)
-MAX_COLOR_COUNT = len(COLOR_PALETTE)
+MAX_COLOR_COUNT = min(50, len(COLOR_PALETTE))
 
 
 class ColorPickerView(discord.ui.View):
@@ -329,7 +329,7 @@ class ReactionRoles(commands.Cog):
         h = hashlib.sha1(f"{guild_id}:{base_name}:{os.urandom(8)}".encode('utf-8')).hexdigest()
         return h[:8]
 
-    @app_commands.command(name='reactionroles_create', description='Create 1..100 color roles.')
+    @app_commands.command(name='reactionroles_create', description='Create 1..50 color roles.')
     @app_commands.checks.has_permissions(manage_roles=True)
     @app_commands.describe(count=f'Number of color roles to create (1-{MAX_COLOR_COUNT})', base_name='Base name for the roles', interactive='Use interactive picker to choose colors', batch_size='Create roles in batches of this size to avoid rate limits')
     async def create_roles(self, interaction: Interaction, count: int, base_name: Optional[str] = 'Color', interactive: Optional[bool] = False, batch_size: Optional[int] = 10):

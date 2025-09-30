@@ -462,7 +462,7 @@ class ReactionRoles(commands.Cog):
                             success_indices.append(palette_idx)
                             # brief throttle after success
                             try:
-                                await asyncio.sleep(3.0)
+                                await asyncio.sleep(2.0)
                             except Exception:
                                 pass
                             break

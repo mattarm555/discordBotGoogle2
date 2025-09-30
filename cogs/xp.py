@@ -62,9 +62,14 @@ class XP(commands.Cog):
         self.config = load_json(CONFIG_FILE)
 
     def get_xp_config(self, guild_id):
+        # Ensure the guild entry exists and provides expected keys with defaults
         if guild_id not in self.config:
-            self.config[guild_id] = {"xp_per_message": 10, "blocked_channels": [], "level_roles": {}}
-        return self.config[guild_id]
+            self.config[guild_id] = {}
+        cfg = self.config[guild_id]
+        cfg.setdefault("xp_per_message", 10)
+        cfg.setdefault("blocked_channels", [])
+        cfg.setdefault("level_roles", {})
+        return cfg
 
     def add_xp(self, member: discord.Member, amount: int):
         guild_id = str(member.guild.id)

@@ -187,21 +187,68 @@ class Moderator(commands.Cog):
                                     break
                             except Exception:
                                 continue
-                    # fetch duration from persisted mutes if available
+                    # fetch duration and original channel from persisted mutes if available
                     duration_seconds = None
+                    source_channel_id = None
                     try:
                         for e in list(self._persisted_mutes):
                             if int(e.get('guild')) == int(guild_id) and int(e.get('user')) == int(user_id):
                                 duration_seconds = e.get('duration')
+                                source_channel_id = e.get('channel')
                                 break
                     except Exception:
                         duration_seconds = None
+                        source_channel_id = None
 
-                    if channel:
+                    # Prefer to announce in the same channel where the mute occurred
+                    target_channel = None
+                    try:
+                        if source_channel_id:
+                            try:
+                                target_channel = guild.get_channel(int(source_channel_id))
+                            except Exception:
+                                target_channel = None
+                    except Exception:
+                        target_channel = None
+
+                    gm = getattr(guild, 'me', None) or guild.get_member(self.bot.user.id)
+                    # verify we can send in target_channel
+                    can_send = False
+                    if target_channel and gm:
+                        try:
+                            can_send = target_channel.permissions_for(gm).send_messages
+                        except Exception:
+                            can_send = False
+
+                    # fallback to system channel / first available text channel
+                    if not target_channel or not can_send:
+                        channel = guild.system_channel
+                        can_send = False
+                        if channel and gm:
+                            try:
+                                can_send = channel.permissions_for(gm).send_messages
+                            except Exception:
+                                can_send = False
+                        if not channel or not can_send:
+                            channel = None
+                            for ch in guild.text_channels:
+                                try:
+                                    if gm and ch.permissions_for(gm).send_messages:
+                                        channel = ch
+                                        break
+                                except Exception:
+                                    continue
+                        target_channel = target_channel if (target_channel and can_send) else channel
+
+                    if target_channel:
                         emb = discord.Embed(description=f'✅ {member.mention} has been unmuted.', color=discord.Color.green())
                         dur_text = format_duration(duration_seconds)
                         emb.set_footer(text=f'Muted duration: {dur_text}')
-                        await channel.send(embed=emb)
+                        try:
+                            await target_channel.send(embed=emb)
+                        except Exception:
+                            # best-effort announcement; ignore failures
+                            pass
                 except Exception:
                     # best-effort announcement; ignore failures
                     pass
@@ -300,7 +347,7 @@ class Moderator(commands.Cog):
                 pass
         return role
 
-    async def _apply_mute(self, member: discord.Member, duration_seconds: Optional[int], reason: Optional[str]):
+    async def _apply_mute(self, member: discord.Member, duration_seconds: Optional[int], reason: Optional[str], source_channel: Optional[int] = None):
         role = await self._ensure_muted_role(member.guild)
         if not role:
             raise discord.Forbidden('Missing permission to create or manage Muted role')
@@ -329,11 +376,19 @@ class Moderator(commands.Cog):
             task = asyncio.create_task(_unmute_later())
             self._unmute_tasks[key] = {"task": task, "unmute_at": unmute_at}
 
-            # persist the schedule
+                # persist the schedule
             try:
                 self._persisted_mutes = [e for e in self._persisted_mutes if not (int(e.get('guild')) == key[0] and int(e.get('user')) == key[1])]
-                # store duration as well so we can report how long they were muted
-                self._persisted_mutes.append({"guild": str(key[0]), "user": str(key[1]), "unmute_at": unmute_at, "duration": int(duration_seconds) if duration_seconds else None})
+                # store duration and source channel so we can report how long they were muted and where to announce unmute
+                # Note: source channel may not be provided for some callers; leave as None in that case
+                # use provided source_channel if available
+                ch_val = None
+                try:
+                    if source_channel:
+                        ch_val = str(int(source_channel))
+                except Exception:
+                    ch_val = None
+                self._persisted_mutes.append({"guild": str(key[0]), "user": str(key[1]), "unmute_at": unmute_at, "duration": int(duration_seconds) if duration_seconds else None, "channel": ch_val})
                 self._save_persisted_mutes()
             except Exception:
                 pass
@@ -352,7 +407,7 @@ class Moderator(commands.Cog):
 
         secs = parse_duration(duration)
         try:
-            await self._apply_mute(member, secs, reason)
+            await self._apply_mute(member, secs, reason, source_channel=interaction.channel.id if interaction.channel else None)
         except discord.Forbidden:
             emb = discord.Embed(description='❌ I lack permissions to mute that user (role hierarchy or manage_roles).', color=discord.Color.red())
             await interaction.followup.send(embed=emb, ephemeral=True)
@@ -744,7 +799,7 @@ class Moderator(commands.Cog):
                 try:
                     duration = entry.get('duration')
                     reason = entry.get('reason')
-                    await self._apply_mute(message.author, duration, reason)
+                    await self._apply_mute(message.author, duration, reason, source_channel=message.channel.id if message.channel else None)
                     # attempt to delete the original message so the banned phrase is removed from chat
                     try:
                         await message.delete()

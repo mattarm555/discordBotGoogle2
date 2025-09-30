@@ -408,6 +408,21 @@ class ReactionRoles(commands.Cog):
             failed = []
             total = len(indices)
             last_progress_update = 0
+            # Create a partial config entry up-front and persist it so progress isn't lost
+            cfg_id = self._make_config_id(guild.id, base_name)
+            cfg = {
+                'id': cfg_id,
+                'base_name': base_name,
+                'choices': []
+            }
+            self.configs.setdefault(str(guild.id), []).append(cfg)
+            try:
+                save_reaction_configs(self.configs)
+            except Exception:
+                logger.exception('[ReactionRoles] Failed to save initial partial config')
+
+            # mapping lookup from palette index -> (emoji, hex, name)
+            palette_map = {pidx: (COLOR_EMOJIS[indices.index(pidx)] if indices.count(pidx) else COLOR_EMOJIS[indices.index(pidx)], COLOR_PALETTE[indices.index(pidx)][1], COLOR_PALETTE[indices.index(pidx)][0]) for pidx in indices}
             # Preflight: ensure we won't exceed Discord's hard role limit (250 roles)
             existing_role_count = len(guild.roles)
             if existing_role_count + len(indices) > 250:
@@ -452,7 +467,7 @@ class ReactionRoles(commands.Cog):
 
                     # Attempt to create the role with retry on explicit rate limits
                     per_role_start = time.monotonic()
-                    per_role_timeout = 120.0  # allow up to 2 minutes trying this role (including wait-on-rate-limit)
+                    per_role_timeout = 30.0  # allow up to 30 seconds trying this role (including wait-on-rate-limit)
                     attempt = 0
                     while True:
                         attempt += 1
@@ -525,6 +540,29 @@ class ReactionRoles(commands.Cog):
                             failed.append({'index': palette_idx, 'name': name, 'reason': 'error'})
                             break
 
+                    # If succeeded, record mapping into the partial cfg and persist immediately
+                    if 'role' in locals() and role and (len(cfg.get('choices', [])) < total):
+                        try:
+                            # find mapping info
+                            try:
+                                pos = indices.index(palette_idx)
+                                emoji_val = emoji_choices[pos]
+                                hex_val = color_choices[pos][1]
+                                name_val = color_choices[pos][0]
+                            except Exception:
+                                # fallback safe values
+                                emoji_val = COLOR_EMOJIS[palette_idx] if palette_idx < len(COLOR_EMOJIS) else None
+                                hex_val = COLOR_PALETTE[palette_idx][1] if palette_idx < len(COLOR_PALETTE) else None
+                                name_val = COLOR_PALETTE[palette_idx][0] if palette_idx < len(COLOR_PALETTE) else name
+                            # append to cfg choices
+                            cfg.setdefault('choices', []).append({'emoji': emoji_val, 'id': role.id, 'hex': hex_val, 'name': name_val})
+                            try:
+                                save_reaction_configs(self.configs)
+                            except Exception:
+                                logger.exception('[ReactionRoles] Failed to save partial config after creating a role')
+                        except Exception:
+                            logger.exception('[ReactionRoles] Failed to append created role to partial config')
+
                     # update progress using actual created/failed counts
                     if (len(created) + len(failed)) - last_progress_update >= 5 or (len(created) + len(failed)) == total:
                         try:
@@ -536,7 +574,7 @@ class ReactionRoles(commands.Cog):
                 # after finishing a batch, pause a bit to allow Discord some breathing room between batches
                 if (batch_start + batch_size) < total:
                     try:
-                        await asyncio.sleep(2.0)
+                        await asyncio.sleep(5.0)
                     except Exception:
                         pass
 

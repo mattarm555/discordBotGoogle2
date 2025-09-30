@@ -6,4 +6,5 @@ gtts
 yt-dlp
 aiohttp
 python-dotenv
+curl_cffi
 PyNaCl

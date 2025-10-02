@@ -148,7 +148,7 @@ class XP(commands.Cog):
         embed = Embed(title="📈 XP Level", color=discord.Color.green())
         embed.set_thumbnail(url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
         # Show only the mention (no parenthetical display name)
-        embed.add_field(name="\u200b", value=f"{interaction.user.mention}", inline=False)
+        embed.add_field(name="User", value=f"{interaction.user.mention}", inline=False)
         embed.add_field(name="Level", value=str(level))
         embed.add_field(name="XP", value=f"{xp} / {required_xp}")
         embed.add_field(name="Rank", value=f"#{rank}" if rank else "Unranked")

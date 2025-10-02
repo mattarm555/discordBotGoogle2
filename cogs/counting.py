@@ -5,6 +5,7 @@ import json
 import os
 from typing import Optional
 from utils.debug import debug_command
+import asyncio
 
 DATA_FILE = "counting_data.json"
 ROLE_NAME = "cannot count"
@@ -34,6 +35,8 @@ class Counting(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.data = load_json(DATA_FILE)
+        # per-channel locks to serialize processing and avoid race conditions
+        self._locks: dict[str, asyncio.Lock] = {}
 
     def has_bot_admin(self, member: discord.Member) -> bool:
         """Return True if the member is guild admin or has a role listed in xp_config.json under permissions_roles."""
@@ -203,43 +206,107 @@ class Counting(commands.Cog):
         if not entry:
             return
 
-        # If user has the cannot count role, delete their messages (if they post numbers)
-        cannot_role = discord.utils.get(message.guild.roles, name=ROLE_NAME)
-        if cannot_role and cannot_role in message.author.roles:
-            # If they posted a number, delete it
+        # acquire a per-channel lock to avoid races when multiple messages arrive simultaneously
+        lock = self._locks.get(ch_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[ch_id] = lock
+
+        async with lock:
+            # If user has the cannot count role, delete their messages (if they post numbers)
+            cannot_role = discord.utils.get(message.guild.roles, name=ROLE_NAME)
+            if cannot_role and cannot_role in message.author.roles:
+                # If they posted a number, delete it
+                try:
+                    # quick check if message is integer
+                    _ = int(message.content.strip())
+                except Exception:
+                    return
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                return
+
+            # Only process pure integer messages
+            content = message.content.strip()
             try:
-                # quick check if message is integer
-                _ = int(message.content.strip())
+                num = int(content)
             except Exception:
                 return
-            try:
-                await message.delete()
-            except Exception:
-                pass
-            return
 
-        # Only process pure integer messages
-        content = message.content.strip()
-        try:
-            num = int(content)
-        except Exception:
-            return
+            last_count = entry.get("last_count", 0)
+            last_user = entry.get("last_user")
+            chances = entry.get("chances")
+            mistakes = entry.setdefault("mistakes", {})
 
-        last_count = entry.get("last_count", 0)
-        last_user = entry.get("last_user")
-        chances = entry.get("chances")
-        mistakes = entry.setdefault("mistakes", {})
+            author_id = str(message.author.id)
 
-        author_id = str(message.author.id)
+            # Violation: same user twice in a row
+            if last_user is not None and author_id == last_user:
+                try:
+                    await message.add_reaction("❌")
+                except Exception:
+                    pass
 
-        # Violation: same user twice in a row
-        if last_user is not None and author_id == last_user:
+                # increment mistake count
+                mistakes[author_id] = mistakes.get(author_id, 0) + 1
+
+                # compute remaining mistakes if a limit is set
+                remaining = None
+                if chances is not None:
+                    remaining = max(chances - mistakes[author_id], 0)
+
+                # reset
+                entry["last_count"] = 0
+                entry["last_user"] = None
+                self._save()
+
+                # announce (include mistakes left when applicable)
+                try:
+                    desc = f"{message.author.mention} messed up by counting twice in a row."
+                    if remaining is not None:
+                        desc += f"\n\nMistakes left: {remaining}"
+                    em = discord.Embed(title="Count reset!", description=desc, color=discord.Color.red())
+                    await message.channel.send(embed=em)
+                except Exception:
+                    pass
+
+                # enforce role if needed
+                if chances is not None and mistakes[author_id] >= chances:
+                    role = await self._ensure_cannot_count_role(message.guild)
+                    if role:
+                        try:
+                            await message.author.add_roles(role, reason="Reached counting mistake limit")
+                            em2 = discord.Embed(title="Cannot Count Assigned", description=f"{message.author.mention} has reached the mistake limit and can no longer count.", color=discord.Color.orange())
+                            await message.channel.send(embed=em2)
+                            # Debug: user reached mistake limit
+                            try:
+                                debug_command('count_limit_reached', message.author, message.guild, channel=message.channel, mistakes=mistakes[author_id])
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+
+                return
+
+            # Correct count
+            if num == last_count + 1:
+                try:
+                    await message.add_reaction("✅")
+                except Exception:
+                    pass
+                entry["last_count"] = num
+                entry["last_user"] = author_id
+                self._save()
+                return
+
+            # Wrong number
             try:
                 await message.add_reaction("❌")
             except Exception:
                 pass
 
-            # increment mistake count
             mistakes[author_id] = mistakes.get(author_id, 0) + 1
 
             # compute remaining mistakes if a limit is set
@@ -247,14 +314,13 @@ class Counting(commands.Cog):
             if chances is not None:
                 remaining = max(chances - mistakes[author_id], 0)
 
-            # reset
             entry["last_count"] = 0
             entry["last_user"] = None
             self._save()
 
-            # announce (include mistakes left when applicable)
             try:
-                desc = f"{message.author.mention} messed up by counting twice in a row."
+                expected = last_count + 1
+                desc = f"{message.author.mention} messed up at number {expected}."
                 if remaining is not None:
                     desc += f"\n\nMistakes left: {remaining}"
                 em = discord.Embed(title="Count reset!", description=desc, color=discord.Color.red())
@@ -262,13 +328,12 @@ class Counting(commands.Cog):
             except Exception:
                 pass
 
-            # enforce role if needed
             if chances is not None and mistakes[author_id] >= chances:
                 role = await self._ensure_cannot_count_role(message.guild)
                 if role:
                     try:
                         await message.author.add_roles(role, reason="Reached counting mistake limit")
-                        em2 = discord.Embed(title="Cannot Count Assigned", description=f"{message.author.mention} has reached the mistake limit and can no longer count.", color=discord.Color.orange())
+                        em2 = discord.Embed(title="Cannot Count Assigned", description=f"{message.author.mention} can't count apparently. ??? Lock in twin", color=discord.Color.orange())
                         await message.channel.send(embed=em2)
                         # Debug: user reached mistake limit
                         try:
@@ -277,61 +342,6 @@ class Counting(commands.Cog):
                             pass
                     except Exception:
                         pass
-
-            return
-
-        # Correct count
-        if num == last_count + 1:
-            try:
-                await message.add_reaction("✅")
-            except Exception:
-                pass
-            entry["last_count"] = num
-            entry["last_user"] = author_id
-            self._save()
-            return
-
-        # Wrong number
-        try:
-            await message.add_reaction("❌")
-        except Exception:
-            pass
-
-        mistakes[author_id] = mistakes.get(author_id, 0) + 1
-
-        # compute remaining mistakes if a limit is set
-        remaining = None
-        if chances is not None:
-            remaining = max(chances - mistakes[author_id], 0)
-
-        entry["last_count"] = 0
-        entry["last_user"] = None
-        self._save()
-
-        try:
-            expected = last_count + 1
-            desc = f"{message.author.mention} messed up at number {expected}."
-            if remaining is not None:
-                desc += f"\n\nMistakes left: {remaining}"
-            em = discord.Embed(title="Count reset!", description=desc, color=discord.Color.red())
-            await message.channel.send(embed=em)
-        except Exception:
-            pass
-
-        if chances is not None and mistakes[author_id] >= chances:
-            role = await self._ensure_cannot_count_role(message.guild)
-            if role:
-                try:
-                    await message.author.add_roles(role, reason="Reached counting mistake limit")
-                    em2 = discord.Embed(title="Cannot Count Assigned", description=f"{message.author.mention} has reached the mistake limit and can no longer count.", color=discord.Color.orange())
-                    await message.channel.send(embed=em2)
-                    # Debug: user reached mistake limit
-                    try:
-                        debug_command('count_limit_reached', message.author, message.guild, channel=message.channel, mistakes=mistakes[author_id])
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
 
 
 async def setup(bot: commands.Bot):

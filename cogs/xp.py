@@ -239,6 +239,23 @@ class XP(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(name="resetxp", description="Reset all XP and levels for this server.")
+    async def resetxp(self, interaction: Interaction):
+        if not self.has_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+        debug_command("resetxp", interaction.user, interaction.guild)
+        guild_id = str(interaction.guild.id)
+        # remove guild entry
+        if guild_id in self.xp_data:
+            self.xp_data.pop(guild_id, None)
+            save_json(XP_FILE, self.xp_data)
+            embed = Embed(title="✅ XP Reset", description="All XP and levels for this server have been reset.", color=discord.Color.green())
+            await interaction.response.send_message(embed=embed)
+        else:
+            embed = Embed(title="ℹ️ No XP Data", description="This server has no XP data to reset.", color=discord.Color.blurple())
+            await interaction.response.send_message(embed=embed)
+
     @app_commands.command(name="xpconfig", description="Show current XP settings.")
     async def xpconfig(self, interaction: Interaction):
         if not self.has_bot_admin(interaction.user):

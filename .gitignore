@@ -5,8 +5,5 @@ quotes.json
 welcome_config.json
 .env
 __pycache__/
-<<<<<<< HEAD
 cogs/jengGPT.py
-=======
-cogs/jengGPT.py
->>>>>>> df82d4f49f5af005e79f8053f0d2446ec9f8263d
+*.json

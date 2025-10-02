@@ -221,6 +221,8 @@ class Misc(commands.Cog):
         community_embed.add_field(name="/reactionroles_post <config_id> <channel> <message>", value="Post a reaction-roles message for a previously created role set.", inline=False)
         community_embed.add_field(name="/reactionroles_remove <config_id>", value="Remove a previously created color role set (deletes roles).", inline=False)
         community_embed.add_field(name="/reaction_list", value="Lists reaction configurations in server.", inline=False)
+        community_embed.add_field(name="/counting <name> [chances]", value="Create a counting channel with optional mistake limit (leave empty for unlimited).", inline=False)
+        community_embed.add_field(name="/delete_counting <channel>", value="Delete a counting channel and remove its counting configuration.", inline=False)
         community_embed.set_footer(text="Page 4/6")
         pages.append(community_embed)
 

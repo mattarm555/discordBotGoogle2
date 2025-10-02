@@ -39,6 +39,16 @@ def debug_command(name, user, guild, **kwargs):
             print(f"  {key}: {value}")
 
 
+def automod_log(action: str, message: discord.Message, matched_phrase: str = None, duration: Optional[int] = None, reason: Optional[str] = None):
+    ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+    guild = message.guild.name if message.guild else 'DM'
+    author = f"{message.author} ({message.author.id})"
+    content = (message.content or '').replace('\n', '\\n')[:800]
+    dur = format_duration(duration) if duration else 'N/A'
+    print(f"{GREEN}[AUTOMOD]{RESET} {ts} - {action} in {BLUE}{guild}{RESET} - author={YELLOW}{author}{RESET} phrase={CYAN}{matched_phrase}{RESET} duration={dur} reason={reason}")
+    print(f"    content: {content}")
+
+
 ROOT = Path(__file__).resolve().parents[1]
 BANLIST_PATH = ROOT / 'word_banlist.json'
 MUTELIST_PATH = ROOT / 'word_mutelist.json'
@@ -882,6 +892,11 @@ class Moderator(commands.Cog):
                             asyncio.create_task(self._safe_send_dm(message.author, dm_emb))
                     except Exception:
                         pass
+                    # debug log
+                    try:
+                        automod_log('BAN', message, matched_phrase=entry.get('phrase'), duration=None, reason=reason)
+                    except Exception:
+                        pass
                     await message.guild.ban(message.author, reason=reason)
                     ban_emb = discord.Embed(description=f'🔨 {message.author.mention} was banned for using a banned phrase.', color=discord.Color.red())
                     await message.channel.send(embed=ban_emb)
@@ -919,6 +934,11 @@ class Moderator(commands.Cog):
                             asyncio.create_task(self._safe_send_dm(message.author, dm_emb))
                     except Exception:
                         pass
+                    # debug log
+                    try:
+                        automod_log('KICK', message, matched_phrase=entry.get('phrase'), duration=None, reason=reason)
+                    except Exception:
+                        pass
                     await message.guild.kick(message.author, reason=reason)
                     kick_emb = discord.Embed(description=f'👢 {message.author.mention} was kicked for using a kicklisted phrase.', color=discord.Color.orange())
                     await message.channel.send(embed=kick_emb)
@@ -947,28 +967,34 @@ class Moderator(commands.Cog):
                     except Exception:
                         pass
 
-                    async def _do_mute_and_announce():
+                    async def _do_mute_and_announce(entry_local, author, channel):
                         try:
-                            duration = entry.get('duration')
-                            reason = entry.get('reason')
-                            await self._apply_mute(message.author, duration, reason, source_channel=message.channel.id if message.channel else None)
+                            duration = entry_local.get('duration')
+                            reason = entry_local.get('reason')
+                            # log the mute intention before applying
+                            try:
+                                automod_log('MUTE', message, matched_phrase=entry_local.get('phrase'), duration=duration, reason=reason)
+                            except Exception:
+                                pass
+                            await self._apply_mute(author, duration, reason, source_channel=channel.id if channel else None)
                             # only send the detailed embed when reason exists
                             if reason:
                                 try:
                                     length_text = format_duration(duration) if duration else 'indefinitely'
                                     emb = discord.Embed(title='Member muted', color=discord.Color.orange())
-                                    emb.add_field(name='Member', value=f'{message.author.mention}', inline=True)
+                                    emb.add_field(name='Member', value=f'{author.mention}', inline=True)
                                     emb.add_field(name='Duration', value=length_text, inline=True)
                                     emb.add_field(name='Reason', value=reason, inline=False)
                                     emb.set_footer(text=f'Muted by {message.guild.me.display_name if message.guild.me else self.bot.user.name}')
-                                    await message.channel.send(embed=emb)
+                                    await channel.send(embed=emb)
                                 except Exception:
                                     pass
                         except Exception:
                             # If mute failed, nothing else to do
                             pass
 
-                    asyncio.create_task(_do_mute_and_announce())
+                    # bind current values into the task to avoid closure capture of loop variables
+                    asyncio.create_task(_do_mute_and_announce(entry, message.author, message.channel))
                 except Exception:
                     # If delete failed, try to mute anyway (best-effort)
                     try:

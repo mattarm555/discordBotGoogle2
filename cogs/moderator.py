@@ -21,6 +21,7 @@ import json
 from pathlib import Path
 import os
 from typing import Optional
+import re
 
 # --- Color Codes (match other cogs) ---
 RESET = "\033[0m"
@@ -125,8 +126,68 @@ class Moderator(commands.Cog):
         self.kicklist = load_json(KICKLIST_PATH, [])
         # load persisted mute schedule and reconcile
         self._persisted_mutes = load_json(MUTED_SCHEDULE_PATH, [])
+        # compile regex patterns for quick automod checking
+        self._compile_all_patterns()
         # Start background reconciliation
         asyncio.create_task(self._reconcile_persisted_mutes())
+
+    def _phrase_to_pattern(self, phrase: str) -> re.Pattern:
+        """Convert a stored phrase into a compiled regex that matches whole words
+        and allows repetition of the final character. Examples:
+        - 'hur' -> r"\bh u r+\b" (escaped properly) so it matches 'hur','hurr','hurrr' but not 'hurt'.
+        - multi-word phrases repeat the last token's final char only.
+        """
+        if not phrase or not isinstance(phrase, str):
+            return re.compile(r"^$")
+        phrase = phrase.strip()
+        # split tokens on whitespace for multi-word phrases
+        tokens = phrase.split()
+        last = tokens[-1]
+        # if last token ends with an alnum character, make it repeatable
+        if last and last[-1].isalnum():
+            core = re.escape(last[:-1]) if len(last) > 1 else ''
+            last_char = re.escape(last[-1])
+            last_pattern = f"{core}{last_char}+"
+        else:
+            last_pattern = re.escape(last)
+
+        if len(tokens) == 1:
+            pat = rf"\b{last_pattern}\b"
+        else:
+            middle = [re.escape(t) for t in tokens[:-1]]
+            pat = r"\b" + r"\s+".join(middle + [last_pattern]) + r"\b"
+
+        try:
+            return re.compile(pat, re.IGNORECASE)
+        except re.error:
+            # fallback to a safe substring match escaped
+            return re.compile(re.escape(phrase), re.IGNORECASE)
+
+    def _compile_all_patterns(self):
+        # augment entries with compiled pattern objects for quick checks
+        try:
+            for e in self.banlist:
+                if isinstance(e, dict):
+                    e['pattern'] = self._phrase_to_pattern(e.get('phrase', ''))
+                else:
+                    # legacy string entries
+                    new = {'phrase': str(e), 'reason': None, 'pattern': self._phrase_to_pattern(str(e))}
+                    # replace in list
+            # normalize banlist to dict-list
+            self.banlist = [e if isinstance(e, dict) else {'phrase': str(e), 'reason': None, 'pattern': self._phrase_to_pattern(str(e))} for e in self.banlist]
+
+            for e in self.kicklist:
+                if isinstance(e, dict):
+                    e['pattern'] = self._phrase_to_pattern(e.get('phrase', ''))
+            self.kicklist = [e if isinstance(e, dict) else {'phrase': str(e), 'reason': None, 'pattern': self._phrase_to_pattern(str(e))} for e in self.kicklist]
+
+            for e in self.mutelist:
+                if isinstance(e, dict):
+                    e['pattern'] = self._phrase_to_pattern(e.get('phrase', ''))
+            self.mutelist = [e if isinstance(e, dict) else {'phrase': str(e), 'duration': None, 'reason': None, 'pattern': self._phrase_to_pattern(str(e))} for e in self.mutelist]
+        except Exception:
+            # best-effort; ignore pattern compilation errors
+            pass
 
     def _is_bot_admin(self, member: discord.Member) -> bool:
         """Return True if member is server admin or in the bot-admin roles listed in xp_config.json."""
@@ -545,6 +606,24 @@ class Moderator(commands.Cog):
         debug_command('unmute', interaction.user, interaction.guild, member=member.display_name)
         await interaction.response.defer(thinking=True)
         try:
+            # Check whether the member appears muted: either has the Muted role or is in persisted mutes
+            role = discord.utils.get(interaction.guild.roles, name='Muted')
+            has_role = (role in member.roles) if (role and member) else False
+            in_persist = False
+            try:
+                for e in self._persisted_mutes:
+                    if int(e.get('guild')) == interaction.guild.id and int(e.get('user')) == member.id:
+                        in_persist = True
+                        break
+            except Exception:
+                in_persist = False
+
+            if not has_role and not in_persist:
+                emb = discord.Embed(title='Not muted', description=f'{member.mention} is not currently muted.', color=discord.Color.blurple())
+                emb.set_footer(text=f'Checked by {interaction.user.display_name}')
+                await interaction.followup.send(embed=emb)
+                return
+
             await self._perform_unmute_if_needed(interaction.guild.id, member.id, notify=False)
             emb = discord.Embed(description=f'✅ {member.mention} has been unmuted.', color=discord.Color.green())
             emb.set_footer(text=f'Unmuted by {interaction.user.display_name}')
@@ -564,10 +643,17 @@ class Moderator(commands.Cog):
         debug_command('banlist_add', interaction.user, interaction.guild, phrase=phrase, reason=reason)
         await interaction.response.defer(thinking=True)
         entry = {'phrase': phrase.lower(), 'reason': reason}
-        if any(e['phrase'] == entry['phrase'] for e in self.banlist):
+        # compile pattern for this entry
+        try:
+            entry['pattern'] = self._phrase_to_pattern(entry['phrase'])
+        except Exception:
+            entry['pattern'] = re.compile(re.escape(entry['phrase']), re.IGNORECASE)
+
+        if any(e.get('phrase') == entry['phrase'] for e in self.banlist):
             emb = discord.Embed(description='⚠️ That phrase is already in the banlist.', color=discord.Color.orange())
             await interaction.followup.send(embed=emb, ephemeral=True)
             return
+
         self.banlist.append(entry)
         save_json(BANLIST_PATH, self.banlist)
         emb = discord.Embed(description=f'✅ Added to banlist: "{phrase}"', color=discord.Color.green())
@@ -583,7 +669,7 @@ class Moderator(commands.Cog):
         await interaction.response.defer(thinking=True)
         phrase_l = phrase.lower()
         before = len(self.banlist)
-        self.banlist = [e for e in self.banlist if e['phrase'] != phrase_l]
+        self.banlist = [e for e in self.banlist if e.get('phrase') != phrase_l]
         save_json(BANLIST_PATH, self.banlist)
         if len(self.banlist) < before:
             emb = discord.Embed(description=f'✅ Removed from banlist: "{phrase}"', color=discord.Color.green())
@@ -618,10 +704,16 @@ class Moderator(commands.Cog):
         debug_command('kicklist_add', interaction.user, interaction.guild, phrase=phrase, reason=reason)
         await interaction.response.defer(thinking=True)
         entry = {'phrase': phrase.lower(), 'reason': reason}
-        if any(e['phrase'] == entry['phrase'] for e in self.kicklist):
+        try:
+            entry['pattern'] = self._phrase_to_pattern(entry['phrase'])
+        except Exception:
+            entry['pattern'] = re.compile(re.escape(entry['phrase']), re.IGNORECASE)
+
+        if any(e.get('phrase') == entry['phrase'] for e in self.kicklist):
             emb = discord.Embed(description='⚠️ That phrase is already in the kicklist.', color=discord.Color.orange())
             await interaction.followup.send(embed=emb, ephemeral=True)
             return
+
         self.kicklist.append(entry)
         save_json(KICKLIST_PATH, self.kicklist)
         emb = discord.Embed(description=f'✅ Added to kicklist: "{phrase}"', color=discord.Color.green())
@@ -637,7 +729,7 @@ class Moderator(commands.Cog):
         await interaction.response.defer(thinking=True)
         phrase_l = phrase.lower()
         before = len(self.kicklist)
-        self.kicklist = [e for e in self.kicklist if e['phrase'] != phrase_l]
+        self.kicklist = [e for e in self.kicklist if e.get('phrase') != phrase_l]
         save_json(KICKLIST_PATH, self.kicklist)
         if len(self.kicklist) < before:
             emb = discord.Embed(description=f'✅ Removed from kicklist: "{phrase}"', color=discord.Color.green())
@@ -677,10 +769,16 @@ class Moderator(commands.Cog):
             await interaction.followup.send(embed=emb, ephemeral=True)
             return
         entry = {'phrase': phrase.lower(), 'duration': secs, 'reason': reason}
-        if any(e['phrase'] == entry['phrase'] for e in self.mutelist):
+        try:
+            entry['pattern'] = self._phrase_to_pattern(entry['phrase'])
+        except Exception:
+            entry['pattern'] = re.compile(re.escape(entry['phrase']), re.IGNORECASE)
+
+        if any(e.get('phrase') == entry['phrase'] for e in self.mutelist):
             emb = discord.Embed(description='⚠️ That phrase is already in the mutelist.', color=discord.Color.orange())
             await interaction.followup.send(embed=emb, ephemeral=True)
             return
+
         self.mutelist.append(entry)
         save_json(MUTELIST_PATH, self.mutelist)
         emb = discord.Embed(description=f'✅ Added to mutelist: "{phrase}" (duration {duration})', color=discord.Color.green())
@@ -696,7 +794,7 @@ class Moderator(commands.Cog):
         await interaction.response.defer(thinking=True)
         phrase_l = phrase.lower()
         before = len(self.mutelist)
-        self.mutelist = [e for e in self.mutelist if e['phrase'] != phrase_l]
+        self.mutelist = [e for e in self.mutelist if e.get('phrase') != phrase_l]
         save_json(MUTELIST_PATH, self.mutelist)
         if len(self.mutelist) < before:
             emb = discord.Embed(description=f'✅ Removed from mutelist: "{phrase}"', color=discord.Color.green())
@@ -728,10 +826,15 @@ class Moderator(commands.Cog):
         if message.author.bot or not message.guild:
             return
 
-        content = (message.content or '').lower()
-        # check banlist
+        content = (message.content or '')
+        # check banlist using compiled patterns when available
         for entry in list(self.banlist):
-            if entry['phrase'] in content:
+            pat = entry.get('pattern')
+            try:
+                matched = bool(pat.search(content)) if pat is not None else (entry.get('phrase', '') in content.lower())
+            except Exception:
+                matched = entry.get('phrase', '') in content.lower()
+            if matched:
                 # attempt to ban
                 try:
                     reason = entry.get('reason')
@@ -761,9 +864,14 @@ class Moderator(commands.Cog):
                         pass
                 return
 
-        # check kicklist
+        # check kicklist using compiled patterns when available
         for entry in list(self.kicklist):
-            if entry['phrase'] in content:
+            pat = entry.get('pattern')
+            try:
+                matched = bool(pat.search(content)) if pat is not None else (entry.get('phrase', '') in content.lower())
+            except Exception:
+                matched = entry.get('phrase', '') in content.lower()
+            if matched:
                 # attempt to kick
                 try:
                     reason = entry.get('reason')
@@ -793,9 +901,14 @@ class Moderator(commands.Cog):
                         pass
                 return
 
-        # check mutelist
+        # check mutelist using compiled patterns when available
         for entry in list(self.mutelist):
-            if entry['phrase'] in content:
+            pat = entry.get('pattern')
+            try:
+                matched = bool(pat.search(content)) if pat is not None else (entry.get('phrase', '') in content.lower())
+            except Exception:
+                matched = entry.get('phrase', '') in content.lower()
+            if matched:
                 try:
                     duration = entry.get('duration')
                     reason = entry.get('reason')

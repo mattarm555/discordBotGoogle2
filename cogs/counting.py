@@ -278,7 +278,7 @@ class Counting(commands.Cog):
                     if role:
                         try:
                             await message.author.add_roles(role, reason="Reached counting mistake limit")
-                            em2 = discord.Embed(title="Cannot Count Assigned", description=f"{message.author.mention} has reached the mistake limit and can no longer count.", color=discord.Color.orange())
+                            em2 = discord.Embed(title="Cannot Count Assigned", description=f"Vro {message.author.mention} you had {chances} chances :wilted_rose: Nah you can't count anymore gang", color=discord.Color.orange())
                             await message.channel.send(embed=em2)
                             # Debug: user reached mistake limit
                             try:
@@ -320,7 +320,7 @@ class Counting(commands.Cog):
 
             try:
                 expected = last_count + 1
-                desc = f"{message.author.mention} messed up at number {expected}."
+                desc = f"{message.author.mention} you can't count dawg??? Lock in. Should have been {expected}."
                 if remaining is not None:
                     desc += f"\n\nMistakes left: {remaining}"
                 em = discord.Embed(title="Count reset!", description=desc, color=discord.Color.red())
@@ -333,7 +333,7 @@ class Counting(commands.Cog):
                 if role:
                     try:
                         await message.author.add_roles(role, reason="Reached counting mistake limit")
-                        em2 = discord.Embed(title="Cannot Count Assigned", description=f"{message.author.mention} can't count apparently. ??? Lock in twin", color=discord.Color.orange())
+                        em2 = discord.Embed(title="Cannot Count Assigned", description=f"Vro {message.author.mention} you had {chances} chances :wilted_rose: Nah you can't count anymore gang", color=discord.Color.orange())
                         await message.channel.send(embed=em2)
                         # Debug: user reached mistake limit
                         try:

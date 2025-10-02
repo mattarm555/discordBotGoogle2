@@ -119,6 +119,8 @@ class Moderator(commands.Cog):
         self.bot = bot
         # mapping: (guild_id, user_id) -> {"task": asyncio.Task, "unmute_at": epoch_seconds}
         self._unmute_tasks = {}
+        # track guilds where we've applied Muted role channel overwrites to avoid repeating heavy ops
+        self._muted_role_initialized = set()
         self.banlist = load_json(BANLIST_PATH, [])
         # mutelist stored as list of dicts: {"phrase":..., "duration":seconds, "reason":...}
         self.mutelist = load_json(MUTELIST_PATH, [])
@@ -166,25 +168,36 @@ class Moderator(commands.Cog):
     def _compile_all_patterns(self):
         # augment entries with compiled pattern objects for quick checks
         try:
+            # normalize and compile banlist patterns; ensure entries are dicts
+            normalized = []
             for e in self.banlist:
                 if isinstance(e, dict):
-                    e['pattern'] = self._phrase_to_pattern(e.get('phrase', ''))
+                    entry = dict(e)
                 else:
-                    # legacy string entries
-                    new = {'phrase': str(e), 'reason': None, 'pattern': self._phrase_to_pattern(str(e))}
-                    # replace in list
-            # normalize banlist to dict-list
-            self.banlist = [e if isinstance(e, dict) else {'phrase': str(e), 'reason': None, 'pattern': self._phrase_to_pattern(str(e))} for e in self.banlist]
+                    entry = {'phrase': str(e), 'reason': None, 'guild': None}
+                entry['pattern'] = self._phrase_to_pattern(entry.get('phrase', ''))
+                normalized.append(entry)
+            self.banlist = normalized
 
+            normalized = []
             for e in self.kicklist:
                 if isinstance(e, dict):
-                    e['pattern'] = self._phrase_to_pattern(e.get('phrase', ''))
-            self.kicklist = [e if isinstance(e, dict) else {'phrase': str(e), 'reason': None, 'pattern': self._phrase_to_pattern(str(e))} for e in self.kicklist]
+                    entry = dict(e)
+                else:
+                    entry = {'phrase': str(e), 'reason': None, 'guild': None}
+                entry['pattern'] = self._phrase_to_pattern(entry.get('phrase', ''))
+                normalized.append(entry)
+            self.kicklist = normalized
 
+            normalized = []
             for e in self.mutelist:
                 if isinstance(e, dict):
-                    e['pattern'] = self._phrase_to_pattern(e.get('phrase', ''))
-            self.mutelist = [e if isinstance(e, dict) else {'phrase': str(e), 'duration': None, 'reason': None, 'pattern': self._phrase_to_pattern(str(e))} for e in self.mutelist]
+                    entry = dict(e)
+                else:
+                    entry = {'phrase': str(e), 'duration': None, 'reason': None, 'guild': None}
+                entry['pattern'] = self._phrase_to_pattern(entry.get('phrase', ''))
+                normalized.append(entry)
+            self.mutelist = normalized
         except Exception:
             # best-effort; ignore pattern compilation errors
             pass
@@ -205,6 +218,13 @@ class Moderator(commands.Cog):
         except Exception:
             pass
         return False
+
+    async def _safe_send_dm(self, user: discord.abc.User, embed: discord.Embed):
+        try:
+            await user.send(embed=embed)
+        except Exception:
+            # ignore failures to DM
+            pass
 
     async def _perform_unmute_if_needed(self, guild_id: int, user_id: int, notify: bool = True):
         """Remove Muted role from the user if present and cleanup persisted/task entries.
@@ -373,11 +393,13 @@ class Moderator(commands.Cog):
     # -------------------- Helpers --------------------
     async def _ensure_muted_role(self, guild: discord.Guild) -> Optional[discord.Role]:
         role = discord.utils.get(guild.roles, name='Muted')
+        created = False
         # Create role if missing
         if not role:
             try:
                 # create role with no base permissions; we'll explicitly ensure it cannot send/connect
                 role = await guild.create_role(name='Muted', permissions=discord.Permissions.none(), reason='ModeratorCog: create muted role')
+                created = True
             except discord.Forbidden:
                 return None
 
@@ -392,19 +414,26 @@ class Moderator(commands.Cog):
             pass
 
         # Apply serverwide overwrites where possible so the Muted role can't send messages or connect to voice
-        for channel in guild.channels:
+        # This is potentially expensive on large servers; only do this when the role was just created
+        # or when we haven't initialized this guild yet.
+        if created or (guild.id not in self._muted_role_initialized):
+            for channel in guild.channels:
+                try:
+                    # Text-based channels
+                    if isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
+                        await channel.set_permissions(role, send_messages=False, add_reactions=False, speak=False)
+                    # Threads inherit from parent but setting for completeness
+                    elif isinstance(channel, discord.Thread):
+                        await channel.set_permissions(role, send_messages=False, add_reactions=False)
+                    # Voice/Stage channels
+                    elif isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+                        await channel.set_permissions(role, connect=False, speak=False)
+                except Exception:
+                    # ignore channels we can't touch
+                    pass
             try:
-                # Text-based channels
-                if isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
-                    await channel.set_permissions(role, send_messages=False, add_reactions=False, speak=False)
-                # Threads inherit from parent but setting for completeness
-                elif isinstance(channel, discord.Thread):
-                    await channel.set_permissions(role, send_messages=False, add_reactions=False)
-                # Voice/Stage channels
-                elif isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
-                    await channel.set_permissions(role, connect=False, speak=False)
+                self._muted_role_initialized.add(guild.id)
             except Exception:
-                # ignore channels we can't touch
                 pass
         return role
 
@@ -642,20 +671,21 @@ class Moderator(commands.Cog):
             return
         debug_command('banlist_add', interaction.user, interaction.guild, phrase=phrase, reason=reason)
         await interaction.response.defer(thinking=True)
-        entry = {'phrase': phrase.lower(), 'reason': reason}
+        entry = {'phrase': phrase.lower(), 'reason': reason, 'guild': str(interaction.guild.id)}
         # compile pattern for this entry
         try:
             entry['pattern'] = self._phrase_to_pattern(entry['phrase'])
         except Exception:
             entry['pattern'] = re.compile(re.escape(entry['phrase']), re.IGNORECASE)
 
-        if any(e.get('phrase') == entry['phrase'] for e in self.banlist):
+        if any(e.get('phrase') == entry['phrase'] and (e.get('guild') is None or str(e.get('guild')) == str(interaction.guild.id)) for e in self.banlist):
             emb = discord.Embed(description='⚠️ That phrase is already in the banlist.', color=discord.Color.orange())
             await interaction.followup.send(embed=emb, ephemeral=True)
             return
 
         self.banlist.append(entry)
-        save_json(BANLIST_PATH, self.banlist)
+        # persist without compiled patterns
+        save_json(BANLIST_PATH, [{'phrase': e.get('phrase'), 'reason': e.get('reason'), 'guild': e.get('guild')} for e in self.banlist])
         emb = discord.Embed(description=f'✅ Added to banlist: "{phrase}"', color=discord.Color.green())
         await interaction.followup.send(embed=emb)
 
@@ -669,8 +699,8 @@ class Moderator(commands.Cog):
         await interaction.response.defer(thinking=True)
         phrase_l = phrase.lower()
         before = len(self.banlist)
-        self.banlist = [e for e in self.banlist if e.get('phrase') != phrase_l]
-        save_json(BANLIST_PATH, self.banlist)
+        self.banlist = [e for e in self.banlist if not (e.get('phrase') == phrase_l and (e.get('guild') is None or str(e.get('guild')) == str(interaction.guild.id)))]
+        save_json(BANLIST_PATH, [{'phrase': e.get('phrase'), 'reason': e.get('reason'), 'guild': e.get('guild')} for e in self.banlist])
         if len(self.banlist) < before:
             emb = discord.Embed(description=f'✅ Removed from banlist: "{phrase}"', color=discord.Color.green())
             await interaction.followup.send(embed=emb)
@@ -690,7 +720,8 @@ class Moderator(commands.Cog):
             emb = discord.Embed(title='Banlist', description='Banlist is empty.', color=discord.Color.blurple())
             await interaction.followup.send(embed=emb)
             return
-        lines = [f'- "{e["phrase"]}"' + (f' (reason: {e["reason"]})' if e.get('reason') else '') for e in self.banlist]
+        # show only entries for this guild
+        lines = [f'- "{e["phrase"]}"' + (f' (reason: {e["reason"]})' if e.get('reason') else '') for e in self.banlist if (e.get('guild') is None or str(e.get('guild')) == str(interaction.guild.id))]
         emb = discord.Embed(title='Banlist', description='\n'.join(lines), color=discord.Color.blurple())
         await interaction.followup.send(embed=emb)
 
@@ -703,19 +734,19 @@ class Moderator(commands.Cog):
             return
         debug_command('kicklist_add', interaction.user, interaction.guild, phrase=phrase, reason=reason)
         await interaction.response.defer(thinking=True)
-        entry = {'phrase': phrase.lower(), 'reason': reason}
+        entry = {'phrase': phrase.lower(), 'reason': reason, 'guild': str(interaction.guild.id)}
         try:
             entry['pattern'] = self._phrase_to_pattern(entry['phrase'])
         except Exception:
             entry['pattern'] = re.compile(re.escape(entry['phrase']), re.IGNORECASE)
 
-        if any(e.get('phrase') == entry['phrase'] for e in self.kicklist):
+        if any(e.get('phrase') == entry['phrase'] and (e.get('guild') is None or str(e.get('guild')) == str(interaction.guild.id)) for e in self.kicklist):
             emb = discord.Embed(description='⚠️ That phrase is already in the kicklist.', color=discord.Color.orange())
             await interaction.followup.send(embed=emb, ephemeral=True)
             return
 
         self.kicklist.append(entry)
-        save_json(KICKLIST_PATH, self.kicklist)
+        save_json(KICKLIST_PATH, [{'phrase': e.get('phrase'), 'reason': e.get('reason'), 'guild': e.get('guild')} for e in self.kicklist])
         emb = discord.Embed(description=f'✅ Added to kicklist: "{phrase}"', color=discord.Color.green())
         await interaction.followup.send(embed=emb)
 
@@ -729,8 +760,8 @@ class Moderator(commands.Cog):
         await interaction.response.defer(thinking=True)
         phrase_l = phrase.lower()
         before = len(self.kicklist)
-        self.kicklist = [e for e in self.kicklist if e.get('phrase') != phrase_l]
-        save_json(KICKLIST_PATH, self.kicklist)
+        self.kicklist = [e for e in self.kicklist if not (e.get('phrase') == phrase_l and (e.get('guild') is None or str(e.get('guild')) == str(interaction.guild.id)))]
+        save_json(KICKLIST_PATH, [{'phrase': e.get('phrase'), 'reason': e.get('reason'), 'guild': e.get('guild')} for e in self.kicklist])
         if len(self.kicklist) < before:
             emb = discord.Embed(description=f'✅ Removed from kicklist: "{phrase}"', color=discord.Color.green())
             await interaction.followup.send(embed=emb)
@@ -750,7 +781,7 @@ class Moderator(commands.Cog):
             emb = discord.Embed(title='Kicklist', description='Kicklist is empty.', color=discord.Color.blurple())
             await interaction.followup.send(embed=emb)
             return
-        lines = [f'- "{e["phrase"]}"' + (f' (reason: {e["reason"]})' if e.get('reason') else '') for e in self.kicklist]
+        lines = [f'- "{e["phrase"]}"' + (f' (reason: {e["reason"]})' if e.get('reason') else '') for e in self.kicklist if (e.get('guild') is None or str(e.get('guild')) == str(interaction.guild.id))]
         emb = discord.Embed(title='Kicklist', description='\n'.join(lines), color=discord.Color.blurple())
         await interaction.followup.send(embed=emb)
 
@@ -768,19 +799,19 @@ class Moderator(commands.Cog):
             emb = discord.Embed(description='❌ Invalid duration. Examples: 10m, 1h, 1d, 30s', color=discord.Color.red())
             await interaction.followup.send(embed=emb, ephemeral=True)
             return
-        entry = {'phrase': phrase.lower(), 'duration': secs, 'reason': reason}
+        entry = {'phrase': phrase.lower(), 'duration': secs, 'reason': reason, 'guild': str(interaction.guild.id)}
         try:
             entry['pattern'] = self._phrase_to_pattern(entry['phrase'])
         except Exception:
             entry['pattern'] = re.compile(re.escape(entry['phrase']), re.IGNORECASE)
 
-        if any(e.get('phrase') == entry['phrase'] for e in self.mutelist):
+        if any(e.get('phrase') == entry['phrase'] and (e.get('guild') is None or str(e.get('guild')) == str(interaction.guild.id)) for e in self.mutelist):
             emb = discord.Embed(description='⚠️ That phrase is already in the mutelist.', color=discord.Color.orange())
             await interaction.followup.send(embed=emb, ephemeral=True)
             return
 
         self.mutelist.append(entry)
-        save_json(MUTELIST_PATH, self.mutelist)
+        save_json(MUTELIST_PATH, [{'phrase': e.get('phrase'), 'duration': e.get('duration'), 'reason': e.get('reason'), 'guild': e.get('guild')} for e in self.mutelist])
         emb = discord.Embed(description=f'✅ Added to mutelist: "{phrase}" (duration {duration})', color=discord.Color.green())
         await interaction.followup.send(embed=emb)
 
@@ -794,8 +825,8 @@ class Moderator(commands.Cog):
         await interaction.response.defer(thinking=True)
         phrase_l = phrase.lower()
         before = len(self.mutelist)
-        self.mutelist = [e for e in self.mutelist if e.get('phrase') != phrase_l]
-        save_json(MUTELIST_PATH, self.mutelist)
+        self.mutelist = [e for e in self.mutelist if not (e.get('phrase') == phrase_l and (e.get('guild') is None or str(e.get('guild')) == str(interaction.guild.id)))]
+        save_json(MUTELIST_PATH, [{'phrase': e.get('phrase'), 'duration': e.get('duration'), 'reason': e.get('reason'), 'guild': e.get('guild')} for e in self.mutelist])
         if len(self.mutelist) < before:
             emb = discord.Embed(description=f'✅ Removed from mutelist: "{phrase}"', color=discord.Color.green())
             await interaction.followup.send(embed=emb)
@@ -815,7 +846,7 @@ class Moderator(commands.Cog):
             emb = discord.Embed(title='Mutelist', description='Mutelist is empty.', color=discord.Color.blurple())
             await interaction.followup.send(embed=emb)
             return
-        lines = [f'- "{e["phrase"]}" -> {e["duration"]}s' + (f' (reason: {e["reason"]})' if e.get('reason') else '') for e in self.mutelist]
+        lines = [f'- "{e["phrase"]}" -> {e["duration"]}s' + (f' (reason: {e["reason"]})' if e.get('reason') else '') for e in self.mutelist if (e.get('guild') is None or str(e.get('guild')) == str(interaction.guild.id))]
         emb = discord.Embed(title='Mutelist', description='\n'.join(lines), color=discord.Color.blurple())
         await interaction.followup.send(embed=emb)
 
@@ -835,20 +866,20 @@ class Moderator(commands.Cog):
             except Exception:
                 matched = entry.get('phrase', '') in content.lower()
             if matched:
-                # attempt to ban
+                # attempt to ban - delete message immediately so chat cleans up fast
                 try:
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
                     reason = entry.get('reason')
+                    # DM in background so we don't block
                     try:
                         if reason:
                             dm_emb = discord.Embed(title='You have been banned', color=discord.Color.dark_red())
                             dm_emb.add_field(name='Server', value=f'{message.guild.name}', inline=True)
                             dm_emb.add_field(name='Reason', value=reason, inline=False)
-                            await message.author.send(embed=dm_emb)
-                    except Exception:
-                        pass
-                    # delete the offending message first (best-effort)
-                    try:
-                        await message.delete()
+                            asyncio.create_task(self._safe_send_dm(message.author, dm_emb))
                     except Exception:
                         pass
                     await message.guild.ban(message.author, reason=reason)
@@ -872,20 +903,20 @@ class Moderator(commands.Cog):
             except Exception:
                 matched = entry.get('phrase', '') in content.lower()
             if matched:
-                # attempt to kick
+                # attempt to kick - delete message immediately for responsiveness
                 try:
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
                     reason = entry.get('reason')
+                    # DM in background so it doesn't block
                     try:
                         if reason:
                             dm_emb = discord.Embed(title='You have been kicked', color=discord.Color.dark_red())
                             dm_emb.add_field(name='Server', value=f'{message.guild.name}', inline=True)
                             dm_emb.add_field(name='Reason', value=reason, inline=False)
-                            await message.author.send(embed=dm_emb)
-                    except Exception:
-                        pass
-                    # delete the offending message first (best-effort)
-                    try:
-                        await message.delete()
+                            asyncio.create_task(self._safe_send_dm(message.author, dm_emb))
                     except Exception:
                         pass
                     await message.guild.kick(message.author, reason=reason)
@@ -909,32 +940,39 @@ class Moderator(commands.Cog):
             except Exception:
                 matched = entry.get('phrase', '') in content.lower()
             if matched:
+                # Delete message immediately for responsiveness, then handle mute in background
                 try:
-                    duration = entry.get('duration')
-                    reason = entry.get('reason')
-                    await self._apply_mute(message.author, duration, reason, source_channel=message.channel.id if message.channel else None)
-                    # attempt to delete the original message so the banned phrase is removed from chat
                     try:
                         await message.delete()
                     except Exception:
-                        # best-effort; ignore if we can't delete
                         pass
-                    # only send the detailed embed when reason exists
-                    if reason:
+
+                    async def _do_mute_and_announce():
                         try:
-                            length_text = format_duration(duration) if duration else 'indefinitely'
-                            emb = discord.Embed(title='Member muted', color=discord.Color.orange())
-                            emb.add_field(name='Member', value=f'{message.author.mention}', inline=True)
-                            emb.add_field(name='Duration', value=length_text, inline=True)
-                            emb.add_field(name='Reason', value=reason, inline=False)
-                            emb.set_footer(text=f'Muted by {message.guild.me.display_name if message.guild.me else self.bot.user.name}')
-                            await message.channel.send(embed=emb)
+                            duration = entry.get('duration')
+                            reason = entry.get('reason')
+                            await self._apply_mute(message.author, duration, reason, source_channel=message.channel.id if message.channel else None)
+                            # only send the detailed embed when reason exists
+                            if reason:
+                                try:
+                                    length_text = format_duration(duration) if duration else 'indefinitely'
+                                    emb = discord.Embed(title='Member muted', color=discord.Color.orange())
+                                    emb.add_field(name='Member', value=f'{message.author.mention}', inline=True)
+                                    emb.add_field(name='Duration', value=length_text, inline=True)
+                                    emb.add_field(name='Reason', value=reason, inline=False)
+                                    emb.set_footer(text=f'Muted by {message.guild.me.display_name if message.guild.me else self.bot.user.name}')
+                                    await message.channel.send(embed=emb)
+                                except Exception:
+                                    pass
                         except Exception:
+                            # If mute failed, nothing else to do
                             pass
+
+                    asyncio.create_task(_do_mute_and_announce())
                 except Exception:
-                    # If mute failed, still try to remove the offending message
+                    # If delete failed, try to mute anyway (best-effort)
                     try:
-                        await message.delete()
+                        await self._apply_mute(message.author, entry.get('duration'), entry.get('reason'), source_channel=message.channel.id if message.channel else None)
                     except Exception:
                         pass
                 return

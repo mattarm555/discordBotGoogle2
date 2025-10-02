@@ -536,8 +536,9 @@ class Moderator(commands.Cog):
         key = (interaction.guild.id, member.id)
         entry = self._unmute_tasks.get(key)
         if entry and entry.get('unmute_at'):
-            now = int(asyncio.get_event_loop().time())
-            remaining = entry['unmute_at'] - now
+            # unmute_at is stored as epoch seconds (time.time()), so compare using the same
+            now = int(time.time())
+            remaining = int(entry['unmute_at']) - now
             if remaining > 0:
                 # format remaining
                 m, s = divmod(remaining, 60)
@@ -554,7 +555,7 @@ class Moderator(commands.Cog):
         # check persisted list (maybe no in-memory task due to restart)
         for e in self._persisted_mutes:
             if int(e.get('guild')) == interaction.guild.id and int(e.get('user')) == member.id:
-                remaining = int(e.get('unmute_at')) - int(asyncio.get_event_loop().time())
+                remaining = int(e.get('unmute_at')) - int(time.time())
                 if remaining > 0:
                     m, s = divmod(remaining, 60)
                     h, m = divmod(m, 60)

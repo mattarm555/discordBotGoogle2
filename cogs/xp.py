@@ -152,9 +152,9 @@ class XP(commands.Cog):
         embed.add_field(name="Rank", value=f"#{rank}" if rank else "Unranked")
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="leaderboard", description="Shows the top XP earners in this server.")
-    async def leaderboard(self, interaction: Interaction):
-        debug_command("leaderboard", interaction.user, interaction.guild)
+    @app_commands.command(name="xpleaderboard", description="Shows the top XP earners in this server.")
+    async def xpleaderboard(self, interaction: Interaction):
+        debug_command("xpleaderboard", interaction.user, interaction.guild)
 
         guild_id = str(interaction.guild.id)
         all_users = self.xp_data.get(guild_id, {})

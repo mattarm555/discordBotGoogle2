@@ -17,15 +17,28 @@ QUOTES_FILE = "quotes.json"
 def load_quotes():
     if os.path.exists(QUOTES_FILE):
         with open(QUOTES_FILE, "r") as f:
-            return json.load(f)
+            try:
+                data = json.load(f)
+            except Exception:
+                # corrupted or invalid JSON -> reset to empty dict
+                return {}
+            # Ensure we return a dict keyed by guild id. If the file contains a list
+            # (legacy format) or other type, normalize to an empty dict.
+            if isinstance(data, dict):
+                return data
+            return {}
     return {}
 
 def save_quotes(data):
     with open(QUOTES_FILE, "w") as f:
+        # Ensure we're saving a dict
+        if not isinstance(data, dict):
+            data = {}
         json.dump(data, f, indent=4)
 
 def debug_command(name, user, guild, **kwargs):
-    print(f"{GREEN}[COMMAND] /{name}{RESET} triggered by {YELLOW}{user.display_name}{RESET} in {BLUE}{guild.name}{RESET}")
+    gname = guild.name if guild else 'DM'
+    print(f"{GREEN}[COMMAND] /{name}{RESET} triggered by {YELLOW}{user.display_name}{RESET} in {BLUE}{gname}{RESET}")
     if kwargs:
         print(f"{CYAN}Input:{RESET}")
         for key, value in kwargs.items():
@@ -35,11 +48,16 @@ class Quotes(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.quotes = load_quotes()
+        # Normalize loaded quotes to a dict keyed by guild id strings
+        if not isinstance(self.quotes, dict):
+            self.quotes = {}
 
     def get_guild_quotes(self, guild_id):
-        if guild_id not in self.quotes:
-            self.quotes[guild_id] = []
-        return self.quotes[guild_id]
+        # ensure guild_id is a string key
+        gid = str(guild_id)
+        if gid not in self.quotes or not isinstance(self.quotes.get(gid), list):
+            self.quotes[gid] = []
+        return self.quotes[gid]
 
     @app_commands.command(name="quote_add", description="Add a new quote.")
     @app_commands.describe(text="The quote text")

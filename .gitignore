@@ -7,3 +7,4 @@ welcome_config.json
 __pycache__/
 cogs/jengGPT.py
 *.json
+cogs/avatar.py

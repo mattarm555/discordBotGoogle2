@@ -8,6 +8,9 @@ from discord import app_commands, Interaction
 from discord.ui import View, button
 from utils.economy import get_balance, add_currency, remove_currency
 
+# Owner ID (allow overriding via env YOUR_USER_ID)
+BOT_OWNER_ID = int(os.getenv('YOUR_USER_ID', '461008427326504970'))
+
 # ---------- Slot math (reels, stops, paylines, paytable) ----------
 
 # Symbols (emojis keep it readable in Discord)
@@ -57,6 +60,9 @@ PAYTABLE = {
     "TWO_MATCH": 1
 }
 
+# Global label names for paylines in order of expansion
+LINE_LABELS = ["Middle", "Top", "Bottom", "Diag ↘", "Diag ↗"]
+
 # ---------- helpers ----------
 
 def spin_reels() -> list[list[str]]:
@@ -80,18 +86,17 @@ def spin_reels() -> list[list[str]]:
     return rows
 
 def evaluate_spin(window_rows: list[list[str]], lines: int, line_bet: int) -> tuple[int, list[str]]:
-    """Evaluate winnings across selected paylines.
+    """Evaluate winnings across the SELECTED paylines only.
 
-    Returns (total_payout, notes) where notes contains human readable
-    descriptions with intuitive payline names:
-      Middle, Top, Bottom, Diag ↘, Diag ↗
-    """
-    label_map = ["Middle", "Top", "Bottom", "Diag ↘", "Diag ↗"]
+    Returns (total_payout, notes) where notes are human-readable results for
+    active lines. Only purchased (active) lines are paid. This prevents the
+    common confusion when a triple appears on an inactive line (e.g. bottom row
+    when only 1 line was bought -> only Middle is active)."""
     total = 0
-    notes = []
+    notes: list[str] = []
     for idx, pattern in enumerate(PAYLINES[lines]):
         line_symbols = [window_rows[row][col] for col, row in enumerate(pattern)]
-        name = label_map[idx]
+        name = LINE_LABELS[idx]
         tpl = tuple(line_symbols)
         if tpl in PAYTABLE:
             mult = PAYTABLE[tpl]
@@ -99,12 +104,53 @@ def evaluate_spin(window_rows: list[list[str]], lines: int, line_bet: int) -> tu
             total += win
             notes.append(f"{name}: {' '.join(line_symbols)}  →  x{mult}  (+{win})")
         else:
+            # Simple two-match (first two reels) consolation
             if line_symbols[0] == line_symbols[1] and PAYTABLE.get("TWO_MATCH"):
                 mult = PAYTABLE["TWO_MATCH"]
                 win = mult * line_bet
                 total += win
                 notes.append(f"{name}: {' '.join(line_symbols)}  →  2-match x{mult}  (+{win})")
     return total, notes
+
+def render_window_highlight(window_rows: list[list[str]], active_patterns: list[list[int]]) -> str:
+    """Render the 3x3 window, bolding symbols that belong to any active payline.
+
+    active_patterns: list of row-index patterns (one per column) for purchased lines.
+    """
+    active_positions = set()
+    for pattern in active_patterns:
+        for col, row in enumerate(pattern):
+            active_positions.add((row, col))
+    out_lines = []
+    for r, row_syms in enumerate(window_rows):
+        rendered = []
+        for c, sym in enumerate(row_syms):
+            if (r, c) in active_positions:
+                rendered.append(f"**{sym}**")
+            else:
+                rendered.append(sym)
+        out_lines.append("  ".join(rendered))
+    return "\n".join(out_lines)
+
+def find_inactive_triples(window_rows: list[list[str]], active_patterns: list[list[int]]) -> list[str]:
+    """Return descriptions of triple matches that occurred on inactive lines.
+
+    Helps explain to players why they saw a triple but received no payout.
+    Limited to first 3 to avoid clutter.
+    """
+    active_set = {tuple(p) for p in active_patterns}
+    found = []
+    for idx, pattern in enumerate(PAYLINES[5]):  # examine all possible lines
+        if tuple(pattern) in active_set:
+            continue
+        line_symbols = [window_rows[row][col] for col, row in enumerate(pattern)]
+        if line_symbols[0] == line_symbols[1] == line_symbols[2]:
+            tpl = tuple(line_symbols)
+            if tpl in PAYTABLE:
+                found.append(f"{LINE_LABELS[idx]}: {' '.join(line_symbols)} (inactive)")
+        if len(found) >= 3:
+            break
+    return found
 
 def render_window(window_rows: list[list[str]]) -> str:
     """Ascii/emoji rendering of the 3×3 slot window."""
@@ -150,12 +196,22 @@ class SlotsView(View):
         if total_win:
             add_currency(str(self.user_id), total_win, guild_id=guild_id)
 
-        grid = render_window(window)
-        desc = f"**Bet:** {total_bet}  |  **Lines:** {self.lines}\n\n```\n{grid}\n```\n"
+        grid = render_window_highlight(window, PAYLINES[self.lines])
+        active_names = ", ".join(LINE_LABELS[:self.lines])
+        desc = (
+            f"**Bet:** {total_bet}  |  **Lines:** {self.lines}\n"
+            f"Active Lines: {active_names}\n\n"
+            f"```\n{grid}\n```\n"
+        )
         if notes:
             desc += "\n".join(f"• {n}" for n in notes)
         else:
             desc += "No winning lines."
+        # Show missed inactive triples (informational only)
+        if self.lines < 5:
+            missed = find_inactive_triples(window, PAYLINES[self.lines])
+            if missed:
+                desc += "\n\nInactive triples (not paid):\n" + "\n".join(f"• {m}" for m in missed)
 
         net = total_win - total_bet
         if net > 0:
@@ -316,12 +372,21 @@ class Slots(commands.Cog):
         if total_win:
             add_currency(uid, total_win, guild_id=guild_id)
 
-        grid = render_window(window)
-        desc = f"**Bet:** {total_bet}  |  **Lines:** {lines}\n\n```\n{grid}\n```\n"
+        grid = render_window_highlight(window, PAYLINES[lines])
+        active_names = ", ".join(LINE_LABELS[:lines])
+        desc = (
+            f"**Bet:** {total_bet}  |  **Lines:** {lines}\n"
+            f"Active Lines: {active_names}\n\n"
+            f"```\n{grid}\n```\n"
+        )
         if notes:
             desc += "\n".join(f"• {n}" for n in notes)
         else:
             desc += "No winning lines."
+        if lines < 5:
+            missed = find_inactive_triples(window, PAYLINES[lines])
+            if missed:
+                desc += "\n\nInactive triples (not paid):\n" + "\n".join(f"• {m}" for m in missed)
 
         net = total_win - total_bet
         if net > 0:
@@ -405,6 +470,94 @@ class Slots(commands.Cog):
         }
         _save_stats(self.stats)
         await interaction.response.send_message("🔄 Session baseline reset. Future /slotstats deltas start from now.", ephemeral=True)
+
+    @app_commands.command(name="slotsim", description="Simulate slot spins to estimate RTP (no balance impact) — owner only")
+    @app_commands.describe(spins="Number of simulated spins (10-200000)", wager="Total bet per spin (1-2000)", lines="Lines per spin (1-5)")
+    async def slotsim(self, interaction: Interaction,
+                      spins: app_commands.Range[int, 10, 200000],
+                      wager: app_commands.Range[int, 1, 2000] = 100,
+                      lines: app_commands.Range[int, 1, 5] = 5):
+        # Only allow bot owner to run this command
+        if interaction.user.id != BOT_OWNER_ID:
+            await interaction.response.send_message("❌ You are not authorized to use /slotsim.", ephemeral=True)
+            return
+
+        # Ephemeral; heavy computation stays silent until done
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        if wager < lines:
+            await interaction.followup.send("❌ Wager must be at least the number of lines.", ephemeral=True)
+            return
+        line_bet = wager // lines
+        if line_bet <= 0:
+            await interaction.followup.send("❌ Wager too small for chosen lines.", ephemeral=True)
+            return
+        total_bet = 0
+        total_win = 0
+        any_hits = 0
+        two_match_hits = 0
+        triple_dist: dict[str, int] = {SEVEN:0, DIAM:0, BELL:0, CLOVER:0, CHERRY:0, LEMON:0}
+        line_hit_counts = [0]*lines
+        line_triple_counts = [0]*lines
+
+        for _ in range(spins):
+            total_bet += wager
+            window = spin_reels()
+            win, notes = evaluate_spin(window, lines, line_bet)
+            total_win += win
+            if win > 0:
+                any_hits += 1
+            for note in notes:
+                if ':' not in note:
+                    continue
+                label, remainder = note.split(':', 1)
+                label = label.strip()
+                try:
+                    idx = LINE_LABELS.index(label)
+                except ValueError:
+                    continue
+                if idx < lines:
+                    line_hit_counts[idx] += 1
+                    if '  →  x' in note and '2-match' not in note:
+                        seg = remainder.split('→',1)[0]
+                        tokens = [t for t in seg.split() if t]
+                        if len(tokens) >= 3 and tokens[0] == tokens[1] == tokens[2]:
+                            line_triple_counts[idx] += 1
+                if '2-match' in note:
+                    two_match_hits += 1
+            for pattern in PAYLINES[lines]:
+                ls = [window[row][col] for col, row in enumerate(pattern)]
+                if ls[0] == ls[1] == ls[2] and tuple(ls) in PAYTABLE:
+                    triple_dist[ls[0]] += 1
+
+        net = total_win - total_bet
+        rtp = (total_win / total_bet * 100) if total_bet else 0
+        hit_rate = any_hits / spins * 100
+        two_match_rate = two_match_hits / spins * 100
+        triple_parts = [f"{sym}:{cnt}" for sym, cnt in triple_dist.items() if cnt]
+        triple_str = " ".join(triple_parts) if triple_parts else "None"
+        if any(line_hit_counts):
+            parts = []
+            for i in range(lines):
+                hc = line_hit_counts[i]
+                tc = line_triple_counts[i]
+                pct = hc / spins * 100
+                parts.append(f"{LINE_LABELS[i].split()[0]}:{hc}({pct:.1f}%|T{tc})")
+            line_dist = ' '.join(parts)
+        else:
+            line_dist = 'None'
+        embed = discord.Embed(title="🎰 Slot Simulation", color=discord.Color.blurple(), description=(
+            f"Spins: {spins}\n"
+            f"Lines: {lines} (line bet {line_bet})\n"
+            f"Total Bet: {total_bet}\n"
+            f"Total Won: {total_win}\n"
+            f"Net: {'+' if net>0 else ''}{net}\n"
+            f"RTP: {rtp:.2f}%\n"
+            f"Hit Rate: {hit_rate:.2f}% (any win)\n"
+            f"2-Match Rate: {two_match_rate:.2f}%\n"
+            f"Triples (paid lines): {triple_str}\n"
+            f"Line Hits: {line_dist}"
+        ))
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Slots(bot))

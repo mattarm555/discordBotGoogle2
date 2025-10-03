@@ -173,20 +173,21 @@ def image_to_discord_file(image, filename):
 
 
 class BlackjackView(View):
-    def __init__(self, ctx, wager):
-        super().__init__(timeout=600)  # 10 minutes timeout
-        self.ctx = ctx
+    def __init__(self, cog: 'Blackjack', interaction: Interaction, wager: int):
+        # Increase timeout moderately; we'll also keep a strong reference in the cog
+        super().__init__(timeout=900)  # 15 minutes
+        self.cog = cog
+        self.ctx = interaction  # original Interaction for edits
         self.wager = wager
         self.player_hand = [deal_card(), deal_card()]
         self.dealer_hand = [deal_card(), deal_card()]
         self.finished = False
         self.doubled = False
+        self.message_id: int | None = None  # set after initial send
         
-        # Check for initial blackjacks
+        # Initial blackjack detection
         self.player_blackjack = hand_value(self.player_hand) == 21
         self.dealer_blackjack = hand_value(self.dealer_hand) == 21
-        
-        # If both have blackjack or dealer has blackjack, game ends immediately
         if self.dealer_blackjack:
             self.finished = True
 
@@ -400,6 +401,8 @@ class BlackjackView(View):
                 pass
         
         self.stop()
+        # Unregister from cog active games
+        self.cog.unregister_game(uid)
 
     async def on_timeout(self):
         """Called when the view times out."""
@@ -419,11 +422,24 @@ class BlackjackView(View):
                 await self.ctx.message.edit(embed=embed, view=self)
         except Exception:
             pass
+        finally:
+            # Ensure we unregister so user can start a new game
+            self.cog.unregister_game(str(self.ctx.user.id))
 
 
 class Blackjack(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # Track active blackjack games to prevent GC + duplicate games
+        # key: user_id (str) -> BlackjackView
+        self.active_games: dict[str, BlackjackView] = {}
+
+    # ---- Active game management ----
+    def register_game(self, user_id: str, view: BlackjackView):
+        self.active_games[user_id] = view
+
+    def unregister_game(self, user_id: str):
+        self.active_games.pop(user_id, None)
 
     @app_commands.command(name="daily", description="Claim your daily currency reward (once every 24 hours)")
     async def daily(self, interaction: Interaction):
@@ -509,6 +525,11 @@ class Blackjack(commands.Cog):
     async def blackjack(self, interaction: Interaction, wager: int):
         debug_command('blackjack', interaction.user, interaction.guild, wager=wager)
         uid = str(interaction.user.id)
+        # Prevent multiple concurrent games for same user
+        existing = self.active_games.get(uid)
+        if existing and not existing.finished:
+            await interaction.response.send_message(embed=discord.Embed(title="⏳ Game In Progress", description="You already have an active blackjack game. Finish or let it timeout before starting another.", color=discord.Color.orange()), ephemeral=True)
+            return
         if wager < 1 or wager > 2000:
             embed = discord.Embed(title="❌ Invalid Wager", description="Wager must be between 1 and 2000.", color=discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -525,21 +546,20 @@ class Blackjack(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        view = BlackjackView(interaction, wager)
-        
+        view = BlackjackView(self, interaction, wager)
+
         # Create initial hand images
         player_image = create_hand_image(view.player_hand)
         dealer_image = create_hand_image(view.dealer_hand, hide_second=True)
-        
+
         embed = discord.Embed(title="🂠 Blackjack", color=discord.Color.blurple())
         embed.add_field(name="👤 Your Hand", value=format_hand_with_total(view.player_hand), inline=False)
         embed.add_field(name="🤖 Dealer's Hand", value=format_hand(view.dealer_hand, hide_second=True), inline=False)
         embed.set_footer(text=f"Wager: {wager}")
-        
+
         # Add combined image if available
         files = []
         if player_image and dealer_image:
-            # Stack images vertically
             total_height = player_image.height + dealer_image.height + 20
             total_width = max(player_image.width, dealer_image.width)
             combined = Image.new('RGBA', (total_width, total_height), (0, 0, 0, 0))
@@ -549,11 +569,17 @@ class Blackjack(commands.Cog):
             combined_file = image_to_discord_file(combined, "hands.png")
             if combined_file:
                 files.append(combined_file)
-        
+
         if files:
             await interaction.response.send_message(embed=embed, view=view, files=files)
         else:
             await interaction.response.send_message(embed=embed, view=view)
+        try:
+            original = await interaction.original_response()
+            view.message_id = original.id
+        except Exception:
+            view.message_id = None
+        self.register_game(uid, view)
 
     @app_commands.command(name="balancetop", description="Show the top balances in this server.")
     @app_commands.describe(limit="Number of top users to show (default 10)")

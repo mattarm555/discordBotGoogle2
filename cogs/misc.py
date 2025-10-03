@@ -168,10 +168,9 @@ class Misc(commands.Cog):
     @app_commands.command(name="help", description="Displays a list of available commands.")
     async def help(self, interaction: Interaction):
         debug_command("help", interaction.user, interaction.guild)
-
         pages = []
 
-        # Music
+        # Music (includes DJ commands)
         music_embed = Embed(title="🎵 Music Commands", color=discord.Color.blue())
         music_embed.add_field(name="/play <url>", value="Plays a song or playlist from the given URL.", inline=False)
         music_embed.add_field(name="/queue", value="Shows the current music queue.", inline=False)
@@ -185,11 +184,25 @@ class Misc(commands.Cog):
         music_embed.add_field(name="/listplaylists", value="List saved playlists for this server.", inline=False)
         music_embed.add_field(name="/queueshuffle", value="Shuffles the current queue.", inline=False)
         music_embed.add_field(name="/np", value="Shows the currently playing song.", inline=False)
-        music_embed.set_footer(text="Page 1/6")
+        music_embed.add_field(name="/setdj <role>", value="Assign or update the DJ role (Manage Guild).", inline=False)
+        music_embed.add_field(name="/cleardj", value="Remove the configured DJ role restriction.", inline=False)
+        music_embed.add_field(name="/djinfo", value="Show the current DJ role configuration.", inline=False)
         pages.append(music_embed)
 
+        # Gambling
+        gambling_embed = Embed(title="🎰 Gambling", color=discord.Color.gold())
+        gambling_embed.add_field(name="/daily", value="Claim your daily coin reward (24h cooldown).", inline=False)
+        gambling_embed.add_field(name="/balance", value="Check your current coin balance.", inline=False)
+        gambling_embed.add_field(name="/balancetop", value="Show the top balances in this server.", inline=False)
+        gambling_embed.add_field(name="/pay <user> <amount>", value="Pay another user some of your coins.", inline=False)
+        gambling_embed.add_field(name="/blackjack <bet>", value="Play a hand of blackjack (1–2000 bet).", inline=False)
+        gambling_embed.add_field(name="/slots <bet> [lines]", value="Spin the slots (1–2000 bet, 1–5 lines).", inline=False)
+        gambling_embed.add_field(name="/slotstats", value="View your slot stats and session delta.", inline=False)
+        gambling_embed.add_field(name="/slotresetsession", value="Reset your slot session baseline.", inline=False)
+        pages.append(gambling_embed)
+
         # XP
-        xp_embed = Embed(title="📈 XP System Commands", color=discord.Color.green())
+        xp_embed = Embed(title="📈 XP System", color=discord.Color.green())
         xp_embed.add_field(name="/level", value="Shows your XP level and server rank.", inline=False)
         xp_embed.add_field(name="/leaderboard", value="Shows the leaders in XP in this server.", inline=False)
         xp_embed.add_field(name="/xpset <amount>", value="Sets the amount of XP gained per message.", inline=False)
@@ -197,13 +210,11 @@ class Misc(commands.Cog):
         xp_embed.add_field(name="/xpunblock <channel>", value="Unblocks XP in the given channel.", inline=False)
         xp_embed.add_field(name="/xpconfig", value="Shows the current XP settings.", inline=False)
         xp_embed.add_field(name="/setlevelrole <level> <role>", value="Set which role is given at a specific level.", inline=False)
-        xp_embed.set_footer(text="Page 2/6")
         pages.append(xp_embed)
 
         # Misc
-        misc_embed = Embed(title="😂 Miscellaneous Commands", color=discord.Color.purple())
+        misc_embed = Embed(title="😂 Miscellaneous", color=discord.Color.purple())
         misc_embed.add_field(name="/snipe", value="Retrieves the last deleted message in the current channel.", inline=False)
-        misc_embed.set_footer(text="Page 3/6")
         pages.append(misc_embed)
 
         # Community
@@ -215,46 +226,48 @@ class Misc(commands.Cog):
         community_embed.add_field(name="/follow <platform> <identifier> <post_channel>", value="Follow a YouTube or Twitch channel and post new content to a channel.", inline=False)
         community_embed.add_field(name="/removefollow <sub_id>", value="Remove a follow subscription by ID (from /followlist).", inline=False)
         community_embed.add_field(name="/followlist", value="List follow subscriptions for this server.", inline=False)
-        community_embed.add_field(name="/ticket <subject>", value="Open a private ticket channel for support. Staff and admins can close tickets.", inline=False)
-        community_embed.add_field(name="/ticketlocation <category>", value="(Admin) Set the default category for new tickets in this server.", inline=False)
-        community_embed.add_field(name="/reactionroles_create <count> <interactive> [base_name]", value="Lets user create reaction roles (max 50). If interactive is true, users can select colors interactively.", inline=False)
-        community_embed.add_field(name="/reactionroles_post <config_id> <channel> <message>", value="Post a reaction-roles message for a previously created role set.", inline=False)
-        community_embed.add_field(name="/reactionroles_remove <config_id>", value="Remove a previously created color role set (deletes roles).", inline=False)
-        community_embed.add_field(name="/reaction_list", value="Lists reaction configurations in server.", inline=False)
-        community_embed.add_field(name="/counting <name> [chances]", value="Create a counting channel with optional mistake limit (leave empty for unlimited).", inline=False)
-        community_embed.add_field(name="/delete_counting <channel>", value="Delete a counting channel and remove its counting configuration.", inline=False)
-        community_embed.set_footer(text="Page 4/6")
+        community_embed.add_field(name="/ticket <subject>", value="Open a private ticket channel for support.", inline=False)
+        community_embed.add_field(name="/ticketlocation <category>", value="Set the default category for new tickets.", inline=False)
+        community_embed.add_field(name="/reactionroles_create <count> <interactive> [base_name]", value="Create reaction roles (max 50).", inline=False)
+        community_embed.add_field(name="/reactionroles_post <config_id> <channel> <message>", value="Post a reaction-roles message.", inline=False)
+        community_embed.add_field(name="/reactionroles_remove <config_id>", value="Remove a color role set.", inline=False)
+        community_embed.add_field(name="/reaction_list", value="List reaction configurations.", inline=False)
+        community_embed.add_field(name="/counting <name> [chances]", value="Create a counting channel.", inline=False)
+        community_embed.add_field(name="/delete_counting <channel>", value="Delete a counting channel.", inline=False)
         pages.append(community_embed)
 
         # Moderating
         moderating_embed = Embed(title="🛡️ Moderating", color=discord.Color.red())
-        moderating_embed.add_field(name="/mute <member> [duration] [reason]", value="Mute a member for an optional duration. Examples: 10m, 1h, 1d.", inline=False)
-        moderating_embed.add_field(name="/mutestatus [member]", value="Show mute remaining time for a member (defaults to yourself).", inline=False)
-        moderating_embed.add_field(name="/unmute <member>", value="Unmute a member immediately.", inline=False)
-        moderating_embed.add_field(name="/kick <member> [reason]", value="Kick a member from the server.", inline=False)
-        moderating_embed.add_field(name="/ban <member> [reason]", value="Ban a member from the server.", inline=False)
-        moderating_embed.add_field(name="/banlist_add <phrase> [reason]", value="Add a phrase to the auto-ban list (DM reason optional).", inline=False)
-        moderating_embed.add_field(name="/banlist_remove <phrase>", value="Remove a phrase from the auto-ban list.", inline=False)
-        moderating_embed.add_field(name="/banlist_list", value="List auto-ban phrases for this server.", inline=False)
-        moderating_embed.add_field(name="/mutelist_add <phrase> <duration> [reason]", value="Add a phrase to the auto-mute list with duration (e.g. 10m).", inline=False)
-        moderating_embed.add_field(name="/mutelist_remove <phrase>", value="Remove a phrase from the auto-mute list.", inline=False)
-        moderating_embed.add_field(name="/mutelist_list", value="List auto-mute phrases for this server.", inline=False)
-        moderating_embed.add_field(name="/kicklist_add <phrase> [reason]", value="Add a phrase to the auto-kick list (DM reason optional).", inline=False)
-        moderating_embed.add_field(name="/kicklist_remove <phrase>", value="Remove a phrase from the auto-kick list.", inline=False)
-        moderating_embed.add_field(name="/kicklist_list", value="List auto-kick phrases for this server.", inline=False)
-        moderating_embed.add_field(name="/help_message <message>", value="DMs the bot owner with your message (for support or feedback).", inline=False)
-        moderating_embed.set_footer(text="Page 5/6")
+        moderating_embed.add_field(name="/mute <member> [duration] [reason]", value="Mute a member (e.g. 10m, 1h, 1d).", inline=False)
+        moderating_embed.add_field(name="/mutestatus [member]", value="Show remaining mute time.", inline=False)
+        moderating_embed.add_field(name="/unmute <member>", value="Unmute immediately.", inline=False)
+        moderating_embed.add_field(name="/kick <member> [reason]", value="Kick a member.", inline=False)
+        moderating_embed.add_field(name="/ban <member> [reason]", value="Ban a member.", inline=False)
+        moderating_embed.add_field(name="/banlist_add <phrase> [reason]", value="Add auto-ban phrase.", inline=False)
+        moderating_embed.add_field(name="/banlist_remove <phrase>", value="Remove auto-ban phrase.", inline=False)
+        moderating_embed.add_field(name="/banlist_list", value="List auto-ban phrases.", inline=False)
+        moderating_embed.add_field(name="/mutelist_add <phrase> <duration> [reason]", value="Add auto-mute phrase.", inline=False)
+        moderating_embed.add_field(name="/mutelist_remove <phrase>", value="Remove auto-mute phrase.", inline=False)
+        moderating_embed.add_field(name="/mutelist_list", value="List auto-mute phrases.", inline=False)
+        moderating_embed.add_field(name="/kicklist_add <phrase> [reason]", value="Add auto-kick phrase.", inline=False)
+        moderating_embed.add_field(name="/kicklist_remove <phrase>", value="Remove auto-kick phrase.", inline=False)
+        moderating_embed.add_field(name="/kicklist_list", value="List auto-kick phrases.", inline=False)
+        moderating_embed.add_field(name="/help_message <message>", value="DM the bot owner feedback.", inline=False)
         pages.append(moderating_embed)
 
         # Quotes
-        quotes_embed = Embed(title="💬 Quote System", color=discord.Color.teal())
+        quotes_embed = Embed(title="💬 Quotes", color=discord.Color.teal())
         quotes_embed.add_field(name="/quote_add", value="Add a new quote.", inline=False)
         quotes_embed.add_field(name="/quote_get", value="Get a random quote.", inline=False)
-        quotes_embed.add_field(name="/quote_list", value="View all saved quotes.", inline=False)
-        quotes_embed.add_field(name="/quote_edit <index> <new_text>", value="Edit a quote by number.", inline=False)
-        quotes_embed.add_field(name="/quote_delete <index>", value="Delete a quote by number.", inline=False)
-        quotes_embed.set_footer(text="Page 6/6")
+        quotes_embed.add_field(name="/quote_list", value="View all quotes.", inline=False)
+        quotes_embed.add_field(name="/quote_edit <index> <new_text>", value="Edit a quote.", inline=False)
+        quotes_embed.add_field(name="/quote_delete <index>", value="Delete a quote.", inline=False)
         pages.append(quotes_embed)
+
+        # Dynamic page numbering
+        total = len(pages)
+        for i, emb in enumerate(pages, start=1):
+            emb.set_footer(text=f"Page {i}/{total}")
 
         try:
             view = HelpPaginator(pages)

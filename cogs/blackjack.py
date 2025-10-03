@@ -608,14 +608,16 @@ class Blackjack(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="balance", description="Check your current coin balance")
-    async def balance(self, interaction: Interaction):
-        debug_command('balance', interaction.user, interaction.guild)
-        uid = str(interaction.user.id)
+    @app_commands.command(name="balance", description="Check your or another user's coin balance")
+    @app_commands.describe(user="User to check (optional)")
+    async def balance(self, interaction: Interaction, user: discord.User | None = None):
+        debug_command('balance', interaction.user, interaction.guild, target=(user.id if user else None))
+        target = user or interaction.user
+        uid = str(target.id)
         guild_id = str(interaction.guild.id) if interaction.guild else None
         bal = get_balance(uid, guild_id=guild_id)
-        embed = discord.Embed(title="💰 Balance", description=f"{interaction.user.mention} has **{bal}** coins.", color=discord.Color.gold())
-        embed.set_thumbnail(url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
+        embed = discord.Embed(title="💰 Balance", description=f"{target.mention} has **{bal}** coins.", color=discord.Color.gold())
+        embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="pay", description="Pay another user some of your coins (server balance)")

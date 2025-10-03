@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands, Interaction, Embed
 import json
 import os
+from utils.economy import add_currency
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -107,13 +108,22 @@ class XP(commands.Cog):
         leveled_up = self.add_xp(message.author, config["xp_per_message"])
         if leveled_up:
             try:
+                new_level = self.xp_data[guild_id][str(message.author.id)]["level"]
+                coin_reward = 100 * new_level
+                
                 embed = Embed(
                     title="🎉 Level Up!",
-                    description=f"{message.author.mention} leveled up to **Level {self.xp_data[guild_id][str(message.author.id)]['level']}**!",
+                    description=f"{message.author.mention} leveled up to **Level {new_level}**!\n💰 Earned **{coin_reward}** coins!",
                     color=discord.Color.orange()
                 )
                 embed.set_thumbnail(url=message.author.avatar.url if message.author.avatar else message.author.default_avatar.url)
                 await message.channel.send(embed=embed)
+                
+                # Award currency on level up: 100 * new_level
+                try:
+                    add_currency(str(message.author.id), coin_reward, guild_id=guild_id)
+                except Exception:
+                    pass
                 # Assign role if configured for this level
                 level_roles = config.get("level_roles", {})
                 new_level = self.xp_data[guild_id][str(message.author.id)]["level"]
@@ -183,6 +193,13 @@ class XP(commands.Cog):
                     value=f"Level {data['level']} — {data['xp']} XP",
                     inline=False
                 )
+
+        # Set thumbnail to the top user's avatar if present
+        if top_users:
+            top_id = top_users[0][0]
+            top_member = interaction.guild.get_member(int(top_id))
+            if top_member:
+                embed.set_thumbnail(url=top_member.avatar.url if top_member.avatar else top_member.default_avatar.url)
 
         await interaction.response.send_message(embed=embed)
 

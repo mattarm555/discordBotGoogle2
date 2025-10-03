@@ -144,3 +144,32 @@ def set_global_daily_claim(user_id: str):
     _global_daily["last_user"] = user_id
     economy["_global_daily"] = _global_daily
     save_json(ECON_FILE, economy)
+
+
+def daily_time_until_next(user_id: str, guild_id: str = None, reset_hour: int = 0):
+    """Return a timedelta of how long until the user can claim daily again.
+
+    If the user can already claim, returns timedelta(0).
+    Uses the same boundary logic as can_claim_daily (calendar day boundary at reset_hour UTC).
+    """
+    now = datetime.utcnow()
+    boundary = _get_reset_boundary(now, reset_hour=reset_hour)
+    if guild_id:
+        last = _last_daily.get("guilds", {}).get(str(guild_id), {}).get(str(user_id))
+    else:
+        last = _last_daily.get(str(user_id))
+    if not last:
+        return timedelta(0)
+    try:
+        last_dt = datetime.fromisoformat(last)
+    except Exception:
+        return timedelta(0)
+    # If last claim before boundary, can claim now
+    if last_dt < boundary:
+        return timedelta(0)
+    # Otherwise next boundary is boundary + 1 day
+    next_boundary = boundary + timedelta(days=1)
+    remaining = next_boundary - now
+    if remaining.total_seconds() < 0:
+        return timedelta(0)
+    return remaining

@@ -6,7 +6,15 @@ import random
 import os
 from PIL import Image
 import io
-from utils.economy import get_balance, add_currency, remove_currency, can_claim_daily, set_daily_claim, get_guild_balances
+from utils.economy import (
+    get_balance,
+    add_currency,
+    remove_currency,
+    can_claim_daily,
+    set_daily_claim,
+    get_guild_balances,
+    daily_time_until_next,
+)
 from datetime import datetime
 
 # --- Color Codes ---
@@ -423,13 +431,32 @@ class Blackjack(commands.Cog):
         uid = str(interaction.user.id)
         guild_id = str(interaction.guild.id) if interaction.guild else None
         if not can_claim_daily(uid, guild_id=guild_id):
-            embed = discord.Embed(title="⏳ Daily Already Claimed", description="You already claimed your daily reward today in this server! Try again after the daily reset (UTC).", color=discord.Color.orange())
+            remaining = daily_time_until_next(uid, guild_id=guild_id)
+            hours, remainder = divmod(int(remaining.total_seconds()), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            parts = []
+            if hours:
+                parts.append(f"{hours}h")
+            if minutes:
+                parts.append(f"{minutes}m")
+            if not hours and not minutes:
+                parts.append(f"{seconds}s")
+            time_str = " ".join(parts)
+            desc = (
+                "You already claimed your daily reward in this server.\n"
+                f"Next claim available in **{time_str}** (midnight UTC reset)."
+            )
+            embed = discord.Embed(title="⏳ Daily Already Claimed", description=desc, color=discord.Color.orange())
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         reward = random.randint(1, 1000)
         add_currency(uid, reward, guild_id=guild_id)
         set_daily_claim(uid, guild_id=guild_id)
-        embed = discord.Embed(title="🎁 Daily Reward", description=f"You received **{reward}** coins today!", color=discord.Color.green())
+        embed = discord.Embed(
+            title="🎁 Daily Reward",
+            description=f"You received **{reward}** coins today! Come back after the next reset (midnight UTC).",
+            color=discord.Color.green()
+        )
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="balance", description="Check your current coin balance")
@@ -440,6 +467,41 @@ class Blackjack(commands.Cog):
         bal = get_balance(uid, guild_id=guild_id)
         embed = discord.Embed(title="💰 Balance", description=f"{interaction.user.mention} has **{bal}** coins.", color=discord.Color.gold())
         embed.set_thumbnail(url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="pay", description="Pay another user some of your coins (server balance)")
+    @app_commands.describe(user="The user to pay", amount="Amount of coins to send (must be positive)")
+    async def pay(self, interaction: Interaction, user: discord.User, amount: app_commands.Range[int, 1, 1_000_000]):
+        debug_command('pay', interaction.user, interaction.guild, target=user.id, amount=amount)
+        if user.id == interaction.user.id:
+            await interaction.response.send_message(embed=discord.Embed(title="❌ Invalid Target", description="You can't pay yourself.", color=discord.Color.red()), ephemeral=True)
+            return
+        if user.bot:
+            await interaction.response.send_message(embed=discord.Embed(title="❌ Invalid Target", description="You can't pay a bot.", color=discord.Color.red()), ephemeral=True)
+            return
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message(embed=discord.Embed(title="❌ Server Only", description="This command must be used in a server.", color=discord.Color.red()), ephemeral=True)
+            return
+        guild_id = str(guild.id)
+        sender_id = str(interaction.user.id)
+        receiver_id = str(user.id)
+        sender_balance = get_balance(sender_id, guild_id=guild_id)
+        if amount > sender_balance:
+            await interaction.response.send_message(embed=discord.Embed(title="❌ Insufficient Funds", description=f"You tried to pay {amount} but only have {sender_balance} coins.", color=discord.Color.red()), ephemeral=True)
+            return
+        # Perform transfer atomically (read -> validate -> write both)
+        remove_currency(sender_id, amount, guild_id=guild_id)
+        add_currency(receiver_id, amount, guild_id=guild_id)
+        sender_after = get_balance(sender_id, guild_id=guild_id)
+        receiver_after = get_balance(receiver_id, guild_id=guild_id)
+        embed = discord.Embed(
+            title="💸 Payment Sent",
+            description=f"{interaction.user.mention} paid {user.mention} **{amount}** coins.",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Your New Balance", value=f"{sender_after} coins", inline=True)
+        embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after} coins", inline=True)
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="blackjack", description="Play a hand of blackjack. Wager between 1 and 2000.")

@@ -195,6 +195,106 @@ class Counting(commands.Cog):
 
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="mistakesreset", description="Reset a user's mistakes for this counting channel.")
+    @app_commands.describe(user="The user whose mistakes to reset (run this in the counting channel).")
+    async def mistakesreset(self, interaction: Interaction, user: discord.Member):
+        # debug
+        try:
+            debug_command('mistakesreset', interaction.user, interaction.guild, target_user=user.name)
+        except Exception:
+            pass
+
+        if not interaction.guild:
+            embed = discord.Embed(title="Error", description="This command must be used in a server.", color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # permission check
+        if not self.has_bot_admin(interaction.user):
+            embed = discord.Embed(title="Permission Denied", description="You do not have permission to reset mistakes.", color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        ch = interaction.channel
+        if not ch:
+            embed = discord.Embed(title="Error", description="Could not determine the invoking channel.", color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        ch_id = str(ch.id)
+        if ch_id not in self.data:
+            embed = discord.Embed(title="Error", description="This channel is not a managed counting channel.", color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        entry = self.data[ch_id]
+        mistakes = entry.setdefault("mistakes", {})
+        uid = str(user.id)
+
+        # reset mistake count to 0 (full chances remaining)
+        mistakes[uid] = 0
+        self._save()
+
+        # remove cannot-count role if present and chances configured
+        chances = entry.get("chances")
+        if chances is not None:
+            cannot_role = discord.utils.get(interaction.guild.roles, name=ROLE_NAME)
+            if cannot_role and cannot_role in user.roles:
+                try:
+                    await user.remove_roles(cannot_role, reason="Mistakes reset by admin")
+                except Exception:
+                    pass
+
+        if chances is None:
+            desc = f"{user.mention}'s mistakes have been reset. Mistakes allowed: unlimited."
+        else:
+            remaining = max(chances - mistakes.get(uid, 0), 0)
+            desc = f"{user.mention}'s mistakes have been reset. Mistakes left: {remaining} / {chances}"
+
+        embed = discord.Embed(title="✅ Mistakes Reset", description=desc, color=discord.Color.green())
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="mistakes", description="Show how many mistakes you (or another user) have left in this counting channel.")
+    @app_commands.describe(user="Optional user to check (defaults to you). Run this in the counting channel.")
+    async def mistakes(self, interaction: Interaction, user: Optional[discord.Member] = None):
+        target = user or interaction.user
+        try:
+            debug_command('mistakes', interaction.user, interaction.guild, target_user=target.name)
+        except Exception:
+            pass
+
+        if not interaction.guild:
+            embed = discord.Embed(title="Error", description="This command must be used in a server.", color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        ch = interaction.channel
+        if not ch:
+            embed = discord.Embed(title="Error", description="Could not determine the invoking channel.", color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        ch_id = str(ch.id)
+        if ch_id not in self.data:
+            embed = discord.Embed(title="Error", description="This channel is not a managed counting channel.", color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        entry = self.data[ch_id]
+        mistakes = entry.setdefault("mistakes", {})
+        uid = str(target.id)
+        chances = entry.get("chances")
+
+        if chances is None:
+            desc = f"{target.mention} has unlimited mistakes (no limit set for this channel)."
+        else:
+            used = mistakes.get(uid, 0)
+            remaining = max(chances - used, 0)
+            desc = f"{target.mention} has {remaining} mistakes left out of {chances}."
+
+        embed = discord.Embed(title="📝 Mistakes", description=desc, color=discord.Color.blurple())
+        await interaction.response.send_message(embed=embed)
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         # Ignore bots and DMs

@@ -8,3 +8,4 @@ aiohttp
 python-dotenv
 curl_cffi
 PyNaCl
+pillow

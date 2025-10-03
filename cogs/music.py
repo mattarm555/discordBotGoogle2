@@ -112,6 +112,65 @@ class Music(commands.Cog):
         queues = {}
         save_queues(queues)
         print(f"{YELLOW}[INFO]{RESET} Cleared all queues at startup.")
+        # DJ role configuration cache: guild_id -> role_id
+        self.dj_roles = self._load_dj_config()
+
+    DJ_CONFIG_FILE = "dj_config.json"
+
+    # ---- DJ Role Persistence ----
+    def _load_dj_config(self):
+        if os.path.exists(self.DJ_CONFIG_FILE):
+            try:
+                with open(self.DJ_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+        return {}
+
+    def _save_dj_config(self):
+        try:
+            with open(self.DJ_CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.dj_roles, f, indent=4)
+        except Exception:
+            pass
+
+    def _user_is_dj(self, interaction: Interaction) -> bool:
+        """Return True if the user can control music.
+
+        Rules:
+          - If no DJ role set for guild -> everyone can use music commands (backwards compatible)
+          - Guild owner OR user with manage_guild or manage_channels perms always allowed
+          - If DJ role set -> user must have that role
+        """
+        guild = interaction.guild
+        if guild is None:
+            return True  # DM fallback (shouldn't happen for music control)
+        # Elevated perms
+        if interaction.user == guild.owner:
+            return True
+        perms = interaction.user.guild_permissions
+        if perms.manage_guild or perms.manage_channels:
+            return True
+        role_id = self.dj_roles.get(str(guild.id))
+        if not role_id:  # no role configured
+            return True
+        role = guild.get_role(int(role_id)) if str(role_id).isdigit() else None
+        if role and role in interaction.user.roles:
+            return True
+        return False
+
+    async def _enforce_dj(self, interaction: Interaction) -> bool:
+        """Ensure the user has DJ permission. Returns True if allowed, False if blocked."""
+        if self._user_is_dj(interaction):
+            return True
+        await interaction.response.send_message(embed=Embed(
+            title="🎧 DJ Only",
+            description="You need the configured DJ role (or Manage Server) to use this music command.",
+            color=discord.Color.red()
+        ), ephemeral=True)
+        return False
 
     async def safe_connect(self, interaction):
         """Force a clean disconnect before joining to kill zombie sessions."""
@@ -244,6 +303,10 @@ class Music(commands.Cog):
     @app_commands.rename(url="search")
     @app_commands.describe(url="YouTube/SoundCloud URL or search term (accepts both links, searches only YouTube)")
     async def play(self, interaction: Interaction, url: str):
+        if not self._user_is_dj(interaction):
+            # Need to defer only if not responded; use private ephemeral
+            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot use /play.", color=discord.Color.red()), ephemeral=True)
+            return
         debug_command("play", interaction.user, interaction.guild, url=url)
         await interaction.response.defer(thinking=True)
 
@@ -617,6 +680,9 @@ class Music(commands.Cog):
 
     @app_commands.command(name="skip", description="Skips the current song.")
     async def skip(self, interaction: Interaction):
+        if not self._user_is_dj(interaction):
+            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot skip songs.", color=discord.Color.red()), ephemeral=True)
+            return
         await interaction.response.defer()
         debug_command("skip", interaction.user, interaction.guild)
         last_channels[str(interaction.guild.id)] = interaction.channel
@@ -631,6 +697,9 @@ class Music(commands.Cog):
 
     @app_commands.command(name="stop", description="Pauses the music.")
     async def stop(self, interaction: Interaction):
+        if not self._user_is_dj(interaction):
+            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot pause music.", color=discord.Color.red()), ephemeral=True)
+            return
         await interaction.response.defer()
         debug_command("stop", interaction.user, interaction.guild)
         last_channels[str(interaction.guild.id)] = interaction.channel
@@ -645,6 +714,9 @@ class Music(commands.Cog):
 
     @app_commands.command(name="start", description="Resumes paused music.")
     async def start(self, interaction: Interaction):
+        if not self._user_is_dj(interaction):
+            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot resume music.", color=discord.Color.red()), ephemeral=True)
+            return
         await interaction.response.defer()
         debug_command("start", interaction.user, interaction.guild)
         last_channels[str(interaction.guild.id)] = interaction.channel
@@ -659,6 +731,9 @@ class Music(commands.Cog):
 
     @app_commands.command(name="leave", description="Disconnects from voice and clears queue.")
     async def leave(self, interaction: Interaction):
+        if not self._user_is_dj(interaction):
+            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot disconnect the bot.", color=discord.Color.red()), ephemeral=True)
+            return
         await interaction.response.defer()  # ✅ Defer response
         debug_command("leave", interaction.user, interaction.guild)
 
@@ -694,6 +769,9 @@ class Music(commands.Cog):
 
     @app_commands.command(name="queueshuffle", description="Shuffle the current song queue.")
     async def queueshuffle(self, interaction: Interaction):
+        if not self._user_is_dj(interaction):
+            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot shuffle the queue.", color=discord.Color.red()), ephemeral=True)
+            return
         await interaction.response.defer()
         guild_id = str(interaction.guild.id)
         if guild_id in queues and queues[guild_id]:
@@ -820,6 +898,9 @@ class Music(commands.Cog):
 
     @app_commands.command(name="removeplaylist", description="Delete a saved playlist.")
     async def remove_playlist(self, interaction: Interaction, name: str):
+        if not self._user_is_dj(interaction):
+            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot modify playlists.", color=discord.Color.red()), ephemeral=True)
+            return
         debug_command("removeplaylist", interaction.user, interaction.guild, name=name)
         guild_id = str(interaction.guild.id)
         playlists = self.load_playlists()
@@ -842,6 +923,9 @@ class Music(commands.Cog):
 
     @app_commands.command(name="playplaylist", description="Play a previously saved playlist.")
     async def play_playlist(self, interaction: Interaction, name: str):
+        if not self._user_is_dj(interaction):
+            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot start playlists.", color=discord.Color.red()), ephemeral=True)
+            return
         debug_command("playplaylist", interaction.user, interaction.guild, name=name)
         guild_id = str(interaction.guild.id)
         playlists = self.load_playlists()
@@ -882,6 +966,9 @@ class Music(commands.Cog):
 
     @app_commands.command(name="saveplaylist", description="Save a playlist link under a custom name.")
     async def save_playlist(self, interaction: Interaction, name: str, link: str):
+        if not self._user_is_dj(interaction):
+            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot save playlists.", color=discord.Color.red()), ephemeral=True)
+            return
         debug_command("saveplaylist", interaction.user, interaction.guild, name=name, link=link)
         guild_id = str(interaction.guild.id)
         # Reject YouTube mixes
@@ -933,6 +1020,64 @@ class Music(commands.Cog):
             description=f"Saved `{name}`.",
             color=discord.Color.green()
         ))
+
+    # ---- DJ Role Commands ----
+    @app_commands.command(name="setdj", description="Assign or update the DJ role for this server.")
+    @app_commands.describe(role="Role that will have permission to control music features")
+    async def set_dj(self, interaction: Interaction, role: discord.Role):
+        # Require manage_guild to set
+        if not interaction.user.guild_permissions.manage_guild and interaction.user != interaction.guild.owner:
+            await interaction.response.send_message(embed=Embed(
+                title="❌ Missing Permission",
+                description="You need Manage Server to set the DJ role.",
+                color=discord.Color.red()
+            ), ephemeral=True)
+            return
+        self.dj_roles[str(interaction.guild.id)] = role.id
+        self._save_dj_config()
+        await interaction.response.send_message(embed=Embed(
+            title="🎧 DJ Role Set",
+            description=f"DJ role is now {role.mention}. Users with this role (or Manage Server) can control music commands.",
+            color=discord.Color.green()
+        ))
+
+    @app_commands.command(name="cleardj", description="Remove the configured DJ role (revert to everyone allowed).")
+    async def clear_dj(self, interaction: Interaction):
+        if not interaction.user.guild_permissions.manage_guild and interaction.user != interaction.guild.owner:
+            await interaction.response.send_message(embed=Embed(
+                title="❌ Missing Permission",
+                description="You need Manage Server to clear the DJ role.",
+                color=discord.Color.red()
+            ), ephemeral=True)
+            return
+        removed = self.dj_roles.pop(str(interaction.guild.id), None)
+        self._save_dj_config()
+        if removed:
+            msg = "DJ role cleared. All users may use music commands now."
+        else:
+            msg = "No DJ role was set. Nothing changed."
+        await interaction.response.send_message(embed=Embed(
+            title="🎧 DJ Role Cleared",
+            description=msg,
+            color=discord.Color.orange()
+        ))
+
+    @app_commands.command(name="djinfo", description="Show the current DJ role configuration.")
+    async def dj_info(self, interaction: Interaction):
+        role_id = self.dj_roles.get(str(interaction.guild.id))
+        if role_id:
+            role = interaction.guild.get_role(int(role_id))
+            if role:
+                desc = f"Current DJ role: {role.mention}\nUsers with this role or Manage Server/Manage Channels can use music commands."
+            else:
+                desc = "A DJ role ID is stored, but the role no longer exists. Use /setdj to assign a new one or /cleardj to remove it."
+        else:
+            desc = "No DJ role is set. Everyone can use music commands. Use /setdj to restrict access."
+        await interaction.response.send_message(embed=Embed(
+            title="🎧 DJ Info",
+            description=desc,
+            color=discord.Color.blurple()
+        ), ephemeral=True)
 
 
 

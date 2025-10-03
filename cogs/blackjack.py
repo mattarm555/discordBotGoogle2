@@ -6,6 +6,7 @@ import random
 import os
 from PIL import Image
 import io
+import asyncio
 from utils.economy import (
     get_balance,
     add_currency,
@@ -16,6 +17,8 @@ from utils.economy import (
     daily_time_until_next,
 )
 from datetime import datetime
+import json
+from datetime import timedelta
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -184,6 +187,10 @@ class BlackjackView(View):
         self.finished = False
         self.doubled = False
         self.message_id: int | None = None  # set after initial send
+        # Fail-safe tracking
+        self.failure_time: datetime | None = None
+        self.refunded: bool = False
+        self.refund_task: asyncio.Task | None = None
         
         # Initial blackjack detection
         self.player_blackjack = hand_value(self.player_hand) == 21
@@ -236,27 +243,34 @@ class BlackjackView(View):
         self.update_buttons()
         
         # Simple, reliable interaction handling
+        success = False
         try:
-            if files:
-                await interaction.response.edit_message(embed=embed, view=self, attachments=files)
+            if interaction.response.is_done():
+                # Already responded elsewhere
+                if files:
+                    await interaction.edit_original_response(embed=embed, view=self, attachments=files)
+                else:
+                    await interaction.edit_original_response(embed=embed, view=self)
             else:
-                await interaction.response.edit_message(embed=embed, view=self)
-        except discord.InteractionResponded:
-            try:
                 if files:
-                    await interaction.edit_original_response(embed=embed, view=self, attachments=files)
+                    await interaction.response.edit_message(embed=embed, view=self, attachments=files)
                 else:
-                    await interaction.edit_original_response(embed=embed, view=self)
-            except Exception:
-                pass
+                    await interaction.response.edit_message(embed=embed, view=self)
+            success = True
         except Exception:
+            # Final fallback attempt
             try:
                 if files:
                     await interaction.edit_original_response(embed=embed, view=self, attachments=files)
                 else:
                     await interaction.edit_original_response(embed=embed, view=self)
+                success = True
             except Exception:
-                pass
+                success = False
+
+        if not success:
+            # Mark interaction failure and schedule refund if not already
+            self.mark_failure()
 
     def update_buttons(self):
         # Disable buttons based on game state
@@ -265,6 +279,39 @@ class BlackjackView(View):
                 item.disabled = True
             elif self.finished:
                 item.disabled = True
+
+    def mark_failure(self):
+        if self.failure_time is None:
+            self.failure_time = datetime.utcnow()
+            # Schedule a one-off refund in 60s
+            if self.refund_task is None:
+                self.refund_task = asyncio.create_task(self._refund_after_delay())
+
+    async def _refund_after_delay(self):
+        try:
+            await asyncio.sleep(60)
+            if (not self.finished) and (not self.refunded) and self.failure_time is not None:
+                await self.refund_wager(reason="interaction failure")
+        except Exception:
+            pass
+
+    async def refund_wager(self, reason: str):
+        if self.refunded:
+            return
+        self.refunded = True
+        uid = str(self.ctx.user.id)
+        guild_id = str(self.ctx.guild.id) if self.ctx.guild else None
+        add_currency(uid, self.wager, guild_id=guild_id)
+        # Attempt to notify user if possible
+        try:
+            embed = discord.Embed(title="Blackjack Closed", description=f"Game closed due to {reason}. Wager refunded ({self.wager}).", color=discord.Color.orange())
+            if self.ctx.channel:
+                await self.ctx.channel.send(content=self.ctx.user.mention, embed=embed)
+        except Exception:
+            pass
+        # Unregister game
+        self.cog.unregister_game(uid)
+        self.stop()
 
     @button(label="Hit", style=discord.ButtonStyle.green)
     async def hit(self, interaction: Interaction, button: discord.ui.Button):
@@ -410,21 +457,9 @@ class BlackjackView(View):
             item.disabled = True
         
         try:
-            embed = discord.Embed(title="Blackjack - Timed Out", description="Game timed out. Your wager has been returned.", color=discord.Color.orange())
-            # Return wager to user
-            uid = str(self.ctx.user.id)
-            guild_id = str(self.ctx.guild.id) if self.ctx.guild else None
-            add_currency(uid, self.wager, guild_id=guild_id)
-            
-            if hasattr(self.ctx, 'edit_original_response'):
-                await self.ctx.edit_original_response(embed=embed, view=self)
-            elif hasattr(self.ctx, 'message'):
-                await self.ctx.message.edit(embed=embed, view=self)
+            await self.refund_wager("inactivity timeout")
         except Exception:
             pass
-        finally:
-            # Ensure we unregister so user can start a new game
-            self.cog.unregister_game(str(self.ctx.user.id))
 
 
 class Blackjack(commands.Cog):
@@ -433,6 +468,104 @@ class Blackjack(commands.Cog):
         # Track active blackjack games to prevent GC + duplicate games
         # key: user_id (str) -> BlackjackView
         self.active_games: dict[str, BlackjackView] = {}
+        # Blackjack persistent stats
+        self.stats_file = "blackjackstats.json"
+        self.stats = self._load_stats()
+        self.SESSION_TIMEOUT = timedelta(minutes=30)
+
+    # ---- Blackjack Stats Persistence ----
+    def _load_stats(self):
+        if os.path.exists(self.stats_file):
+            try:
+                with open(self.stats_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                return {"guilds": {}}
+        return {"guilds": {}}
+
+    def _save_stats(self):
+        try:
+            with open(self.stats_file, 'w', encoding='utf-8') as f:
+                json.dump(self.stats, f, indent=4)
+        except Exception:
+            pass
+
+    def _ensure_user(self, guild_id: str, user_id: str):
+        g = self.stats.setdefault("guilds", {}).setdefault(str(guild_id), {})
+        u = g.setdefault(user_id, {
+            "hands": 0,
+            "wins": 0,
+            "losses": 0,
+            "pushes": 0,
+            "blackjacks": 0,
+            "doubles": 0,
+            "bet_total": 0,
+            "win_total": 0,
+            "net": 0,
+            "biggest_win": 0,
+            "biggest_wager": 0,
+            "last_play": None,
+            "session_baseline": None,
+        })
+        return u
+
+    def _maybe_reset_session(self, u: dict):
+        last_play = u.get("last_play")
+        if not last_play:
+            return
+        try:
+            last_dt = datetime.fromisoformat(last_play)
+        except Exception:
+            return
+        if datetime.utcnow() - last_dt > self.SESSION_TIMEOUT:
+            # Reset the session baseline to current totals
+            u["session_baseline"] = {
+                "hands": u.get("hands", 0),
+                "bet_total": u.get("bet_total", 0),
+                "win_total": u.get("win_total", 0),
+                "net": u.get("net", 0),
+            }
+
+    def _ensure_baseline(self, u: dict):
+        if u.get("session_baseline") is None:
+            u["session_baseline"] = {
+                "hands": u.get("hands", 0),
+                "bet_total": u.get("bet_total", 0),
+                "win_total": u.get("win_total", 0),
+                "net": u.get("net", 0),
+            }
+
+    def record_hand(self, guild_id: str | None, user_id: str, wager: int, payout: int, result: str, player_blackjack: bool, doubled: bool):
+        if not guild_id:
+            return  # only track per guild
+        u = self._ensure_user(guild_id, user_id)
+        # Possibly reset session
+        self._maybe_reset_session(u)
+        self._ensure_baseline(u)
+        u["hands"] += 1
+        u["bet_total"] += wager
+        u["win_total"] += payout
+        net = payout - wager
+        u["net"] += net
+        if wager > u.get("biggest_wager", 0):
+            u["biggest_wager"] = wager
+        if payout - wager > u.get("biggest_win", 0):  # biggest positive profit from a hand
+            u["biggest_win"] = payout - wager
+        if result == "win":
+            u["wins"] += 1
+        elif result == "loss":
+            u["losses"] += 1
+        elif result == "push":
+            u["pushes"] += 1
+        if player_blackjack:
+            u["blackjacks"] += 1
+        if doubled:
+            u["doubles"] += 1
+        u["last_play"] = datetime.utcnow().isoformat()
+        self._save_stats()
+
+    def get_user_stats(self, guild_id: str, user_id: str):
+        return self.stats.get("guilds", {}).get(str(guild_id), {}).get(user_id)
 
     # ---- Active game management ----
     def register_game(self, user_id: str, view: BlackjackView):
@@ -580,6 +713,8 @@ class Blackjack(commands.Cog):
         except Exception:
             view.message_id = None
         self.register_game(uid, view)
+
+    # Store wager on view for stats usage later (already exists as self.wager)
 
     @app_commands.command(name="balancetop", description="Show the top balances in this server.")
     @app_commands.describe(limit="Number of top users to show (default 10)")

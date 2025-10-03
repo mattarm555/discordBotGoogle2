@@ -177,8 +177,8 @@ def image_to_discord_file(image, filename):
 
 class BlackjackView(View):
     def __init__(self, cog: 'Blackjack', interaction: Interaction, wager: int):
-        # Increase timeout moderately; we'll also keep a strong reference in the cog
-        super().__init__(timeout=900)  # 15 minutes
+        # Make view persistent; we'll explicitly close/disable when done
+        super().__init__(timeout=None)
         self.cog = cog
         self.ctx = interaction  # original Interaction for edits
         self.wager = wager
@@ -290,7 +290,9 @@ class BlackjackView(View):
     async def _refund_after_delay(self):
         try:
             await asyncio.sleep(60)
-            if (not self.finished) and (not self.refunded) and self.failure_time is not None:
+            # Hard safety: refund even if there was no explicit interaction failure,
+            # as long as the game hasn't finished and wasn't refunded.
+            if (not self.finished) and (not self.refunded):
                 await self.refund_wager(reason="interaction failure")
         except Exception:
             pass
@@ -299,6 +301,7 @@ class BlackjackView(View):
         if self.refunded:
             return
         self.refunded = True
+        self.finished = True
         uid = str(self.ctx.user.id)
         guild_id = str(self.ctx.guild.id) if self.ctx.guild else None
         add_currency(uid, self.wager, guild_id=guild_id)
@@ -307,6 +310,19 @@ class BlackjackView(View):
             embed = discord.Embed(title="Blackjack Closed", description=f"Game closed due to {reason}. Wager refunded ({self.wager}).", color=discord.Color.orange())
             if self.ctx.channel:
                 await self.ctx.channel.send(content=self.ctx.user.mention, embed=embed)
+        except Exception:
+            pass
+        # Disable buttons and try to update message
+        for item in self.children:
+            item.disabled = True
+        try:
+            await self.ctx.edit_original_response(view=self)
+        except Exception:
+            pass
+        # Cancel any pending refund task
+        try:
+            if self.refund_task and not self.refund_task.done():
+                self.refund_task.cancel()
         except Exception:
             pass
         # Unregister game
@@ -446,7 +462,21 @@ class BlackjackView(View):
                     await interaction.channel.send(embed=result_embed)
             except:
                 pass
-        
+        # Disable buttons and try to update the original message
+        for item in self.children:
+            item.disabled = True
+        try:
+            await self.ctx.edit_original_response(view=self)
+        except Exception:
+            pass
+
+        # Cancel any pending refund task
+        try:
+            if self.refund_task and not self.refund_task.done():
+                self.refund_task.cancel()
+        except Exception:
+            pass
+
         self.stop()
         # Unregister from cog active games
         self.cog.unregister_game(uid)
@@ -682,6 +712,12 @@ class Blackjack(commands.Cog):
             return
         
         view = BlackjackView(self, interaction, wager)
+        # Start a hard 60s refund safety timer similar to tickets' persistent button behavior
+        try:
+            if view.refund_task is None:
+                view.refund_task = asyncio.create_task(view._refund_after_delay())
+        except Exception:
+            pass
 
         # Create initial hand images
         player_image = create_hand_image(view.player_hand)

@@ -318,15 +318,18 @@ class XPLeaderboardView(ui.View):
     def make_embed(self) -> Embed:
         start, end, page_users = self._slice()
         embed = Embed(title=f"🏆 XP Leaderboard — Page {self.page}/{self.total_pages}", color=discord.Color.gold())
-        display_index = start + 1
         first_member = None
-        for user_id, data in page_users:
+        # Use the global rank index regardless of cache presence
+        for idx, (user_id, data) in enumerate(page_users, start=start + 1):
             member = self.guild.get_member(int(user_id))
             if member:
                 if first_member is None:
                     first_member = member
-                embed.add_field(name=f"#{display_index}: {member.display_name}", value=f"Level {data['level']} — {data['xp']} XP", inline=False)
-                display_index += 1
+                display_name = member.display_name
+            else:
+                # Fallback to a mention or raw ID if not a member/cached
+                display_name = f"<@{user_id}>"
+            embed.add_field(name=f"#{idx}: {display_name}", value=f"Level {data['level']} — {data['xp']} XP", inline=False)
         if first_member:
             embed.set_thumbnail(url=first_member.avatar.url if first_member.avatar else first_member.default_avatar.url)
         return embed

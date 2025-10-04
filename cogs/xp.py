@@ -4,6 +4,7 @@ from discord import app_commands, Interaction, Embed, ui
 import json
 import os
 from utils.economy import add_currency
+from utils.botadmin import is_bot_admin
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -34,17 +35,13 @@ def debug_command(name, user, guild, **kwargs):
             print(f"  {key}: {value}")
 
 class XP(commands.Cog):
-    def has_bot_admin(self, member: discord.Member):
-        guild_id = str(member.guild.id)
-        config = self.get_xp_config(guild_id)
-        perms = config.get("permissions_roles", [])
-        # Check if user is admin or has a bot-admin role
-        if member.guild_permissions.administrator:
-            return True
-        for role in member.roles:
-            if str(role.id) in perms:
-                return True
-        return False
+    def has_bot_admin(self, member: discord.Member) -> bool:
+        # Centralized check that ignores Discord-level perms and trusts saved role IDs.
+        # Also allows guild owner and optional global owner from xp_config.json.
+        try:
+            return is_bot_admin(member)
+        except Exception:
+            return False
 
     @app_commands.command(name="setlevelrole", description="Set which role is given at a specific level.")
     @app_commands.describe(level="Level number", role="Role to assign")

@@ -137,6 +137,23 @@ class XP(commands.Cog):
 
         save_json(XP_FILE, self.xp_data)
 
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        """When a member leaves, reset/remove their XP entry for that guild."""
+        try:
+            guild_id = str(member.guild.id)
+            user_id = str(member.id)
+            if guild_id in self.xp_data and user_id in self.xp_data[guild_id]:
+                # Remove the user's XP record entirely for this guild
+                self.xp_data[guild_id].pop(user_id, None)
+                # If the guild mapping becomes empty, optionally clean it up
+                if not self.xp_data[guild_id]:
+                    self.xp_data.pop(guild_id, None)
+                save_json(XP_FILE, self.xp_data)
+        except Exception:
+            # Avoid raising in event handler
+            pass
+
     @app_commands.command(name="level", description="Shows your current XP level and rank.")
     async def level(self, interaction: Interaction):
         debug_command("level", interaction.user, interaction.guild)

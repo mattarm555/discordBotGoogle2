@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands
-from discord import app_commands, Interaction, Embed
+from discord import app_commands, Interaction, Embed, ui
 import json
 import os
 from utils.economy import add_currency
@@ -164,9 +164,10 @@ class XP(commands.Cog):
         embed.add_field(name="Rank", value=f"#{rank}" if rank else "Unranked")
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="xpleaderboard", description="Shows the top XP earners in this server.")
-    async def xpleaderboard(self, interaction: Interaction):
-        debug_command("xpleaderboard", interaction.user, interaction.guild)
+    @app_commands.command(name="xpleaderboard", description="Shows the XP leaderboard with optional page (10 per page).")
+    @app_commands.describe(page="Page number to view (default 1)")
+    async def xpleaderboard(self, interaction: Interaction, page: int = 1):
+        debug_command("xpleaderboard", interaction.user, interaction.guild, page=page)
 
         guild_id = str(interaction.guild.id)
         all_users = self.xp_data.get(guild_id, {})
@@ -182,26 +183,24 @@ class XP(commands.Cog):
         sorted_users = sorted(
             all_users.items(), key=lambda item: (item[1]["level"], item[1]["xp"]), reverse=True
         )
-        top_users = sorted_users[:10]
+        page_size = 10
+        total = len(sorted_users)
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 1
 
-        embed = Embed(title="🏆 XP Leaderboard", color=discord.Color.gold())
-        for i, (user_id, data) in enumerate(top_users, start=1):
-            user = interaction.guild.get_member(int(user_id))
-            if user:
-                embed.add_field(
-                    name=f"#{i}: {user.display_name}",
-                    value=f"Level {data['level']} — {data['xp']} XP",
-                    inline=False
-                )
+        # Validate page
+        if page < 1:
+            page = 1
+        if page > total_pages:
+            await interaction.response.send_message(embed=Embed(
+                title="❌ Page Out of Range",
+                description=f"There are only **{total_pages}** page(s) (total **{total}** users). Try a smaller page number.",
+                color=discord.Color.red()
+            ), ephemeral=True)
+            return
 
-        # Set thumbnail to the top user's avatar if present
-        if top_users:
-            top_id = top_users[0][0]
-            top_member = interaction.guild.get_member(int(top_id))
-            if top_member:
-                embed.set_thumbnail(url=top_member.avatar.url if top_member.avatar else top_member.default_avatar.url)
-
-        await interaction.response.send_message(embed=embed)
+        # Build a paginator view with buttons
+        view = XPLeaderboardView(interaction.guild, sorted_users, page_size=page_size, page=page)
+        await interaction.response.send_message(embed=view.make_embed(), view=view)
 
     @app_commands.command(name="xpset", description="Set how much XP is earned per message.")
     @app_commands.describe(amount="XP amount per message")
@@ -298,3 +297,87 @@ class XP(commands.Cog):
 # --- Cog Setup ---
 async def setup(bot):
     await bot.add_cog(XP(bot))
+
+# ---- XP Leaderboard View with Buttons ----
+class XPLeaderboardView(ui.View):
+    def __init__(self, guild: discord.Guild, sorted_users: list[tuple[str, dict]], page_size: int = 10, page: int = 1, timeout: int = 120):
+        super().__init__(timeout=timeout)
+        self.guild = guild
+        self.sorted_users = sorted_users
+        self.page_size = page_size
+        self.total = len(sorted_users)
+        self.total_pages = max(1, (self.total + page_size - 1) // page_size)
+        self.page = max(1, min(page, self.total_pages))
+        self._update_buttons()
+
+    def _slice(self):
+        start = (self.page - 1) * self.page_size
+        end = min(start + self.page_size, self.total)
+        return start, end, self.sorted_users[start:end]
+
+    def make_embed(self) -> Embed:
+        start, end, page_users = self._slice()
+        embed = Embed(title=f"🏆 XP Leaderboard — Page {self.page}/{self.total_pages}", color=discord.Color.gold())
+        display_index = start + 1
+        first_member = None
+        for user_id, data in page_users:
+            member = self.guild.get_member(int(user_id))
+            if member:
+                if first_member is None:
+                    first_member = member
+                embed.add_field(name=f"#{display_index}: {member.display_name}", value=f"Level {data['level']} — {data['xp']} XP", inline=False)
+                display_index += 1
+        if first_member:
+            embed.set_thumbnail(url=first_member.avatar.url if first_member.avatar else first_member.default_avatar.url)
+        return embed
+
+    def _update_buttons(self):
+        # Disable/enable buttons based on current page
+        for child in self.children:
+            if isinstance(child, ui.Button):
+                if child.custom_id == 'xp_prev':
+                    child.disabled = self.page <= 1
+                elif child.custom_id == 'xp_next':
+                    child.disabled = self.page >= self.total_pages
+                elif child.custom_id == 'xp_back5':
+                    child.disabled = self.page <= 1
+                elif child.custom_id == 'xp_fwd5':
+                    child.disabled = self.page >= self.total_pages
+
+    @ui.button(label="⏮ -5", style=discord.ButtonStyle.gray, custom_id='xp_back5')
+    async def back5(self, interaction: Interaction, button: ui.Button):
+        old = self.page
+        self.page = max(1, self.page - 5)
+        if self.page == old:
+            await interaction.response.defer()
+            return
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @ui.button(label="⬅️ Prev", style=discord.ButtonStyle.blurple, custom_id='xp_prev')
+    async def prev(self, interaction: Interaction, button: ui.Button):
+        if self.page <= 1:
+            await interaction.response.defer()
+            return
+        self.page -= 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @ui.button(label="Next ➡️", style=discord.ButtonStyle.blurple, custom_id='xp_next')
+    async def next(self, interaction: Interaction, button: ui.Button):
+        if self.page >= self.total_pages:
+            await interaction.response.defer()
+            return
+        self.page += 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @ui.button(label="+5 ⏭", style=discord.ButtonStyle.gray, custom_id='xp_fwd5')
+    async def fwd5(self, interaction: Interaction, button: ui.Button):
+        old = self.page
+        self.page = min(self.total_pages, self.page + 5)
+        if self.page == old:
+            await interaction.response.defer()
+            return
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)

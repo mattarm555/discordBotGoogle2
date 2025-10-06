@@ -40,9 +40,8 @@ class CloseTicketButton(ui.View):
         self.ticket_id = ticket_id
         self.owner_id = owner_id
 
-    @ui.button(label='Close Ticket', style=discord.ButtonStyle.danger)
-    async def close(self, interaction: Interaction, button: ui.Button):
-        # permission check: only owner, guild admins, or configured admin roles
+    async def _perform_close(self, interaction: Interaction, provided_reason: Optional[str] = None):
+        """Shared close routine: permission check, DM opener, remove record, delete channel."""
         guild = interaction.guild
         if not guild:
             err = Embed(title='❌ Not in a Server', description='This interaction must be used in a guild.', color=discord.Color.red())
@@ -61,31 +60,123 @@ class CloseTicketButton(ui.View):
             await interaction.response.send_message(embed=err, ephemeral=True)
             return
 
-        # delete the ticket channel
         ch = interaction.channel
-        if ch:
-            info = Embed(title='Closing Ticket', description='Closing ticket...', color=discord.Color.orange())
-            await interaction.response.send_message(embed=info, ephemeral=True)
-            ticket_data = load_json(TICKETS_FILE)
-            guild_tickets = ticket_data.get(str(guild.id), {})
-            if self.ticket_id in guild_tickets:
-                guild_tickets.pop(self.ticket_id, None)
-                ticket_data[str(guild.id)] = guild_tickets
-                save_json(TICKETS_FILE, ticket_data)
-                # also update in-memory Tickets cog if present
-                try:
-                    tickets_cog = interaction.client.get_cog('Tickets')
-                    if tickets_cog and hasattr(tickets_cog, 'tickets'):
-                        tickets_cog.tickets.get(str(guild.id), {}).pop(self.ticket_id, None)
-                except Exception:
-                    logger.exception('[Tickets] Failed to update in-memory ticket store')
-            try:
-                await ch.delete(reason=f'Ticket {self.ticket_id} closed by {interaction.user}')
-            except Exception:
-                logger.exception('[Tickets] Failed to delete ticket channel')
-        else:
+        if not ch:
             err = Embed(title='❌ Error', description='Could not determine ticket channel.', color=discord.Color.red())
             await interaction.response.send_message(embed=err, ephemeral=True)
+            return
+
+        # acknowledge the action
+        try:
+            await interaction.response.send_message(embed=Embed(title='Closing Ticket', description='Closing ticket...', color=discord.Color.orange()), ephemeral=True)
+        except Exception:
+            # if already responded, ignore
+            pass
+
+        # read ticket data to gather original subject and owner
+        ticket_data = load_json(TICKETS_FILE)
+        guild_tickets = ticket_data.get(str(guild.id), {})
+        record = guild_tickets.get(self.ticket_id, {})
+        opener_id = int(record.get('owner', self.owner_id))
+        original_subject = record.get('subject') or 'No subject provided'
+
+        # fetch the opener as Member or User to personalize the DM title
+        opener = guild.get_member(opener_id)
+        if opener is None:
+            try:
+                opener = await interaction.client.fetch_user(opener_id)
+            except Exception:
+                opener = None
+
+        # decide on display name for title (no @ mention in title)
+        if opener is not None:
+            opener_display = opener.display_name if hasattr(opener, 'display_name') else getattr(opener, 'name', 'User')
+        else:
+            opener_display = 'User'
+
+        # prepare and attempt to DM the opener before deleting the channel
+        reason_text = provided_reason.strip() if isinstance(provided_reason, str) else None
+        dm_embed = Embed(
+            title=f'{opener_display}, your ticket has been closed.',
+            description=f'Your ticket in {guild.name} was closed.',
+            color=discord.Color.red()
+        )
+        dm_embed.add_field(name='Closed by', value=f'{interaction.user.mention}', inline=False)
+        dm_embed.add_field(name='Original reason', value=original_subject[:1024], inline=False)
+        if reason_text:
+            dm_embed.add_field(name='Close reason', value=reason_text[:1024], inline=False)
+        else:
+            dm_embed.add_field(name='Close reason', value='No reason was provided.', inline=False)
+
+        if opener is not None:
+            try:
+                await opener.send(embed=dm_embed)
+            except Exception:
+                try:
+                    await interaction.followup.send(embed=Embed(title='⚠️ Could not DM user', description='I could not send a DM to the ticket opener; they may have DMs disabled.', color=discord.Color.yellow()), ephemeral=True)
+                except Exception:
+                    pass
+
+        # remove from storage
+        if self.ticket_id in guild_tickets:
+            guild_tickets.pop(self.ticket_id, None)
+            # Preserve the persistent counter in guild_tickets
+            ticket_data[str(guild.id)] = guild_tickets
+            save_json(TICKETS_FILE, ticket_data)
+            # also update in-memory Tickets cog if present
+            try:
+                tickets_cog = interaction.client.get_cog('Tickets')
+                if tickets_cog and hasattr(tickets_cog, 'tickets'):
+                    tickets_cog.tickets.get(str(guild.id), {}).pop(self.ticket_id, None)
+            except Exception:
+                logger.exception('[Tickets] Failed to update in-memory ticket store')
+
+        # finally delete the channel
+        try:
+            await ch.delete(reason=f'Ticket {self.ticket_id} closed by {interaction.user} — {reason_text or "no reason provided"}')
+        except Exception:
+            logger.exception('[Tickets] Failed to delete ticket channel')
+
+    @ui.button(label='Close Ticket', style=discord.ButtonStyle.danger)
+    async def close(self, interaction: Interaction, button: ui.Button):
+        await self._perform_close(interaction, provided_reason=None)
+
+    @ui.button(label='Close with Reason', style=discord.ButtonStyle.danger)
+    async def close_with_reason(self, interaction: Interaction, button: ui.Button):
+        # show a modal to collect the reason, then close
+        guild = interaction.guild
+        if not guild:
+            err = Embed(title='❌ Not in a Server', description='This interaction must be used in a guild.', color=discord.Color.red())
+            await interaction.response.send_message(embed=err, ephemeral=True)
+            return
+
+        # load configured admin roles and validate perms before opening modal
+        cfg = load_json(XP_CONFIG).get(str(guild.id), {})
+        admin_role_ids = {int(r) for r in cfg.get('permissions_roles', [])}
+        is_owner = interaction.user.id == self.owner_id
+        is_admin = interaction.user.guild_permissions.administrator or any(r.id in admin_role_ids for r in interaction.user.roles)
+        if not (is_owner or is_admin):
+            err = Embed(title='❌ Permission Denied', description='You do not have permission to close this ticket.', color=discord.Color.red())
+            await interaction.response.send_message(embed=err, ephemeral=True)
+            return
+
+        class CloseReasonModal(ui.Modal, title='Close Ticket — Reason'):
+            reason: ui.TextInput = ui.TextInput(
+                label='Reason for closing',
+                placeholder='Provide a brief reason...',
+                style=discord.TextStyle.paragraph,
+                max_length=1024,
+                required=True
+            )
+
+            def __init__(self, parent: 'CloseTicketButton'):
+                super().__init__(timeout=180)
+                self.parent = parent
+
+            async def on_submit(self, modal_interaction: Interaction):
+                await self.parent._perform_close(modal_interaction, provided_reason=str(self.reason))
+
+        await interaction.response.send_modal(CloseReasonModal(self))
 
 
 class Tickets(commands.Cog):
@@ -95,12 +186,20 @@ class Tickets(commands.Cog):
 
     def _next_ticket_id(self, guild_id: int) -> str:
         guild_str = str(guild_id)
-        guild_tickets = self.tickets.get(guild_str, {})
-        # find next numeric id
-        i = 1
-        while str(i) in guild_tickets:
-            i += 1
-        return str(i)
+        guild_data = self.tickets.get(guild_str, {})
+        # Prefer a persistent counter if present; otherwise, compute from existing numeric keys
+        counter = guild_data.get('_counter')
+        if isinstance(counter, int):
+            return str(counter + 1)
+        # Fallback: compute next as max existing numeric id + 1
+        max_existing = 0
+        for k in guild_data.keys():
+            if isinstance(k, str) and k.isdigit():
+                try:
+                    max_existing = max(max_existing, int(k))
+                except Exception:
+                    pass
+        return str(max_existing + 1)
 
     @app_commands.command(name='ticket', description='Open a private ticket channel for support. Provide a brief subject.')
     @app_commands.describe(subject='Short subject for your ticket')
@@ -199,12 +298,24 @@ class Tickets(commands.Cog):
             'channel': ch.id,
             'subject': subject
         }
+        # Update persistent counter so we don't reuse IDs after closure
+        try:
+            current_counter = guild_tickets.get('_counter')
+            current_counter_int = int(current_counter) if isinstance(current_counter, (int, str)) and str(current_counter).isdigit() else 0
+        except Exception:
+            current_counter_int = 0
+        try:
+            tid_int = int(ticket_id)
+        except Exception:
+            tid_int = current_counter_int
+        guild_tickets['_counter'] = max(current_counter_int, tid_int)
         save_json(TICKETS_FILE, self.tickets)
 
         # send initial embed with close button
         # Use the user's name in the title instead of a numeric ticket counter
         user_title = f"{interaction.user.display_name}'s ticket: {subject}"
         embed = Embed(title=user_title, description='Thanks for submitting a ticket! A staff member will be with you as soon as possible.', color=discord.Color.blurple())
+        embed.set_footer(text=f'Ticket #{ticket_id}')
         view = CloseTicketButton(ticket_id, interaction.user.id)
         try:
             # pinging the ticket opener is an allowed exception: include their mention along with the embed

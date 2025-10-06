@@ -173,3 +173,39 @@ def daily_time_until_next(user_id: str, guild_id: str = None, reset_hour: int = 
     if remaining.total_seconds() < 0:
         return timedelta(0)
     return remaining
+
+
+def delete_balance(user_id: str, guild_id: str | None = None):
+    """Delete a user's balance entry.
+
+    If guild_id is provided, delete from that guild's scoped balances and clean
+    up any guild-scoped daily tracking for the user. Otherwise delete from global.
+    """
+    uid = str(user_id)
+    if guild_id:
+        gid = str(guild_id)
+        # Remove balance from guild scope
+        try:
+            g = economy.setdefault("guilds", {}).setdefault(gid, {})
+            g.pop(uid, None)
+            if not g:
+                # Remove empty guild bucket to keep file tidy
+                economy.get("guilds", {}).pop(gid, None)
+        except Exception:
+            pass
+        # Clean guild-scoped daily tracking
+        try:
+            guild_dailies = _last_daily.setdefault("guilds", {}).setdefault(gid, {})
+            guild_dailies.pop(uid, None)
+            # If empty, remove guild entry
+            if not guild_dailies:
+                _last_daily.get("guilds", {}).pop(gid, None)
+            economy["_last_daily"] = _last_daily
+        except Exception:
+            pass
+    else:
+        try:
+            economy.setdefault("global", {}).pop(uid, None)
+        except Exception:
+            pass
+    save_json(ECON_FILE, economy)

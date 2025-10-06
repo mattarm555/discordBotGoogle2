@@ -15,6 +15,7 @@ from utils.economy import (
     set_daily_claim,
     get_guild_balances,
     daily_time_until_next,
+    delete_balance,
 )
 from datetime import datetime
 import json
@@ -604,6 +605,14 @@ class Blackjack(commands.Cog):
 
     def unregister_game(self, user_id: str):
         self.active_games.pop(user_id, None)
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        # Remove the user's guild-scoped balance when they leave to avoid clogging
+        try:
+            delete_balance(str(member.id), guild_id=str(member.guild.id))
+        except Exception:
+            pass
 
     @app_commands.command(name="daily", description="Claim your daily currency reward (once every 24 hours)")
     async def daily(self, interaction: Interaction):

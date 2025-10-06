@@ -335,10 +335,10 @@ class Slots(commands.Cog):
             return None
         return self.stats.get("guilds", {}).get(str(guild_id), {}).get(user_id)
 
-    @app_commands.command(name="slots", description="Spin the slots! Bet between 1 and 2000. Choose 1–5 lines.")
-    @app_commands.describe(wager="Total bet for this spin (1–2000)", lines="Number of paylines (1–5)")
+    @app_commands.command(name="slots", description="Spin the slots! Bet between 1 and 10000. Choose 1–5 lines.")
+    @app_commands.describe(wager="Total bet for this spin (1–10000)", lines="Number of paylines (1–5)")
     async def slots(self, interaction: Interaction,
-                    wager: app_commands.Range[int, 1, 2000],
+                    wager: app_commands.Range[int, 1, 10000],
                     lines: app_commands.Range[int, 1, 5] = 1):
         uid = str(interaction.user.id)
         guild_id = str(interaction.guild.id) if interaction.guild else None
@@ -472,10 +472,10 @@ class Slots(commands.Cog):
         await interaction.response.send_message("🔄 Session baseline reset. Future /slotstats deltas start from now.", ephemeral=True)
 
     @app_commands.command(name="slotsim", description="Simulate slot spins to estimate RTP (no balance impact) — owner only")
-    @app_commands.describe(spins="Number of simulated spins (10-200000)", wager="Total bet per spin (1-2000)", lines="Lines per spin (1-5)")
+    @app_commands.describe(spins="Number of simulated spins (10-200000)", wager="Total bet per spin (1-10000)", lines="Lines per spin (1-5)")
     async def slotsim(self, interaction: Interaction,
                       spins: app_commands.Range[int, 10, 200000],
-                      wager: app_commands.Range[int, 1, 2000] = 100,
+                      wager: app_commands.Range[int, 1, 10000] = 100,
                       lines: app_commands.Range[int, 1, 5] = 5):
         # Only allow bot owner to run this command
         if interaction.user.id != BOT_OWNER_ID:

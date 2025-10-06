@@ -19,6 +19,7 @@ from utils.economy import (
 from datetime import datetime
 import json
 from datetime import timedelta
+from utils.botadmin import is_bot_admin
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -685,8 +686,30 @@ class Blackjack(commands.Cog):
         embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after} coins", inline=True)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="blackjack", description="Play a hand of blackjack. Wager between 1 and 2000.")
-    @app_commands.describe(wager="Amount to wager (1-2000)")
+    @app_commands.command(name="add", description="Add coins to a user's server balance (bot-admin only)")
+    @app_commands.describe(user="User to receive coins", amount="Amount of coins to add (1-1,000,000)")
+    async def add(self, interaction: Interaction, user: discord.User, amount: app_commands.Range[int, 1, 1_000_000]):
+        debug_command('add', interaction.user, interaction.guild, target=user.id, amount=amount)
+        if not isinstance(interaction.user, discord.Member) or not is_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message(embed=discord.Embed(title="❌ Server Only", description="This command must be used in a server.", color=discord.Color.red()), ephemeral=True)
+            return
+        if user.bot:
+            await interaction.response.send_message(embed=discord.Embed(title="❌ Invalid Target", description="You can't add coins to a bot.", color=discord.Color.red()), ephemeral=True)
+            return
+        guild_id = str(guild.id)
+        receiver_id = str(user.id)
+        add_currency(receiver_id, int(amount), guild_id=guild_id)
+        receiver_after = get_balance(receiver_id, guild_id=guild_id)
+        embed = discord.Embed(title="✅ Coins Added", description=f"{user.mention} received **{amount}** coins.", color=discord.Color.green())
+        embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after} coins", inline=True)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="blackjack", description="Play a hand of blackjack. Wager between 1 and 10000.")
+    @app_commands.describe(wager="Amount to wager (1-10000)")
     async def blackjack(self, interaction: Interaction, wager: int):
         debug_command('blackjack', interaction.user, interaction.guild, wager=wager)
         uid = str(interaction.user.id)
@@ -695,8 +718,8 @@ class Blackjack(commands.Cog):
         if existing and not existing.finished:
             await interaction.response.send_message(embed=discord.Embed(title="⏳ Game In Progress", description="You already have an active blackjack game. Finish or let it timeout before starting another.", color=discord.Color.orange()), ephemeral=True)
             return
-        if wager < 1 or wager > 2000:
-            embed = discord.Embed(title="❌ Invalid Wager", description="Wager must be between 1 and 2000.", color=discord.Color.red())
+        if wager < 1 or wager > 10000:
+            embed = discord.Embed(title="❌ Invalid Wager", description="Wager must be between 1 and 10000.", color=discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         guild_id = str(interaction.guild.id) if interaction.guild else None
@@ -754,40 +777,122 @@ class Blackjack(commands.Cog):
 
     # Store wager on view for stats usage later (already exists as self.wager)
 
-    @app_commands.command(name="balancetop", description="Show the top balances in this server.")
-    @app_commands.describe(limit="Number of top users to show (default 10)")
-    async def balancetop(self, interaction: Interaction, limit: int = 10):
-        debug_command('balancetop', interaction.user, interaction.guild, limit=limit)
+    @app_commands.command(name="balancetop", description="Show the top balances in this server (10 per page).")
+    @app_commands.describe(page="Page number to view (default 1)")
+    async def balancetop(self, interaction: Interaction, page: int = 1):
+        debug_command('balancetop', interaction.user, interaction.guild, page=page)
         guild = interaction.guild
         if not guild:
             embed = discord.Embed(title="❌ Server Only", description="This command must be used in a server.", color=discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # gather balances for guild members
-        balances = get_guild_balances(str(guild.id))
-        members = []
-        for member in guild.members:
-            bal = int(balances.get(str(member.id), 0))
-            if bal > 0:
-                members.append((member, bal))
-
-        if not members:
+        balances = get_guild_balances(str(guild.id))  # user_id -> balance
+        # Build a list of (user_id, balance) including users not cached if present in balances
+        items = [(uid, int(bal)) for uid, bal in balances.items() if int(bal) > 0]
+        if not items:
             await interaction.response.send_message(embed=discord.Embed(title="💤 No balances", description="No users with balances found in this server.", color=discord.Color.dark_gray()))
             return
 
-        members.sort(key=lambda x: x[1], reverse=True)
-        top = members[:max(1, min(limit, 50))]
+        # Sort by balance desc
+        items.sort(key=lambda x: x[1], reverse=True)
+        page_size = 10
+        total = len(items)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        if page < 1:
+            page = 1
+        if page > total_pages:
+            await interaction.response.send_message(embed=discord.Embed(
+                title="❌ Page Out of Range",
+                description=f"There are only **{total_pages}** page(s) (total **{total}** users). Try a smaller page number.",
+                color=discord.Color.red()
+            ), ephemeral=True)
+            return
 
-        embed = discord.Embed(title="🏆 Balance Leaderboard", color=discord.Color.gold())
-        for i, (member, bal) in enumerate(top, start=1):
-            embed.add_field(name=f"#{i} {member.display_name}", value=f"{bal} coins", inline=False)
+        view = BalanceLeaderboardView(guild, items, page_size=page_size, page=page)
+        await interaction.response.send_message(embed=view.make_embed(), view=view)
 
-        # put top user's avatar as thumbnail
-        top_user = top[0][0]
-        embed.set_thumbnail(url=top_user.avatar.url if top_user.avatar else top_user.default_avatar.url)
 
-        await interaction.response.send_message(embed=embed)
+class BalanceLeaderboardView(View):
+    def __init__(self, guild: discord.Guild, items: list[tuple[str, int]], page_size: int = 10, page: int = 1, timeout: int = 120):
+        super().__init__(timeout=timeout)
+        self.guild = guild
+        self.items = items  # list of (user_id, balance)
+        self.page_size = page_size
+        self.total = len(items)
+        self.total_pages = max(1, (self.total + page_size - 1) // page_size)
+        self.page = max(1, min(page, self.total_pages))
+        self._update_buttons()
+
+    def _slice(self):
+        start = (self.page - 1) * self.page_size
+        end = min(start + self.page_size, self.total)
+        return start, end, self.items[start:end]
+
+    def make_embed(self) -> discord.Embed:
+        start, end, page_items = self._slice()
+        embed = discord.Embed(title=f"🏆 Balance Leaderboard — Page {self.page}/{self.total_pages}", color=discord.Color.gold())
+        first_member = None
+        for idx, (uid, bal) in enumerate(page_items, start=start + 1):
+            member = self.guild.get_member(int(uid))
+            display_name = member.display_name if member else f"<@{uid}>"
+            if member and first_member is None:
+                first_member = member
+            embed.add_field(name=f"#{idx} {display_name}", value=f"{bal} coins", inline=False)
+        if first_member:
+            embed.set_thumbnail(url=first_member.avatar.url if first_member.avatar else first_member.default_avatar.url)
+        return embed
+
+    def _update_buttons(self):
+        # Ensure buttons reflect current page bounds
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                if child.custom_id == 'bal_prev':
+                    child.disabled = self.page <= 1
+                elif child.custom_id == 'bal_next':
+                    child.disabled = self.page >= self.total_pages
+                elif child.custom_id == 'bal_back5':
+                    child.disabled = self.page <= 1
+                elif child.custom_id == 'bal_fwd5':
+                    child.disabled = self.page >= self.total_pages
+
+    @button(label="⏮ -5", style=discord.ButtonStyle.gray, custom_id='bal_back5')
+    async def back5(self, interaction: Interaction, button: discord.ui.Button):
+        old = self.page
+        self.page = max(1, self.page - 5)
+        if self.page == old:
+            await interaction.response.defer()
+            return
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @button(label="⬅️ Prev", style=discord.ButtonStyle.blurple, custom_id='bal_prev')
+    async def prev(self, interaction: Interaction, button: discord.ui.Button):
+        if self.page <= 1:
+            await interaction.response.defer()
+            return
+        self.page -= 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @button(label="Next ➡️", style=discord.ButtonStyle.blurple, custom_id='bal_next')
+    async def next(self, interaction: Interaction, button: discord.ui.Button):
+        if self.page >= self.total_pages:
+            await interaction.response.defer()
+            return
+        self.page += 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @button(label="+5 ⏭", style=discord.ButtonStyle.gray, custom_id='bal_fwd5')
+    async def fwd5(self, interaction: Interaction, button: discord.ui.Button):
+        old = self.page
+        self.page = min(self.total_pages, self.page + 5)
+        if self.page == old:
+            await interaction.response.defer()
+            return
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
 
 
 async def setup(bot: commands.Bot):

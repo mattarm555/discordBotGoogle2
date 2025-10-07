@@ -33,11 +33,19 @@ import math
 import json
 import os
 import random
+import sys
+import shutil
 
 
 # --- Persistent Queue File ---
 QUEUE_FILE = "saved_queues.json"
-COOKIE_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
+# Prefer runtime cookies path if available; fallback to cogs/cookies.txt
+COGS_DIR = os.path.dirname(__file__)
+ROOT_DIR = os.path.dirname(COGS_DIR)
+RUNTIME_DIR = os.path.join(ROOT_DIR, "runtime")
+RUNTIME_COOKIE_FILE = os.path.join(RUNTIME_DIR, "cookies.txt")
+DEFAULT_COGS_COOKIE_FILE = os.path.join(COGS_DIR, "cookies.txt")
+COOKIE_FILE = RUNTIME_COOKIE_FILE if os.path.isdir(RUNTIME_DIR) else DEFAULT_COGS_COOKIE_FILE
 
 # Maximum allowed duration for a single video (8 hours)
 MAX_VIDEO_DURATION = 8 * 60 * 60
@@ -232,9 +240,14 @@ class Music(commands.Cog):
             'quiet': True,
             'no_warnings': True,
             'extract_flat': 'in_playlist' if is_playlist else False,
-            'cookiefile': COOKIE_FILE,
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
         }
+        # Only pass cookiefile if it exists to avoid yt-dlp errors
+        try:
+            if os.path.exists(COOKIE_FILE):
+                ydl_opts['cookiefile'] = COOKIE_FILE
+        except Exception:
+            pass
 
         # Only set default_search to ytsearch for non-SoundCloud queries. SoundCloud
         # search prefixes (scsearch/scsearch1) should be passed through directly.
@@ -254,9 +267,13 @@ class Music(commands.Cog):
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
-            'cookiefile': COOKIE_FILE,
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
         }
+        try:
+            if os.path.exists(COOKIE_FILE):
+                ydl_opts['cookiefile'] = COOKIE_FILE
+        except Exception:
+            pass
 
         qlow = (url or '').lower()
         if 'soundcloud.com' in qlow or qlow.startswith('scsearch'):
@@ -677,6 +694,89 @@ class Music(commands.Cog):
         view = QueueView(song_queue)
         embed = view.format_embed()
         await interaction.followup.send(embed=embed, view=view)
+
+    @app_commands.command(name="refresh_cookies", description="Owner-only: Run refresh_cookies.py and sync cookies.txt")
+    async def refresh_cookies(self, interaction: Interaction):
+        # Owner-only guard
+        try:
+            app_info = await self.bot.application_info()
+            if interaction.user.id != app_info.owner.id:
+                await interaction.response.send_message(embed=Embed(
+                    title="❌ Owner Only",
+                    description="This command can only be used by the bot owner.\nIf you need access, run the script on the host machine.",
+                    color=discord.Color.red()
+                ), ephemeral=True)
+                return
+        except Exception:
+            # Fallback: if we cannot resolve application owner, block for safety
+            await interaction.response.send_message(embed=Embed(
+                title="❌ Owner Only",
+                description="Could not verify application owner. Command blocked for safety.",
+                color=discord.Color.red()
+            ), ephemeral=True)
+            return
+
+        await interaction.response.defer(thinking=True, ephemeral=True)
+
+        # Determine script path (project root) and cookie files
+        cogs_dir = os.path.dirname(__file__)
+        root_dir = os.path.dirname(cogs_dir)
+        script_path = os.path.join(root_dir, 'refresh_cookies.py')
+        root_cookie = os.path.join(root_dir, 'cookies.txt')
+        # Target cookie destination: prefer runtime path
+        target_cookie = RUNTIME_COOKIE_FILE
+
+        if not os.path.exists(script_path):
+            await interaction.followup.send(embed=Embed(
+                title="❌ Script Not Found",
+                description=f"Could not find refresh_cookies.py at:\n{script_path}",
+                color=discord.Color.red()
+            ), ephemeral=True)
+            return
+
+        # Run the script using the same Python executable
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                script_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=root_dir
+            )
+            stdout, stderr = await proc.communicate()
+            out = (stdout or b'').decode(errors='replace').strip()
+            err = (stderr or b'').decode(errors='replace').strip()
+            rc = proc.returncode
+        except Exception as e:
+            await interaction.followup.send(embed=Embed(
+                title="❌ Execution Failed",
+                description=f"Failed to run refresh_cookies.py: {e}",
+                color=discord.Color.red()
+            ), ephemeral=True)
+            return
+
+        # Attempt to sync cookies.txt into runtime directory if a root cookie file exists
+        sync_note = ""
+        try:
+            if os.path.exists(root_cookie):
+                os.makedirs(os.path.dirname(target_cookie), exist_ok=True)
+                if os.path.abspath(root_cookie) != os.path.abspath(target_cookie):
+                    shutil.copyfile(root_cookie, target_cookie)
+                    sync_note = "\nSynced cookies.txt to runtime directory."
+        except Exception as e:
+            sync_note = f"\n⚠️ Cookie sync failed: {e}"
+
+        # Prepare response
+        max_len = 1500
+        out_snip = (out[:max_len] + '…') if len(out) > max_len else out
+        err_snip = (err[:max_len] + '…') if len(err) > max_len else err
+
+        if rc == 0:
+            desc = "✅ refresh_cookies.py completed successfully." + (f"\n\nOutput:\n```\n{out_snip}\n```" if out_snip else "") + sync_note
+            await interaction.followup.send(embed=Embed(title="Cookies Refreshed", description=desc, color=discord.Color.green()), ephemeral=True)
+        else:
+            desc = "⚠️ refresh_cookies.py returned a non-zero exit code." + (f"\n\nStdout:\n```\n{out_snip}\n```" if out_snip else "") + (f"\n\nStderr:\n```\n{err_snip}\n```" if err_snip else "") + sync_note
+            await interaction.followup.send(embed=Embed(title="Cookie Refresh Error", description=desc, color=discord.Color.orange()), ephemeral=True)
 
     @app_commands.command(name="skip", description="Skips the current song.")
     async def skip(self, interaction: Interaction):

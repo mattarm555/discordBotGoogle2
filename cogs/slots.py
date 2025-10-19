@@ -7,6 +7,7 @@ from discord.ext import commands
 from discord import app_commands, Interaction
 from discord.ui import View, button
 from utils.economy import get_balance, add_currency, remove_currency
+import re
 
 # Owner ID (allow overriding via env YOUR_USER_ID)
 BOT_OWNER_ID = int(os.getenv('YOUR_USER_ID', '461008427326504970'))
@@ -175,8 +176,10 @@ class SlotsView(View):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("This button isn’t for you.", ephemeral=True)
             return
-        # Enforce per-user 5s cooldown
-        remaining = self.cog._cooldown_remaining(str(self.user_id), 5)
+        # Enforce per-user cooldown (guild-configurable, min 3s)
+        guild_id = str(interaction.guild.id) if interaction.guild else None
+        cd = self.cog.get_slots_cooldown_seconds(guild_id) if hasattr(self.cog, 'get_slots_cooldown_seconds') else 5
+        remaining = self.cog._cooldown_remaining(str(self.user_id), cd)
         if remaining > 0:
             await interaction.response.send_message(
                 embed=discord.Embed(
@@ -243,6 +246,42 @@ class SlotsView(View):
         await interaction.response.edit_message(embed=embed, view=self)
 
 STATS_FILE = "slotstats.json"
+CASINO_CONFIG_FILE = "casino_config.json"
+
+def _load_cfg():
+    if os.path.exists(CASINO_CONFIG_FILE):
+        try:
+            with open(CASINO_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {"guilds": {}}
+    return {"guilds": {}}
+
+def _save_cfg(data):
+    try:
+        with open(CASINO_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
+    except Exception:
+        pass
+
+def _parse_duration_to_seconds(text: str) -> int:
+    """Parse simple duration like '10', '10s', '2m', '1h' into seconds."""
+    if not text:
+        return 0
+    s = text.strip().lower()
+    if s.isdigit():
+        return int(s)
+    m = re.match(r"^(\d+)\s*([smh])$", s)
+    if m:
+        val = int(m.group(1))
+        unit = m.group(2)
+        if unit == 's':
+            return val
+        if unit == 'm':
+            return val * 60
+        if unit == 'h':
+            return val * 3600
+    return 0
 
 def _load_stats():
     if os.path.exists(STATS_FILE):
@@ -266,6 +305,26 @@ class Slots(commands.Cog):
         self.stats = _load_stats()
         # Per-user cooldown tracking for slot spins (in-memory)
         self._last_spin_at: dict[str, datetime] = {}
+
+    # ---- Config helpers ----
+    def _get_guild_cfg(self, guild_id: str) -> dict:
+        data = _load_cfg()
+        return data.setdefault("guilds", {}).setdefault(str(guild_id), {})
+
+    def _set_guild_cfg(self, guild_id: str, cfg: dict):
+        data = _load_cfg()
+        data.setdefault("guilds", {})[str(guild_id)] = cfg
+        _save_cfg(data)
+
+    def get_slots_cooldown_seconds(self, guild_id: str | None) -> int:
+        try:
+            if not guild_id:
+                return 5
+            cfg = self._get_guild_cfg(guild_id)
+            sec = int(cfg.get("slots_cooldown", 5))
+            return max(3, sec)
+        except Exception:
+            return 5
 
     #  stats structure:
     #  {
@@ -369,6 +428,24 @@ class Slots(commands.Cog):
     def _mark_spin(self, uid: str):
         self._last_spin_at[uid] = datetime.utcnow()
 
+    # ---- Admin: set slots cooldown ----
+    @app_commands.command(name="slots_set_cooldown", description="Admin: Set per-user cooldown between slot spins (min 3s). Accepts 10, 10s, 2m, 1h.")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(duration="Cooldown duration (e.g., 3s, 5s, 10s, 1m)")
+    async def slots_set_cooldown(self, interaction: Interaction, duration: str):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Use this in a server.", ephemeral=True)
+            return
+        seconds = _parse_duration_to_seconds(duration)
+        if seconds < 3:
+            await interaction.response.send_message("❌ Minimum cooldown is 3 seconds.", ephemeral=True)
+            return
+        cfg = self._get_guild_cfg(str(guild.id))
+        cfg["slots_cooldown"] = int(seconds)
+        self._set_guild_cfg(str(guild.id), cfg)
+        await interaction.response.send_message(embed=discord.Embed(title="✅ Slots Cooldown Set", description=f"Slots spin cooldown set to {seconds}s.", color=discord.Color.green()), ephemeral=True)
+
     @app_commands.command(name="slots", description="Spin the slots! Bet between 1 and 10000. Choose 1–5 lines.")
     @app_commands.describe(wager="Total bet for this spin (1–10000)", lines="Number of paylines (1–5)")
     async def slots(self, interaction: Interaction,
@@ -377,8 +454,9 @@ class Slots(commands.Cog):
         uid = str(interaction.user.id)
         guild_id = str(interaction.guild.id) if interaction.guild else None
 
-        # Per-user cooldown: one spin per 5 seconds
-        remaining = self._cooldown_remaining(uid, 5)
+        # Per-user cooldown: guild-configurable (min 3s)
+        cd = self.get_slots_cooldown_seconds(guild_id)
+        remaining = self._cooldown_remaining(uid, cd)
         if remaining > 0:
             await interaction.response.send_message(
                 embed=discord.Embed(

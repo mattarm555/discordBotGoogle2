@@ -21,6 +21,7 @@ from datetime import datetime
 import json
 from datetime import timedelta
 from utils.botadmin import is_bot_admin
+import re
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -506,6 +507,8 @@ class Blackjack(commands.Cog):
         self.stats_file = "blackjackstats.json"
         self.stats = self._load_stats()
         self.SESSION_TIMEOUT = timedelta(minutes=30)
+        # Shared casino config file (used by slots too)
+        self._cfg_file = "casino_config.json"
 
     # ---- Blackjack Stats Persistence ----
     def _load_stats(self):
@@ -523,6 +526,73 @@ class Blackjack(commands.Cog):
                 json.dump(self.stats, f, indent=4)
         except Exception:
             pass
+
+    # ---- Config helpers (shared with slots) ----
+    def _load_cfg(self):
+        if os.path.exists(self._cfg_file):
+            try:
+                with open(self._cfg_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                return {"guilds": {}}
+        return {"guilds": {}}
+
+    def _save_cfg(self, data):
+        try:
+            with open(self._cfg_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4)
+        except Exception:
+            pass
+
+    def _get_guild_cfg(self, guild_id: str) -> dict:
+        data = self._load_cfg()
+        return data.setdefault("guilds", {}).setdefault(str(guild_id), {})
+
+    def _set_guild_cfg(self, guild_id: str, cfg: dict):
+        data = self._load_cfg()
+        data.setdefault("guilds", {})[str(guild_id)] = cfg
+        self._save_cfg(data)
+
+    def _parse_duration_to_seconds(self, text: str) -> int:
+        if not text:
+            return 0
+        s = str(text).strip().lower()
+        if s.isdigit():
+            return int(s)
+        m = re.match(r"^(\d+)\s*([smh])$", s)
+        if m:
+            val = int(m.group(1))
+            unit = m.group(2)
+            if unit == 's':
+                return val
+            if unit == 'm':
+                return val * 60
+            if unit == 'h':
+                return val * 3600
+        return 0
+
+    def get_blackjack_cooldown_seconds(self, guild_id: str | None) -> int:
+        try:
+            if not guild_id:
+                return 15
+            cfg = self._get_guild_cfg(guild_id)
+            sec = int(cfg.get("blackjack_cooldown", 15))
+            return max(10, sec)
+        except Exception:
+            return 15
+
+    def _bj_cooldown_remaining(self, uid: str, cooldown_sec: int) -> int:
+        last = self._last_hand_at.get(uid)
+        if not last:
+            return 0
+        try:
+            elapsed = (datetime.utcnow() - last).total_seconds()
+            rem = cooldown_sec - elapsed
+            if rem <= 0:
+                return 0
+            return int(rem) if float(rem).is_integer() else int(rem) + 1
+        except Exception:
+            return 0
 
     def _ensure_user(self, guild_id: str, user_id: str):
         g = self.stats.setdefault("guilds", {}).setdefault(str(guild_id), {})
@@ -729,23 +799,21 @@ class Blackjack(commands.Cog):
         if existing and not existing.finished:
             await interaction.response.send_message(embed=discord.Embed(title="⏳ Game In Progress", description="You already have an active blackjack game. Finish or let it timeout before starting another.", color=discord.Color.orange()), ephemeral=True)
             return
-        # Cooldown: limit to one hand per 15 seconds
+        # Cooldown: per-guild configurable, minimum 10 seconds
         try:
-            last = self._last_hand_at.get(uid)
-            if last is not None:
-                elapsed = (datetime.utcnow() - last).total_seconds()
-                cooldown = 15
-                if elapsed < cooldown:
-                    remaining = int(cooldown - elapsed) if (cooldown - elapsed).is_integer() else int(cooldown - elapsed) + 1
-                    await interaction.response.send_message(
-                        embed=discord.Embed(
-                            title="⏳ Slow Down",
-                            description=f"Please wait **{remaining}s** before starting another hand of blackjack.",
-                            color=discord.Color.orange()
-                        ),
-                        ephemeral=True
-                    )
-                    return
+            guild_id = str(interaction.guild.id) if interaction.guild else None
+            cd = self.get_blackjack_cooldown_seconds(guild_id)
+            remaining = self._bj_cooldown_remaining(uid, cd)
+            if remaining > 0:
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="⏳ Slow Down",
+                        description=f"Please wait **{remaining}s** before starting another hand of blackjack.",
+                        color=discord.Color.orange()
+                    ),
+                    ephemeral=True
+                )
+                return
         except Exception:
             # Fail-open on any unexpected error to avoid blocking users
             pass
@@ -853,6 +921,24 @@ class Blackjack(commands.Cog):
 
         view = BalanceLeaderboardView(guild, items, page_size=page_size, page=page)
         await interaction.response.send_message(embed=view.make_embed(), view=view)
+
+    # ---- Admin: set blackjack cooldown ----
+    @app_commands.command(name="blackjack_set_cooldown", description="Admin: Set per-user cooldown between blackjack hands (min 10s). Accepts 10, 10s, 2m, 1h.")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(duration="Cooldown duration (e.g., 10s, 15s, 1m)")
+    async def blackjack_set_cooldown(self, interaction: Interaction, duration: str):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Use this in a server.", ephemeral=True)
+            return
+        seconds = self._parse_duration_to_seconds(duration)
+        if seconds < 10:
+            await interaction.response.send_message("❌ Minimum cooldown is 10 seconds.", ephemeral=True)
+            return
+        cfg = self._get_guild_cfg(str(guild.id))
+        cfg["blackjack_cooldown"] = int(seconds)
+        self._set_guild_cfg(str(guild.id), cfg)
+        await interaction.response.send_message(embed=discord.Embed(title="✅ Blackjack Cooldown Set", description=f"Blackjack hand cooldown set to {seconds}s.", color=discord.Color.green()), ephemeral=True)
 
 
 class BalanceLeaderboardView(View):

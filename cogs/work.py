@@ -92,53 +92,29 @@ class Work(commands.Cog):
 
     # Parse strings like "15m", "2h", "1d"; support compound like "1h30m" and space-separated
     def _parse_duration(self, s: str) -> timedelta | None:
+        import re
         try:
             s = (s or "").strip().lower()
             if not s:
                 return None
-            # Allow space separated tokens (e.g., "1h 30m")
-            tokens = s.replace("\t", " ").split()
             total_seconds = 0
-            def add_token(tok: str):
-                nonlocal total_seconds
-                num = ''
-                unit = ''
-                for ch in tok:
-                    if ch.isdigit():
-                        num += ch
-                    else:
-                        unit += ch
+            # Find pairs of number + optional unit across the whole string
+            for num, unit in re.findall(r"(\d+)\s*([a-zA-Z]?)", s):
                 if not num:
-                    return
+                    continue
                 n = int(num)
-                u = unit or 's'
-                if u.startswith('d'):
+                u = (unit or 's').lower()[0]
+                if u == 'd':
                     total_seconds += n * 86400
-                elif u.startswith('h'):
+                elif u == 'h':
                     total_seconds += n * 3600
-                elif u.startswith('m'):
+                elif u == 'm':
                     total_seconds += n * 60
-                elif u.startswith('s'):
+                elif u == 's':
                     total_seconds += n
-            # Support compact like "1h30m"
-            if len(tokens) == 1 and any(c.isalpha() for c in tokens[0]) and any(c.isdigit() for c in tokens[0]):
-                # split by unit boundaries
-                buf = ''
-                for ch in tokens[0]:
-                    if ch.isalpha() and buf and any(c.isalpha() for c in buf):
-                        # shouldn't happen, but flush
-                        add_token(buf)
-                        buf = ch
-                    elif ch.isalpha() and buf and any(c.isdigit() for c in buf):
-                        add_token(buf)
-                        buf = ch
-                    else:
-                        buf += ch
-                if buf:
-                    add_token(buf)
-            else:
-                for t in tokens:
-                    add_token(t)
+                else:
+                    # Unknown unit, ignore this token
+                    continue
             if total_seconds <= 0:
                 return None
             return timedelta(seconds=total_seconds)

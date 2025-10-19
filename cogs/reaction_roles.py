@@ -15,6 +15,7 @@ logger = logging.getLogger('jeng.reactionroles')
 logger.setLevel(logging.INFO)
 
 REACTION_FILE = 'reaction_roles.json'
+COOLDOWNS_FILE = 'reaction_roles_cooldowns.json'
 # NOTE: The file previously contained a very large, variant-filled palette.
 # To simplify and make names human-readable and unique, we override that
 # earlier palette here with a curated set of 100 distinct color names
@@ -312,6 +313,39 @@ def save_reaction_configs(data):
         json.dump(data, f, indent=4)
 
 
+def _load_cooldowns():
+    if os.path.exists(COOLDOWNS_FILE):
+        try:
+            with open(COOLDOWNS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_cooldowns(data: dict):
+    try:
+        with open(COOLDOWNS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
+    except Exception:
+        pass
+
+
+def _fmt_remaining(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    parts = []
+    if h:
+        parts.append(f"{h}h")
+    if m:
+        parts.append(f"{m}m")
+    if s and not h:  # only show seconds when under an hour to keep it compact
+        parts.append(f"{s}s")
+    return ' '.join(parts) if parts else '0s'
+
+
 class ReactionRoles(commands.Cog):
     """Create color roles and post reaction-role messages."""
 
@@ -350,6 +384,26 @@ class ReactionRoles(commands.Cog):
         if count < 1 or count > max_count:
             await interaction.edit_original_response(content=f'❌ Count must be between 1 and {max_count}.')
             return
+
+        # size-based per-user cooldown: 30m if <25 roles, else 1h
+        try:
+            cooldown_seconds = 1800 if count < 25 else 3600
+            now_ts = int(time.time())
+            gid = str(interaction.guild.id)
+            uid = str(interaction.user.id)
+            cds = _load_cooldowns()
+            last = int(cds.get('guilds', {}).get(gid, {}).get(uid, {}).get('last_create', 0))
+            elapsed = now_ts - last
+            if last > 0 and elapsed < cooldown_seconds:
+                remaining = cooldown_seconds - elapsed
+                await interaction.edit_original_response(content=f'⏳ Cooldown in effect. You can create roles again in { _fmt_remaining(remaining) } (based on requested count).')
+                return
+            # record now to prevent spam starts; will overwrite on success as well
+            cds.setdefault('guilds', {}).setdefault(gid, {}).setdefault(uid, {})['last_create'] = now_ts
+            _save_cooldowns(cds)
+        except Exception:
+            # do not block on cooldown system failure
+            pass
 
         # validate batch_size
         try:
@@ -689,6 +743,16 @@ class ReactionRoles(commands.Cog):
                 embed = discord.Embed(title='✅ Reaction Roles Created', color=discord.Color.blurple())
                 embed.add_field(name='Config ID', value=f'`{cfg_id}`', inline=False)
                 await interaction.edit_original_response(embed=embed)
+
+            # On successful completion, update cooldown timestamp definitively
+            try:
+                cds = _load_cooldowns()
+                gid = str(guild.id)
+                uid = str(interaction.user.id)
+                cds.setdefault('guilds', {}).setdefault(gid, {}).setdefault(uid, {})['last_create'] = int(time.time())
+                _save_cooldowns(cds)
+            except Exception:
+                pass
         except discord.Forbidden as e:
             # Explicitly handle missing permissions / hierarchy issues so operator sees the reason
             logger.exception('[ReactionRoles] Permission error while creating roles')

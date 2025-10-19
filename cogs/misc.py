@@ -168,7 +168,7 @@ class Misc(commands.Cog):
     @app_commands.command(name="help", description="Displays a list of available commands.")
     async def help(self, interaction: Interaction):
         debug_command("help", interaction.user, interaction.guild)
-        pages = []
+        pages: list[Embed] = []
 
         # Music (includes DJ commands)
         music_embed = Embed(title="🎵 Music Commands", color=discord.Color.blue())
@@ -187,6 +187,7 @@ class Misc(commands.Cog):
         music_embed.add_field(name="/setdj <role>", value="Assign or update the DJ role (Manage Guild).", inline=False)
         music_embed.add_field(name="/cleardj", value="Remove the configured DJ role restriction.", inline=False)
         music_embed.add_field(name="/djinfo", value="Show the current DJ role configuration.", inline=False)
+        music_embed.add_field(name="/refresh_cookies", value="Owner only: Run refresh_cookies.py and sync cookies for YouTube playback.", inline=False)
         pages.append(music_embed)
 
         # Gambling
@@ -195,21 +196,35 @@ class Misc(commands.Cog):
         gambling_embed.add_field(name="/balance [user]", value="Check your balance or another user's balance.", inline=False)
         gambling_embed.add_field(name="/balancetop", value="Show the top balances in this server.", inline=False)
         gambling_embed.add_field(name="/pay <user> <amount>", value="Pay another user some of your coins.", inline=False)
-        gambling_embed.add_field(name="/blackjack <bet>", value="Play a hand of blackjack (1–2000 bet).", inline=False)
-        gambling_embed.add_field(name="/slots <bet> [lines]", value="Spin the slots (1–2000 bet, 1–5 lines).", inline=False)
+        gambling_embed.add_field(name="/blackjack <bet>", value="Play a hand of blackjack (1–10000 bet).", inline=False)
+        gambling_embed.add_field(name="/slots <bet> [lines]", value="Spin the slots (1–10000 bet, 1–5 lines).", inline=False)
         gambling_embed.add_field(name="/slotstats", value="View your slot stats and session delta.", inline=False)
         gambling_embed.add_field(name="/slotresetsession", value="Reset your slot session baseline.", inline=False)
+        gambling_embed.add_field(name="/slotsim [spins] [wager] [lines]", value="Owner only: Simulate slot spins to estimate RTP (no balance impact).", inline=False)
+        gambling_embed.add_field(name="/work", value="Work a random job to earn coins (per-server cooldown).", inline=False)
+        gambling_embed.add_field(name="/setworkcooldown <duration>", value="Admin: Set /work cooldown (e.g., 15m, 2h, 1d).", inline=False)
+        gambling_embed.add_field(name="/coin_reset", value="Admin: Reset all coin balances for this server.", inline=False)
+        gambling_embed.add_field(name="/shop [page]", value="Browse passive income items (shows what you own).", inline=False)
+        gambling_embed.add_field(name="/buy <item_name>", value="Buy a passive item by exact name (see /shop).", inline=False)
+        gambling_embed.add_field(name="/inventory", value="See the passive items you own and their income.", inline=False)
+        gambling_embed.add_field(name="/shop_set_interval <duration>", value="Admin: Set how often items pay (e.g., 15m, 1h, 2h30m).", inline=False)
+        gambling_embed.add_field(name="/item_add <name> <cost> <income> <description>", value="Admin: Add a server-specific shop item.", inline=False)
+        gambling_embed.add_field(name="/item_delete <name>", value="Admin: Delete a server-specific shop item.", inline=False)
+        gambling_embed.add_field(name="/item_list", value="List this server's custom shop items.", inline=False)
         pages.append(gambling_embed)
 
         # XP
         xp_embed = Embed(title="📈 XP System", color=discord.Color.green())
         xp_embed.add_field(name="/level", value="Shows your XP level and server rank.", inline=False)
-        xp_embed.add_field(name="/leaderboard", value="Shows the leaders in XP in this server.", inline=False)
+        xp_embed.add_field(name="/xpleaderboard [page]", value="Shows the leaders in XP in this server.", inline=False)
         xp_embed.add_field(name="/xpset <amount>", value="Sets the amount of XP gained per message.", inline=False)
         xp_embed.add_field(name="/xpblock <channel>", value="Blocks XP in the given channel.", inline=False)
         xp_embed.add_field(name="/xpunblock <channel>", value="Unblocks XP in the given channel.", inline=False)
         xp_embed.add_field(name="/xpconfig", value="Shows the current XP settings.", inline=False)
         xp_embed.add_field(name="/setlevelrole <level> <role>", value="Set which role is given at a specific level.", inline=False)
+        xp_embed.add_field(name="/resetxp", value="Admin: Reset all XP and levels for this server.", inline=False)
+        xp_embed.add_field(name="/levelup_silence <channel>", value="Admin: Toggle muting level-up messages in a channel.", inline=False)
+        xp_embed.add_field(name="/levelup_channel [channel]", value="Admin: Set or clear a dedicated channel for level-up messages.", inline=False)
         pages.append(xp_embed)
 
         # Misc
@@ -271,7 +286,6 @@ class Misc(commands.Cog):
 
         try:
             view = HelpPaginator(pages)
-            # send the help pages in-channel so others can see
             await interaction.response.send_message(embed=pages[0], view=view)
         except Exception:
             self.logger.exception('[Misc] Failed to send help in channel')

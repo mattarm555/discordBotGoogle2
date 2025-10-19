@@ -175,6 +175,18 @@ class SlotsView(View):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("This button isn’t for you.", ephemeral=True)
             return
+        # Enforce per-user 5s cooldown
+        remaining = self.cog._cooldown_remaining(str(self.user_id), 5)
+        if remaining > 0:
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="⏳ Slow Down",
+                    description=f"Please wait **{remaining}s** before spinning again.",
+                    color=discord.Color.orange()
+                ),
+                ephemeral=True
+            )
+            return
         # Check funds
         total_bet = self.wager
         guild_id = str(interaction.guild.id) if interaction.guild else None
@@ -189,6 +201,8 @@ class SlotsView(View):
         if not remove_currency(str(self.user_id), total_bet, guild_id=guild_id):
             await interaction.response.send_message("❌ Bet failed.", ephemeral=True)
             return
+        # Start cooldown after successful deduction
+        self.cog._mark_spin(str(self.user_id))
 
         window = spin_reels()
         total_win, notes = evaluate_spin(window, self.lines, line_bet=total_bet // self.lines)
@@ -250,6 +264,8 @@ class Slots(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.stats = _load_stats()
+        # Per-user cooldown tracking for slot spins (in-memory)
+        self._last_spin_at: dict[str, datetime] = {}
 
     #  stats structure:
     #  {
@@ -335,6 +351,24 @@ class Slots(commands.Cog):
             return None
         return self.stats.get("guilds", {}).get(str(guild_id), {}).get(user_id)
 
+    # ---- Cooldown helpers ----
+    def _cooldown_remaining(self, uid: str, cooldown_sec: int = 5) -> int:
+        last = self._last_spin_at.get(uid)
+        if not last:
+            return 0
+        try:
+            elapsed = (datetime.utcnow() - last).total_seconds()
+            rem = cooldown_sec - elapsed
+            if rem <= 0:
+                return 0
+            # round up to nearest whole second
+            return int(rem) if float(rem).is_integer() else int(rem) + 1
+        except Exception:
+            return 0
+
+    def _mark_spin(self, uid: str):
+        self._last_spin_at[uid] = datetime.utcnow()
+
     @app_commands.command(name="slots", description="Spin the slots! Bet between 1 and 10000. Choose 1–5 lines.")
     @app_commands.describe(wager="Total bet for this spin (1–10000)", lines="Number of paylines (1–5)")
     async def slots(self, interaction: Interaction,
@@ -342,6 +376,19 @@ class Slots(commands.Cog):
                     lines: app_commands.Range[int, 1, 5] = 1):
         uid = str(interaction.user.id)
         guild_id = str(interaction.guild.id) if interaction.guild else None
+
+        # Per-user cooldown: one spin per 5 seconds
+        remaining = self._cooldown_remaining(uid, 5)
+        if remaining > 0:
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="⏳ Slow Down",
+                    description=f"Please wait **{remaining}s** before spinning again.",
+                    color=discord.Color.orange()
+                ),
+                ephemeral=True
+            )
+            return
 
         # Whole-spin wager limit (total)
         total_bet = int(wager)
@@ -364,6 +411,8 @@ class Slots(commands.Cog):
         if not remove_currency(uid, total_bet, guild_id=guild_id):
             await interaction.response.send_message("❌ Bet failed.", ephemeral=True)
             return
+        # Start cooldown after successful deduction so failed attempts don't throttle
+        self._mark_spin(uid)
 
         # Spin!
         window = spin_reels()

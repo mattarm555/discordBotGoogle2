@@ -116,6 +116,13 @@ class Music(commands.Cog):
         self.bot = bot
         self.currently_playing = {}  # guild_id: {start_time, duration, song}
         self.force_stopped = {}  # guild_id: True if /leave was called
+        # Consecutive failure tracking (per guild) to prevent spam loops
+        self.fail_counts = {}  # guild_id -> consecutive failure count
+        # Per-user cooldown for /play (seconds)
+        self.play_last_used = {}  # user_id -> last monotonic timestamp
+        self.PLAY_COOLDOWN = 10
+        # Allow up to 2 failures; on the 3rd ("> 2"), abort and leave
+        self.FAILURE_THRESHOLD = 2
         global queues
         queues = {}
         save_queues(queues)
@@ -191,6 +198,60 @@ class Music(commands.Cog):
         except Exception as e:
             print(f"{RED}❌ Voice connect failed: {e}{RESET}")
             raise
+
+    # ---- /play cooldown helpers ----
+    def _play_cooldown_remaining(self, user_id: int) -> float:
+        """Return remaining seconds of /play cooldown for a user (0 if ready)."""
+        now = asyncio.get_event_loop().time()
+        last = self.play_last_used.get(user_id, 0)
+        remaining = (last + self.PLAY_COOLDOWN) - now
+        return remaining if remaining > 0 else 0.0
+
+    def _mark_play_used(self, user_id: int):
+        self.play_last_used[user_id] = asyncio.get_event_loop().time()
+
+    # ---- Failure guard ----
+    async def _record_failure_and_maybe_abort(self, interaction: Interaction, reason: str) -> bool:
+        """Increment failure counter; if above threshold, clear queue, notify, and leave.
+
+        Returns True if we aborted (disconnected and cleared), False otherwise.
+        """
+        guild_id = str(interaction.guild.id)
+        cnt = self.fail_counts.get(guild_id, 0) + 1
+        self.fail_counts[guild_id] = cnt
+        if cnt > self.FAILURE_THRESHOLD:
+            # Reset counters and state
+            self.fail_counts[guild_id] = 0
+            self.force_stopped[guild_id] = True
+            queues[guild_id] = []
+            save_queues(queues)
+
+            channel = last_channels.get(guild_id, interaction.channel)
+            embed = Embed(
+                title="🚫 Too Many Playback Errors",
+                description=(
+                    "I've encountered errors playing multiple songs in a row (> 2).\n"
+                    "To avoid spamming the channel, I'm clearing the queue and leaving the voice channel.\n"
+                    "Please try again later or with different links."
+                ),
+                color=discord.Color.red()
+            )
+            # Include last reason for quick visibility
+            if reason:
+                embed.add_field(name="Last error", value=reason, inline=False)
+            try:
+                await channel.send(embed=embed)
+            except Exception:
+                pass
+
+            try:
+                vc = interaction.guild.voice_client
+                if vc:
+                    await vc.disconnect()
+            except Exception:
+                pass
+            return True
+        return False
 
     def _is_youtube_mix(self, url: str) -> bool:
         """Return True if the URL appears to be a YouTube mix (auto-playlist) we want to reject.
@@ -324,6 +385,20 @@ class Music(commands.Cog):
             # Need to defer only if not responded; use private ephemeral
             await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot use /play.", color=discord.Color.red()), ephemeral=True)
             return
+        # Per-user 10s cooldown for /play
+        rem = self._play_cooldown_remaining(interaction.user.id)
+        if rem > 0:
+            await interaction.response.send_message(
+                embed=Embed(
+                    title="⏳ Slow down",
+                    description=f"Please wait {int(math.ceil(rem))}s before using /play again.",
+                    color=discord.Color.orange()
+                ),
+                ephemeral=True
+            )
+            return
+        # Mark usage before any heavy operations
+        self._mark_play_used(interaction.user.id)
         debug_command("play", interaction.user, interaction.guild, url=url)
         await interaction.response.defer(thinking=True)
 
@@ -525,6 +600,9 @@ class Music(commands.Cog):
                         description=f"No URL available for **{next_song.get('title')}**, skipping...",
                         color=discord.Color.orange()
                     ))
+                    # Count failure and abort if threshold exceeded
+                    if await self._record_failure_and_maybe_abort(interaction, "Missing webpage URL"):
+                        return
                     continue
                 try:
                     full_info = self.get_yt_info(webpage)
@@ -538,6 +616,8 @@ class Music(commands.Cog):
                         description=f"Could not fetch full info for **{next_song.get('title')}**, skipping...",
                         color=discord.Color.orange()
                     ))
+                    if await self._record_failure_and_maybe_abort(interaction, "Failed to fetch full metadata"):
+                        return
                     continue
 
             self.currently_playing[guild_id] = {
@@ -598,6 +678,8 @@ class Music(commands.Cog):
                         description=f"Could not resolve a playable stream for **{next_song.get('title')}**, skipping...",
                         color=discord.Color.red()
                     ))
+                    if await self._record_failure_and_maybe_abort(interaction, "Failed to resolve stream"):
+                        return
                     continue
 
                 stream_url = next_song.get('stream_url')
@@ -622,6 +704,8 @@ class Music(commands.Cog):
                     except discord.NotFound:
                         pass
 
+                # Successful start: reset failure counter for this guild
+                self.fail_counts[guild_id] = 0
                 save_queues(queues)
                 return  # song successfully started
 
@@ -632,6 +716,8 @@ class Music(commands.Cog):
                     description=f"Sorry, **{next_song['title']}** could not be downloaded properly.",
                     color=discord.Color.red()
                 ))
+                if await self._record_failure_and_maybe_abort(interaction, "FFmpeg/Playback failure"):
+                    return
                 continue  # try the next song in the queue
 
         # If we reached here, queue is empty or all songs failed

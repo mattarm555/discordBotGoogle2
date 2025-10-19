@@ -4,6 +4,7 @@ from discord import app_commands, Interaction, Embed, ui
 import json
 import os
 from utils.economy import add_currency
+from utils.economy import reset_guild_balances
 from utils.botadmin import is_bot_admin
 
 # --- Color Codes ---
@@ -106,11 +107,11 @@ class XP(commands.Cog):
         if leveled_up:
             try:
                 new_level = self.xp_data[guild_id][str(message.author.id)]["level"]
-                coin_reward = 100 * new_level
+                coin_reward = 1000 * new_level
                 
                 embed = Embed(
                     title="🎉 Level Up!",
-                    description=f"{message.author.mention} leveled up to **Level {new_level}**!\n💰 Earned **{coin_reward}** coins!",
+                    description=f"{message.author.mention} leveled up to **Level {new_level}**!\n💰F Earned **{coin_reward}** coins!",
                     color=discord.Color.orange()
                 )
                 embed.set_thumbnail(url=message.author.avatar.url if message.author.avatar else message.author.default_avatar.url)
@@ -306,6 +307,17 @@ class XP(commands.Cog):
             value=", ".join(blocked_channels) if blocked_channels else "None",
             inline=False
         )
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="coin_reset", description="Reset all coin balances for this server.")
+    async def coin_reset(self, interaction: Interaction):
+        if not self.has_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+        debug_command("coin_reset", interaction.user, interaction.guild)
+        guild_id = str(interaction.guild.id)
+        reset_guild_balances(guild_id)
+        embed = Embed(title="✅ Coins Reset", description="All coin balances for this server have been reset.", color=discord.Color.green())
         await interaction.response.send_message(embed=embed)
 
 # --- Cog Setup ---

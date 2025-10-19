@@ -209,3 +209,17 @@ def delete_balance(user_id: str, guild_id: str | None = None):
         except Exception:
             pass
     save_json(ECON_FILE, economy)
+
+
+def reset_guild_balances(guild_id: str):
+    """Reset all balances for a specific guild by removing its entry.
+
+    Also cleans up any empty containers and persists the change.
+    """
+    gid = str(guild_id)
+    try:
+        # Remove all balances for this guild
+        economy.get("guilds", {}).pop(gid, None)
+    except Exception:
+        pass
+    save_json(ECON_FILE, economy)

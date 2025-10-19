@@ -500,6 +500,8 @@ class Blackjack(commands.Cog):
         # Track active blackjack games to prevent GC + duplicate games
         # key: user_id (str) -> BlackjackView
         self.active_games: dict[str, BlackjackView] = {}
+        # Per-user cooldown tracking for starting new hands
+        self._last_hand_at: dict[str, datetime] = {}
         # Blackjack persistent stats
         self.stats_file = "blackjackstats.json"
         self.stats = self._load_stats()
@@ -727,6 +729,26 @@ class Blackjack(commands.Cog):
         if existing and not existing.finished:
             await interaction.response.send_message(embed=discord.Embed(title="⏳ Game In Progress", description="You already have an active blackjack game. Finish or let it timeout before starting another.", color=discord.Color.orange()), ephemeral=True)
             return
+        # Cooldown: limit to one hand per 15 seconds
+        try:
+            last = self._last_hand_at.get(uid)
+            if last is not None:
+                elapsed = (datetime.utcnow() - last).total_seconds()
+                cooldown = 15
+                if elapsed < cooldown:
+                    remaining = int(cooldown - elapsed) if (cooldown - elapsed).is_integer() else int(cooldown - elapsed) + 1
+                    await interaction.response.send_message(
+                        embed=discord.Embed(
+                            title="⏳ Slow Down",
+                            description=f"Please wait **{remaining}s** before starting another hand of blackjack.",
+                            color=discord.Color.orange()
+                        ),
+                        ephemeral=True
+                    )
+                    return
+        except Exception:
+            # Fail-open on any unexpected error to avoid blocking users
+            pass
         if wager < 1 or wager > 10000:
             embed = discord.Embed(title="❌ Invalid Wager", description="Wager must be between 1 and 10000.", color=discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -742,14 +764,10 @@ class Blackjack(commands.Cog):
             embed = discord.Embed(title="❌ Wager Failed", description="Failed to place wager (insufficient funds).", color=discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
+        # Record cooldown start only after a wager is successfully placed
+        self._last_hand_at[uid] = datetime.utcnow()
         
         view = BlackjackView(self, interaction, wager)
-        # Start a hard 60s refund safety timer similar to tickets' persistent button behavior
-        try:
-            if view.refund_task is None:
-                view.refund_task = asyncio.create_task(view._refund_after_delay())
-        except Exception:
-            pass
 
         # Create initial hand images
         player_image = create_hand_image(view.player_hand)
@@ -773,15 +791,30 @@ class Blackjack(commands.Cog):
             if combined_file:
                 files.append(combined_file)
 
+        # Send initial embed without the view to avoid early interaction/view init races
         if files:
-            await interaction.response.send_message(embed=embed, view=view, files=files)
+            await interaction.response.send_message(embed=embed, files=files)
         else:
-            await interaction.response.send_message(embed=embed, view=view)
+            await interaction.response.send_message(embed=embed)
+
+        # Staggered setup: wait briefly, then attach the persistent view (ticket-style)
+        await asyncio.sleep(1.0)
+
+        # Start a hard 60s refund safety timer similar to tickets' persistent button behavior
         try:
+            if view.refund_task is None:
+                view.refund_task = asyncio.create_task(view._refund_after_delay())
+        except Exception:
+            pass
+
+        try:
+            # Attach the view without disturbing the embed/attachments
+            await interaction.edit_original_response(view=view)
             original = await interaction.original_response()
             view.message_id = original.id
         except Exception:
             view.message_id = None
+        # Register game after message is live
         self.register_game(uid, view)
 
     # Store wager on view for stats usage later (already exists as self.wager)

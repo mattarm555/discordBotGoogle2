@@ -345,6 +345,7 @@ class Counting(commands.Cog):
             # Violation: same user twice in a row
             if last_user is not None and author_id == last_user:
                 try:
+                    await asyncio.sleep(0.25)
                     await message.add_reaction("❌")
                 except Exception:
                     pass
@@ -393,6 +394,8 @@ class Counting(commands.Cog):
             # Correct count
             if num == last_count + 1:
                 try:
+                    # Small delay to improve reaction reliability on some clients
+                    await asyncio.sleep(0.25)
                     await message.add_reaction("✅")
                 except Exception:
                     pass
@@ -403,6 +406,7 @@ class Counting(commands.Cog):
 
             # Wrong number
             try:
+                await asyncio.sleep(0.25)
                 await message.add_reaction("❌")
             except Exception:
                 pass

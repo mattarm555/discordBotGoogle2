@@ -9,6 +9,7 @@ import asyncio
 import logging
 import json
 from pathlib import Path
+from typing import Optional
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -231,6 +232,7 @@ class Misc(commands.Cog):
         # Misc
         misc_embed = Embed(title="😂 Miscellaneous", color=discord.Color.purple())
         misc_embed.add_field(name="/snipe", value="Retrieves the last deleted message in the current channel.", inline=False)
+        misc_embed.add_field(name="/bot_say", value="Admin: Make the bot send a message (with embed options).", inline=False)
         pages.append(misc_embed)
 
         # Community
@@ -343,6 +345,137 @@ class Misc(commands.Cog):
         else:
             emb = Embed(title='Delivery failed', description='Could not deliver your message to the bot owner. They may have DMs closed or an error occurred.', color=discord.Color.red())
             await interaction.response.send_message(embed=emb, ephemeral=True)
+
+    # Admin: Send a message as the bot with optional embed formatting
+    @app_commands.command(name="bot_say", description="Admin: Make the bot send a message, with optional embed formatting.")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        channel="Channel to post in (defaults to current)",
+        message="Plain text content (required if not using embed)",
+        embed="Send as an embed instead of plain text",
+        title="Embed title (optional)",
+        description="Embed description (optional; if blank, message will be used)",
+        color="Embed color (name like 'blue' or hex like #5865F2)",
+        footer="Embed footer text (optional)",
+        image_url="Embed image URL (optional)",
+        thumbnail_url="Embed thumbnail URL (optional)",
+        mention_everyone="Ping @everyone (use sparingly)"
+    )
+    async def bot_say(
+        self,
+        interaction: Interaction,
+        channel: Optional[discord.TextChannel] = None,
+        message: Optional[str] = None,
+        embed: bool = False,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        color: Optional[str] = None,
+        footer: Optional[str] = None,
+        image_url: Optional[str] = None,
+        thumbnail_url: Optional[str] = None,
+        mention_everyone: bool = False,
+    ):
+        target_channel = channel or interaction.channel
+        if target_channel is None:
+            await interaction.response.send_message(
+                embed=Embed(title="❌ No Channel", description="Couldn't resolve a target channel to send the message.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        # Helper: parse color
+        def parse_color(val: Optional[str]) -> Optional[discord.Color]:
+            if not val:
+                return None
+            v = val.strip().lower()
+            NAMED = {
+                'blue': discord.Color.blue(),
+                'red': discord.Color.red(),
+                'green': discord.Color.green(),
+                'gold': discord.Color.gold(),
+                'orange': discord.Color.orange(),
+                'purple': discord.Color.purple(),
+                'teal': discord.Color.teal(),
+                'dark_grey': discord.Color.dark_grey(),
+                'dark_gray': discord.Color.dark_grey(),
+                'grey': discord.Color.greyple(),
+                'gray': discord.Color.greyple(),
+                'blurple': discord.Color.blurple(),
+                'fuchsia': discord.Color.fuchsia(),
+            }
+            if v in NAMED:
+                return NAMED[v]
+            # hex forms #RRGGBB or RRGGBB or 0xRRGGBB
+            try:
+                if v.startswith('#'):
+                    v = v[1:]
+                if v.startswith('0x'):
+                    v = v[2:]
+                if len(v) == 6:
+                    return discord.Color(int(v, 16))
+            except Exception:
+                return None
+            return None
+
+        # Validation: ensure we have something to send
+        if not embed:
+            if not message or not message.strip():
+                await interaction.response.send_message(
+                    embed=Embed(title="❌ Missing Message", description="Provide `message` when not using embed.", color=discord.Color.red()),
+                    ephemeral=True,
+                )
+                return
+        else:
+            # For embed mode, allow description to fall back to message; but ensure at least one of them exists
+            if (not description or not description.strip()) and (not message or not message.strip()) and (not title or not title.strip()) and not image_url and not thumbnail_url:
+                await interaction.response.send_message(
+                    embed=Embed(title="❌ Nothing To Send", description="Supply a title, description/message, or media when using embed.", color=discord.Color.red()),
+                    ephemeral=True,
+                )
+                return
+
+        # Compose allowed mentions
+        allowed = discord.AllowedMentions(everyone=mention_everyone, users=False, roles=False, replied_user=False)
+
+        try:
+            if embed:
+                em = Embed()
+                col = parse_color(color)
+                if col:
+                    em.color = col
+                if title:
+                    em.title = title
+                # Prefer explicit description; otherwise use message if provided
+                if description and description.strip():
+                    em.description = description
+                elif message and message.strip():
+                    em.description = message
+                if footer:
+                    em.set_footer(text=footer)
+                if image_url:
+                    em.set_image(url=image_url)
+                if thumbnail_url:
+                    em.set_thumbnail(url=thumbnail_url)
+                ping_content = "@everyone" if mention_everyone else None
+                await target_channel.send(content=ping_content, embed=em, allowed_mentions=allowed)
+            else:
+                out = message or ""
+                if mention_everyone:
+                    out = f"@everyone {out}"
+                await target_channel.send(content=out, allowed_mentions=allowed)
+        except Exception:
+            await interaction.response.send_message(
+                embed=Embed(title="❌ Send Failed", description="I couldn't send the message. Check channel permissions and inputs.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        # Acknowledge success
+        where = f"#{target_channel.name}" if isinstance(target_channel, discord.TextChannel) else str(target_channel)
+        await interaction.response.send_message(
+            embed=Embed(title="✅ Sent", description=f"Message sent to {where}.", color=discord.Color.green()),
+            ephemeral=True,
+        )
 
 async def setup(bot):
     await bot.add_cog(Misc(bot))

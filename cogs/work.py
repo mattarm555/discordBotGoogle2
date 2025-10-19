@@ -98,23 +98,25 @@ class Work(commands.Cog):
             if not s:
                 return None
             total_seconds = 0
-            # Find pairs of number + optional unit across the whole string
-            for num, unit in re.findall(r"(\d+)\s*([a-zA-Z]?)", s):
-                if not num:
-                    continue
-                n = int(num)
-                u = (unit or 's').lower()[0]
-                if u == 'd':
+            # Strict tokens like 15m, 2h, 1d, 1h30m, and words like 15min/15minutes
+            pattern = r"(\d+)\s*(d(?:ays?)?|h(?:ours?|rs?)?|m(?:in(?:ute)?s?)?|s(?:ec(?:ond)?s?)?)"
+            matches = list(re.finditer(pattern, s))
+            for m in matches:
+                n = int(m.group(1))
+                unit = m.group(2)
+                if unit.startswith('d'):
                     total_seconds += n * 86400
-                elif u == 'h':
+                elif unit.startswith('h'):
                     total_seconds += n * 3600
-                elif u == 'm':
+                elif unit.startswith('m'):
                     total_seconds += n * 60
-                elif u == 's':
+                elif unit.startswith('s'):
                     total_seconds += n
-                else:
-                    # Unknown unit, ignore this token
-                    continue
+            # If no unit tokens found, allow bare number as minutes
+            if not matches:
+                m = re.fullmatch(r"\d+", s)
+                if m:
+                    total_seconds = int(s) * 60
             if total_seconds <= 0:
                 return None
             return timedelta(seconds=total_seconds)

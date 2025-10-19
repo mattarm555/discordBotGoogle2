@@ -349,10 +349,11 @@ class Misc(commands.Cog):
     # Admin: Send a message as the bot with optional embed formatting
     @app_commands.command(name="bot_say", description="Admin: Make the bot send a message, with optional embed formatting.")
     @app_commands.checks.has_permissions(administrator=True)
+    @commands.has_permissions(administrator=True)
     @app_commands.describe(
         channel="Channel to post in (defaults to current)",
         message="Plain text content (required if not using embed)",
-        embed="Send as an embed instead of plain text",
+        use_embed="Send as an embed instead of plain text",
         title="Embed title (optional)",
         description="Embed description (optional; if blank, message will be used)",
         color="Embed color (name like 'blue' or hex like #5865F2)",
@@ -361,12 +362,12 @@ class Misc(commands.Cog):
         thumbnail_url="Embed thumbnail URL (optional)",
         mention_everyone="Ping @everyone (use sparingly)"
     )
-    async def bot_say(
+    async def say_as_bot(
         self,
         interaction: Interaction,
-        channel: Optional[discord.TextChannel] = None,
+        channel: discord.TextChannel = None,
         message: Optional[str] = None,
-        embed: bool = False,
+        use_embed: bool = False,
         title: Optional[str] = None,
         description: Optional[str] = None,
         color: Optional[str] = None,
@@ -418,7 +419,7 @@ class Misc(commands.Cog):
             return None
 
         # Validation: ensure we have something to send
-        if not embed:
+        if not use_embed:
             if not message or not message.strip():
                 await interaction.response.send_message(
                     embed=Embed(title="❌ Missing Message", description="Provide `message` when not using embed.", color=discord.Color.red()),
@@ -438,7 +439,7 @@ class Misc(commands.Cog):
         allowed = discord.AllowedMentions(everyone=mention_everyone, users=False, roles=False, replied_user=False)
 
         try:
-            if embed:
+            if use_embed:
                 em = Embed()
                 col = parse_color(color)
                 if col:

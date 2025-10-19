@@ -68,6 +68,9 @@ class XP(commands.Cog):
         cfg.setdefault("xp_per_message", 10)
         cfg.setdefault("blocked_channels", [])
         cfg.setdefault("level_roles", {})
+        # New: level-up message routing
+        cfg.setdefault("levelup_silent_channels", [])  # list of channel IDs where level-up embeds are not posted
+        cfg.setdefault("levelup_channel", None)        # single channel ID to route level-up messages, or None for current channel
         return cfg
 
     def add_xp(self, member: discord.Member, amount: int):
@@ -108,14 +111,24 @@ class XP(commands.Cog):
             try:
                 new_level = self.xp_data[guild_id][str(message.author.id)]["level"]
                 coin_reward = 1000 * new_level
-                
+                # Prepare level-up embed
                 embed = Embed(
                     title="🎉 Level Up!",
-                    description=f"{message.author.mention} leveled up to **Level {new_level}**!\n💰F Earned **{coin_reward}** coins!",
+                    description=f"{message.author.mention} leveled up to **Level {new_level}**!\n💰 Earned **{coin_reward}** coins!",
                     color=discord.Color.orange()
                 )
                 embed.set_thumbnail(url=message.author.avatar.url if message.author.avatar else message.author.default_avatar.url)
-                await message.channel.send(embed=embed)
+                # Decide where to send the level-up embed
+                levelup_channel_id = config.get("levelup_channel")
+                silent_channels = set(config.get("levelup_silent_channels", []))
+                dest_channel = None
+                if levelup_channel_id:
+                    dest_channel = message.guild.get_channel(int(levelup_channel_id))
+                elif str(message.channel.id) not in silent_channels:
+                    dest_channel = message.channel
+                # Send only if a destination is determined
+                if dest_channel is not None:
+                    await dest_channel.send(embed=embed)
                 
                 # Award currency on level up: 100 * new_level
                 try:
@@ -252,6 +265,54 @@ class XP(commands.Cog):
             color=discord.Color.red()
         )
         await interaction.response.send_message(embed=embed)
+
+    # ---- Level-up message routing commands ----
+    @app_commands.command(name="levelup_silence", description="Admin: Mute level-up messages in a specific channel (toggle).")
+    @app_commands.describe(channel="Channel to mute/unmute level-up messages")
+    async def levelup_silence(self, interaction: Interaction, channel: discord.TextChannel):
+        if not self.has_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+        debug_command("levelup_silence", interaction.user, interaction.guild, channel=channel.name)
+        guild_id = str(interaction.guild.id)
+        config = self.get_xp_config(guild_id)
+        silents = config.setdefault("levelup_silent_channels", [])
+        cid = str(channel.id)
+        toggled_on = False
+        if cid in silents:
+            silents.remove(cid)
+            action = "unmuted"
+        else:
+            silents.append(cid)
+            action = "muted"
+            toggled_on = True
+        save_json(CONFIG_FILE, self.config)
+        color = discord.Color.red() if toggled_on else discord.Color.green()
+        await interaction.response.send_message(embed=Embed(
+            title=("🔇 Level-up Muted" if toggled_on else "🔔 Level-up Unmuted"),
+            description=f"Level-up messages are now {action} in {channel.mention}.",
+            color=color,
+        ))
+
+    @app_commands.command(name="levelup_channel", description="Admin: Set or clear a dedicated channel for level-up messages.")
+    @app_commands.describe(channel="Channel to send level-up messages; omit to clear and use current channels")
+    async def levelup_channel(self, interaction: Interaction, channel: discord.TextChannel | None = None):
+        if not self.has_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+        debug_command("levelup_channel", interaction.user, interaction.guild, channel=channel.mention if channel else "clear")
+        guild_id = str(interaction.guild.id)
+        config = self.get_xp_config(guild_id)
+        if channel is None:
+            config["levelup_channel"] = None
+            msg = "Level-up messages will be sent in the current channel (unless muted)."
+            color = discord.Color.blurple()
+        else:
+            config["levelup_channel"] = str(channel.id)
+            msg = f"Level-up messages will now be sent in {channel.mention}."
+            color = discord.Color.green()
+        save_json(CONFIG_FILE, self.config)
+        await interaction.response.send_message(embed=Embed(title="⚙️ Level-up Routing Updated", description=msg, color=color))
 
     @app_commands.command(name="xpunblock", description="Unblock XP gain in a channel.")
     @app_commands.describe(channel="The channel to unblock")

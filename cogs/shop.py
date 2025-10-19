@@ -4,13 +4,64 @@ from discord import app_commands, Interaction, Embed, ui
 import json
 import os
 from datetime import datetime, timedelta
-from utils.economy import get_balance, add_currency, remove_currency
+from utils.economy import get_balance, add_currency, remove_currency, reset_guild_balances
 import re
 
 SHOP_FILE = "shop.json"
 INV_FILE = "shop_inventory.json"
 GUILD_ITEMS_FILE = "shop_guild_items.json"  # per-guild custom items
 SHOP_CONFIG_FILE = "shop_config.json"       # per-guild payout interval and last payout
+
+# Category ordering and name mapping for known default/extra items
+CATEGORY_ORDER = [
+    "Starter",
+    "Small Business",
+    "Corporate",
+    "Empire",
+    "Legendary",
+    "Other",
+]
+
+# Map item names to categories when not explicitly set (covers extra items list)
+DEFAULT_CATEGORY_MAP = {
+    # Starter
+    "Lemonade Stand 🍋": "Starter",
+    "Coffee Stand ☕": "Starter",
+    "Newsstand 🗞️": "Starter",
+    "Food Truck 🚚": "Starter",
+    "Hotdog Cart 🌭": "Starter",
+    "Bakery 🥐": "Starter",
+    # Small Business
+    "YouTube Channel 🎥": "Small Business",
+    "Barbershop ✂️": "Small Business",
+    "Gaming Café 🖥️": "Small Business",
+    "Arcade 🎮": "Small Business",
+    "Clothing Store 👕": "Small Business",
+    "Car Wash 🚗": "Small Business",
+    # Corporate
+    "Tech Startup 💻": "Corporate",
+    "Restaurant 🍽️": "Corporate",
+    "Nightclub 🕺": "Corporate",
+    "Movie Theater 🎬": "Corporate",
+    "Hotel 🏨": "Corporate",
+    "Casino 🎰": "Corporate",
+    "Tech Company 🧠": "Corporate",
+    # Empire
+    "Theme Park 🎢": "Empire",
+    "Luxury Hotel 🏰": "Empire",
+    "Bank 🏦": "Empire",
+    "Oil Rig 🛢️": "Empire",
+    "TV Network 📺": "Empire",
+    "Record Label 🎵": "Empire",
+    "Airline ✈️": "Empire",
+    "Crypto Exchange 🪙": "Empire",
+    # Legendary
+    "Space Mining Operation 🚀": "Legendary",
+    "Intergalactic Shipping Co 🌌": "Legendary",
+    "AI Corporation 🤖": "Legendary",
+    "Mega City Developer 🏙️": "Legendary",
+    "Time Travel Research Lab ⏳": "Legendary",
+}
 
 # Default items: incomes tuned for 30-minute cadence (smaller per payout)
 DEFAULT_ITEMS = {
@@ -205,19 +256,10 @@ class Shop(commands.Cog):
         inv_guild = self._get_inventory(str(guild.id))
         user_inv = inv_guild.get(str(interaction.user.id), {})
 
-        # Prepare pagination
+        # Prepare pagination by category
         # Sort items by cost ascending, fallback to name
         sorted_items = sorted(items.items(), key=lambda kv: (int(kv[1].get('cost', 0)), kv[0].lower()))
         per_page = 8
-        total = len(sorted_items)
-        total_pages = max(1, (total + per_page - 1) // per_page)
-        if page < 1:
-            page = 1
-        if page > total_pages:
-            page = total_pages
-        start = (page - 1) * per_page
-        end = start + per_page
-        chunk = sorted_items[start:end]
 
         gcfg = self._get_shop_config(gid)
         interval = int(gcfg.get('interval_seconds', 1800))
@@ -377,6 +419,31 @@ class Shop(commands.Cog):
             e.add_field(name=f"{name} — {info.get('cost', 0)} coins", value=f"💸 Income: {info.get('income', 0)} per interval\n{cat_line}{info.get('description', '')}", inline=False)
         await interaction.response.send_message(embed=e)
 
+    # -------- Admin: Wipe coins and owned items (inventory) --------
+    @app_commands.command(name="econ_wipe", description="Admin: Wipe all users' coins and their owned items for this server.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def econ_wipe(self, interaction: Interaction):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()), ephemeral=True)
+            return
+        gid = str(guild.id)
+        # Wipe coin balances using existing economy helper
+        try:
+            reset_guild_balances(gid)
+        except Exception:
+            pass
+        # Wipe owned items by clearing this guild's inventory bucket
+        try:
+            inv = _load_json(INV_FILE)
+            if gid in inv:
+                inv.pop(gid, None)
+                _save_json(INV_FILE, inv)
+        except Exception:
+            pass
+        embed = Embed(title="✅ Economy Wiped", description="All coin balances and owned items for this server have been wiped.", color=discord.Color.green())
+        await interaction.response.send_message(embed=embed)
+
     # Switch to 1-minute cadence and check per-guild interval
     @tasks.loop(minutes=1)
     async def passive_timer(self):
@@ -433,19 +500,35 @@ class ShopView(ui.View):
         self.user_inv = user_inv or {}
         self.interval_str = interval_str
         self.page_size = page_size
-        self.total = len(sorted_items)
-        self.total_pages = max(1, (self.total + page_size - 1) // page_size)
+        # Build category pages: list of (category, items_chunk)
+        self.pages = self._build_category_pages(sorted_items)
+        self.total_pages = max(1, len(self.pages))
         self.page = max(1, min(page, self.total_pages))
         self._update_buttons()
 
-    def _slice(self):
-        start = (self.page - 1) * self.page_size
-        end = min(start + self.page_size, self.total)
-        return start, end, self.items[start:end]
+    def _build_category_pages(self, items: list[tuple[str, dict]]):
+        # Group by category (guild-specific category, default map fallback, then Other)
+        buckets: dict[str, list[tuple[str, dict]]] = {c: [] for c in CATEGORY_ORDER}
+        for name, info in items:
+            cat = info.get('category') or DEFAULT_CATEGORY_MAP.get(name) or 'Other'
+            if cat not in buckets:
+                buckets['Other'].append((name, info))
+            else:
+                buckets[cat].append((name, info))
+        # For each category, chunk into pages of page_size, keeping order by cost/name as provided
+        pages: list[tuple[str, list[tuple[str, dict]]]] = []
+        for cat in CATEGORY_ORDER:
+            cat_items = buckets.get(cat, [])
+            if not cat_items:
+                continue
+            # chunk
+            for i in range(0, len(cat_items), self.page_size):
+                pages.append((cat, cat_items[i:i + self.page_size]))
+        return pages
 
     def make_embed(self) -> Embed:
-        start, end, chunk = self._slice()
-        embed = Embed(title="🛒 Item Shop", color=discord.Color.gold())
+        cat, chunk = self.pages[self.page - 1]
+        embed = Embed(title=f"🛒 Item Shop — {cat}", color=discord.Color.gold())
         embed.description = f"Income is paid per interval (currently {self.interval_str}). Use /buy <item name> to purchase."
         for name, info in chunk:
             owned = int(self.user_inv.get(name, 0))
@@ -460,7 +543,8 @@ class ShopView(ui.View):
                 value=f"Cost: {cost:,} coins\n💸 Income: {income:,} per interval\n{cat_line}{desc}{owned_str}",
                 inline=False
             )
-        embed.set_footer(text=f"Page {self.page}/{self.total_pages} • {self.total} item(s) total")
+        total_items = len(self.items)
+        embed.set_footer(text=f"Page {self.page}/{self.total_pages} • {total_items} item(s) total")
         return embed
 
     def _update_buttons(self):

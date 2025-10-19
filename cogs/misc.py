@@ -211,6 +211,7 @@ class Misc(commands.Cog):
         gambling_embed.add_field(name="/item_add <name> <cost> <income> <description>", value="Admin: Add a server-specific shop item.", inline=False)
         gambling_embed.add_field(name="/item_delete <name>", value="Admin: Delete a server-specific shop item.", inline=False)
         gambling_embed.add_field(name="/item_list", value="List this server's custom shop items.", inline=False)
+        gambling_embed.add_field(name="/econ_wipe", value="Admin: Wipe all users' coins and owned items for this server.", inline=False)
         pages.append(gambling_embed)
 
         # XP

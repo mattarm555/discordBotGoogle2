@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands, Interaction, Embed
+from discord import app_commands, Interaction, Embed, ui
 import json
 import os
 from datetime import datetime, timedelta
@@ -223,26 +223,19 @@ class Shop(commands.Cog):
         interval = int(gcfg.get('interval_seconds', 1800))
         interval_str = self._fmt_interval(interval)
 
-        embed = Embed(title="🛒 Item Shop", color=discord.Color.gold())
-        embed.description = f"Income is paid per interval (currently {interval_str}). Use /buy <item name> to purchase."
         if not items:
-            embed.description = "No items available."
-        else:
-            for name, info in chunk:
-                owned = user_inv.get(name, 0)
-                owned_str = f" • You own: {owned}" if owned > 0 else ""
-                cost = int(info.get('cost', 0))
-                income = int(info.get('income', 0))
-                desc = info.get('description', '')
-                cat = info.get('category')
-                cat_line = f"Category: {cat}\n" if cat else ""
-                embed.add_field(
-                    name=f"{name}",
-                    value=f"Cost: {cost:,} coins\n💸 Income: {income:,} per interval\n{cat_line}{desc}{owned_str}",
-                    inline=False
-                )
-        embed.set_footer(text=f"Page {page}/{total_pages} • {total} item(s) total")
-        await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=Embed(title="🛒 Item Shop", description="No items available.", color=discord.Color.gold()))
+            return
+
+        # Build interactive paginator view
+        view = ShopView(
+            sorted_items=sorted_items,
+            user_inv=user_inv,
+            interval_str=interval_str,
+            page_size=per_page,
+            page=page,
+        )
+        await interaction.response.send_message(embed=view.make_embed(), view=view)
 
     @app_commands.command(name="buy", description="Buy an item from the shop.")
     @app_commands.describe(item_name="Name of the shop item to purchase (exact match)")
@@ -430,3 +423,92 @@ class Shop(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Shop(bot))
+
+
+# ---- Shop Paginator View with Buttons ----
+class ShopView(ui.View):
+    def __init__(self, sorted_items: list[tuple[str, dict]], user_inv: dict, interval_str: str, page_size: int = 8, page: int = 1, timeout: int = 120):
+        super().__init__(timeout=timeout)
+        self.items = sorted_items
+        self.user_inv = user_inv or {}
+        self.interval_str = interval_str
+        self.page_size = page_size
+        self.total = len(sorted_items)
+        self.total_pages = max(1, (self.total + page_size - 1) // page_size)
+        self.page = max(1, min(page, self.total_pages))
+        self._update_buttons()
+
+    def _slice(self):
+        start = (self.page - 1) * self.page_size
+        end = min(start + self.page_size, self.total)
+        return start, end, self.items[start:end]
+
+    def make_embed(self) -> Embed:
+        start, end, chunk = self._slice()
+        embed = Embed(title="🛒 Item Shop", color=discord.Color.gold())
+        embed.description = f"Income is paid per interval (currently {self.interval_str}). Use /buy <item name> to purchase."
+        for name, info in chunk:
+            owned = int(self.user_inv.get(name, 0))
+            owned_str = f" • You own: {owned}" if owned > 0 else ""
+            cost = int(info.get('cost', 0))
+            income = int(info.get('income', 0))
+            desc = info.get('description', '')
+            cat = info.get('category')
+            cat_line = f"Category: {cat}\n" if cat else ""
+            embed.add_field(
+                name=f"{name}",
+                value=f"Cost: {cost:,} coins\n💸 Income: {income:,} per interval\n{cat_line}{desc}{owned_str}",
+                inline=False
+            )
+        embed.set_footer(text=f"Page {self.page}/{self.total_pages} • {self.total} item(s) total")
+        return embed
+
+    def _update_buttons(self):
+        for child in self.children:
+            if isinstance(child, ui.Button):
+                if child.custom_id == 'shop_prev':
+                    child.disabled = self.page <= 1
+                elif child.custom_id == 'shop_next':
+                    child.disabled = self.page >= self.total_pages
+                elif child.custom_id == 'shop_back5':
+                    child.disabled = self.page <= 1
+                elif child.custom_id == 'shop_fwd5':
+                    child.disabled = self.page >= self.total_pages
+
+    @ui.button(label="⏮ -5", style=discord.ButtonStyle.gray, custom_id='shop_back5')
+    async def back5(self, interaction: Interaction, button: ui.Button):
+        old = self.page
+        self.page = max(1, self.page - 5)
+        if self.page == old:
+            await interaction.response.defer()
+            return
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @ui.button(label="⬅️ Prev", style=discord.ButtonStyle.blurple, custom_id='shop_prev')
+    async def prev(self, interaction: Interaction, button: ui.Button):
+        if self.page <= 1:
+            await interaction.response.defer()
+            return
+        self.page -= 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @ui.button(label="Next ➡️", style=discord.ButtonStyle.blurple, custom_id='shop_next')
+    async def next(self, interaction: Interaction, button: ui.Button):
+        if self.page >= self.total_pages:
+            await interaction.response.defer()
+            return
+        self.page += 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)
+
+    @ui.button(label="+5 ⏭", style=discord.ButtonStyle.gray, custom_id='shop_fwd5')
+    async def fwd5(self, interaction: Interaction, button: ui.Button):
+        old = self.page
+        self.page = min(self.total_pages, self.page + 5)
+        if self.page == old:
+            await interaction.response.defer()
+            return
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(), view=self)

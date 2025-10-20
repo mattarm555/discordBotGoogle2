@@ -789,8 +789,8 @@ class Blackjack(commands.Cog):
         embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after} coins", inline=True)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="blackjack", description="Play a hand of blackjack. Wager between 1 and 10000.")
-    @app_commands.describe(wager="Amount to wager (1-10000)")
+    @app_commands.command(name="blackjack", description="Play a hand of blackjack. Wager between 1 and 50000.")
+    @app_commands.describe(wager="Amount to wager (1-50000)")
     async def blackjack(self, interaction: Interaction, wager: int):
         debug_command('blackjack', interaction.user, interaction.guild, wager=wager)
         uid = str(interaction.user.id)
@@ -817,8 +817,8 @@ class Blackjack(commands.Cog):
         except Exception:
             # Fail-open on any unexpected error to avoid blocking users
             pass
-        if wager < 1 or wager > 10000:
-            embed = discord.Embed(title="❌ Invalid Wager", description="Wager must be between 1 and 10000.", color=discord.Color.red())
+        if wager < 1 or wager > 50000:
+            embed = discord.Embed(title="❌ Invalid Wager", description="Wager must be between 1 and 50000.", color=discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         guild_id = str(interaction.guild.id) if interaction.guild else None

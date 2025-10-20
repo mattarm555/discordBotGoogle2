@@ -176,7 +176,7 @@ class SlotsView(View):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("This button isn’t for you.", ephemeral=True)
             return
-        # Enforce per-user cooldown (guild-configurable, min 3s)
+    # Enforce per-user cooldown (guild-configurable, min 1s)
         guild_id = str(interaction.guild.id) if interaction.guild else None
         cd = self.cog.get_slots_cooldown_seconds(guild_id) if hasattr(self.cog, 'get_slots_cooldown_seconds') else 5
         remaining = self.cog._cooldown_remaining(str(self.user_id), cd)
@@ -322,7 +322,7 @@ class Slots(commands.Cog):
                 return 5
             cfg = self._get_guild_cfg(guild_id)
             sec = int(cfg.get("slots_cooldown", 5))
-            return max(3, sec)
+            return max(1, sec)
         except Exception:
             return 5
 
@@ -429,7 +429,7 @@ class Slots(commands.Cog):
         self._last_spin_at[uid] = datetime.utcnow()
 
     # ---- Admin: set slots cooldown ----
-    @app_commands.command(name="slots_set_cooldown", description="Admin: Set per-user cooldown between slot spins (min 3s). Accepts 10, 10s, 2m, 1h.")
+    @app_commands.command(name="slots_set_cooldown", description="Admin: Set per-user cooldown between slot spins (min 1s). Accepts 10, 10s, 2m, 1h.")
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(duration="Cooldown duration (e.g., 3s, 5s, 10s, 1m)")
     async def slots_set_cooldown(self, interaction: Interaction, duration: str):
@@ -438,8 +438,8 @@ class Slots(commands.Cog):
             await interaction.response.send_message("❌ Use this in a server.", ephemeral=True)
             return
         seconds = _parse_duration_to_seconds(duration)
-        if seconds < 3:
-            await interaction.response.send_message("❌ Minimum cooldown is 3 seconds.", ephemeral=True)
+        if seconds < 1:
+            await interaction.response.send_message("❌ Minimum cooldown is 1 second.", ephemeral=True)
             return
         cfg = self._get_guild_cfg(str(guild.id))
         cfg["slots_cooldown"] = int(seconds)

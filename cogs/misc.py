@@ -200,7 +200,7 @@ class Misc(commands.Cog):
         gambling_embed.add_field(name="/blackjack <bet>", value="Play a hand of blackjack (1–10000 bet).", inline=False)
         gambling_embed.add_field(name="/blackjack_set_cooldown <duration>", value="Admin: Set cooldown between blackjack hands (min 10s). E.g., 10s, 30s, 1m.", inline=False)
         gambling_embed.add_field(name="/slots <bet> [lines]", value="Spin the slots (1–10000 bet, 1–5 lines).", inline=False)
-        gambling_embed.add_field(name="/slots_set_cooldown <duration>", value="Admin: Set cooldown between slot spins (min 3s). E.g., 3s, 10s, 1m.", inline=False)
+        gambling_embed.add_field(name="/slots_set_cooldown <duration>", value="Admin: Set cooldown between slot spins (min 1s). E.g., 1s, 10s, 1m.", inline=False)
         gambling_embed.add_field(name="/slotstats", value="View your slot stats and session delta.", inline=False)
         gambling_embed.add_field(name="/slotresetsession", value="Reset your slot session baseline.", inline=False)
         gambling_embed.add_field(name="/slotsim [spins] [wager] [lines]", value="Owner only: Simulate slot spins to estimate RTP (no balance impact).", inline=False)

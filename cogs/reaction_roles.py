@@ -203,14 +203,16 @@ class ColorPickerView(discord.ui.View):
 
             async def item_callback(interaction: discord.Interaction, i=i):
                 if interaction.user.id != self.user_id:
-                    await interaction.response.send_message('Only the command invoker can use this picker.', ephemeral=True)
+                    embed = discord.Embed(description='Only the command invoker can use this picker.', color=discord.Color.orange())
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
                     return
                 if i in self.selected:
                     self.selected.remove(i)
                 else:
                     if len(self.selected) >= self.required:
                         # inform user they can't select more
-                        await interaction.response.send_message(f'You can only select {self.required} colors.', ephemeral=True)
+                        embed = discord.Embed(description=f'You can only select {self.required} colors.', color=discord.Color.orange())
+                        await interaction.response.send_message(embed=embed, ephemeral=True)
                         return
                     self.selected.add(i)
                 # update confirm enabled state
@@ -237,7 +239,8 @@ class ColorPickerView(discord.ui.View):
 
     async def on_prev(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message('Only the command invoker can use this picker.', ephemeral=True)
+            embed = discord.Embed(description='Only the command invoker can use this picker.', color=discord.Color.orange())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         if self.page > 0:
             self.page -= 1
@@ -246,7 +249,8 @@ class ColorPickerView(discord.ui.View):
 
     async def on_next(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message('Only the command invoker can use this picker.', ephemeral=True)
+            embed = discord.Embed(description='Only the command invoker can use this picker.', color=discord.Color.orange())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         max_page = (len(self.palette)-1) // self.page_size
         if self.page < max_page:
@@ -256,7 +260,8 @@ class ColorPickerView(discord.ui.View):
 
     async def on_random(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message('Only the command invoker can use this picker.', ephemeral=True)
+            embed = discord.Embed(description='Only the command invoker can use this picker.', color=discord.Color.orange())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         # choose random indices
         self.selected = set(random.sample(range(len(self.palette)), k=self.required))
@@ -265,20 +270,25 @@ class ColorPickerView(discord.ui.View):
 
     async def on_confirm(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message('Only the command invoker can use this picker.', ephemeral=True)
+            embed = discord.Embed(description='Only the command invoker can use this picker.', color=discord.Color.orange())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         if len(self.selected) != self.required:
-            await interaction.response.send_message(f'Please select exactly {self.required} colors before confirming.', ephemeral=True)
+            embed = discord.Embed(description=f'Please select exactly {self.required} colors before confirming.', color=discord.Color.orange())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         self.value = list(self.selected)
-        await interaction.response.edit_message(content='Selection confirmed — creating roles...', embed=None, view=None)
+        embed = discord.Embed(title='Selection confirmed', description='Creating roles...', color=discord.Color.blurple())
+        await interaction.response.edit_message(embed=embed, view=None)
         self.stop()
 
     async def on_cancel(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message('Only the command invoker can use this picker.', ephemeral=True)
+            embed = discord.Embed(description='Only the command invoker can use this picker.', color=discord.Color.orange())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        await interaction.response.edit_message(content='Selection cancelled.', embed=None, view=None)
+        embed = discord.Embed(title='Selection cancelled', color=discord.Color.red())
+        await interaction.response.edit_message(embed=embed, view=None)
         self.value = None
         self.stop()
 
@@ -363,6 +373,131 @@ class ReactionRoles(commands.Cog):
         h = hashlib.sha1(f"{guild_id}:{base_name}:{os.urandom(8)}".encode('utf-8')).hexdigest()
         return h[:8]
 
+    @app_commands.command(name='custom_reactionroles', description='Add your own role + emoji to a reaction-role config (uses your default if not specified)')
+    @app_commands.describe(
+        config_id='Optional target config ID; omit to use your default (auto-created on first use)',
+        role='Role to assign when users react with the emoji',
+        emoji='Emoji to use (Unicode like 😀 or a server emoji like :name:)'
+    )
+    async def custom_reactionroles(self, interaction: Interaction, role: discord.Role, emoji: str, config_id: Optional[str] = None):
+        # Ephemeral because this is a per-user configuration workflow
+        await interaction.response.defer(thinking=True, ephemeral=True)
+
+        guild = interaction.guild
+        if not guild:
+            embed = discord.Embed(description='❌ This command can only be used in a server.', color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
+            return
+
+        # Validate bot can assign this role later (manage_roles and hierarchy)
+        bot_member = guild.get_member(self.bot.user.id)
+        if not bot_member or not guild.me.guild_permissions.manage_roles:
+            embed = discord.Embed(description='❌ I need the Manage Roles permission to use this role.', color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
+            return
+        # role must be strictly below the bot's top role
+        if role >= bot_member.top_role:
+            embed = discord.Embed(description='❌ I cannot manage that role because it is higher or equal to my top role.', color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
+            return
+
+        # Parse/normalize emoji (support unicode and server custom emoji)
+        try:
+            partial = discord.PartialEmoji.from_str(emoji.strip())
+        except Exception:
+            embed = discord.Embed(description='❌ I could not parse that emoji. Provide a standard emoji or a server emoji.', color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
+            return
+
+        normalized_emoji = str(partial) if partial else emoji.strip()
+
+        # If it's a custom emoji, ensure it belongs to this guild (so anyone here can react with it)
+        try:
+            if partial and partial.id:
+                guild_emoji = discord.utils.get(guild.emojis, id=partial.id)
+                if guild_emoji is None:
+                    embed = discord.Embed(description='❌ That custom emoji is not from this server. Please use a server emoji or a standard emoji.', color=discord.Color.red())
+                    await interaction.edit_original_response(embed=embed)
+                    return
+        except Exception:
+            # If the check fails for any reason, fail safe by requiring server emoji
+            embed = discord.Embed(description='❌ I could not verify that custom emoji belongs to this server. Use a server emoji or a standard emoji.', color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
+            return
+
+        gid = str(guild.id)
+        uid = str(interaction.user.id)
+
+        # Ensure containers exist
+        guild_cfgs = self.configs.setdefault(gid, [])  # list of config/post entries
+        user_defaults = self.configs.setdefault('user_defaults', {}).setdefault(gid, {})  # map user_id -> config_id
+
+        # Resolve or create target config
+        cfg = None
+        if config_id:
+            cfg = next((c for c in guild_cfgs if isinstance(c, dict) and c.get('id') == config_id), None)
+            if not cfg:
+                embed = discord.Embed(description='❌ Config ID not found for this server.', color=discord.Color.red())
+                await interaction.edit_original_response(embed=embed)
+                return
+        else:
+            # Use user's default config if present, else create one and remember it
+            default_id = user_defaults.get(uid)
+            if default_id:
+                cfg = next((c for c in guild_cfgs if isinstance(c, dict) and c.get('id') == default_id), None)
+            if cfg is None:
+                # Create a new empty config owned by this user
+                new_id = self._make_config_id(guild.id, f"custom-{uid}")
+                cfg = {
+                    'id': new_id,
+                    'base_name': f'Custom by {interaction.user.display_name}',
+                    'choices': [],
+                    'owner': interaction.user.id,
+                    'type': 'custom'
+                }
+                guild_cfgs.append(cfg)
+                user_defaults[uid] = new_id
+                # Persist initial creation
+                try:
+                    save_reaction_configs(self.configs)
+                except Exception:
+                    logger.exception('[ReactionRoles] Failed to save after creating default custom config')
+
+        # Validate duplicates in target config
+        choices = cfg.setdefault('choices', [])
+        if any(int(ch.get('id')) == role.id for ch in choices if isinstance(ch, dict) and ch.get('id')):
+            embed = discord.Embed(description=f'⚠️ The role "{role.name}" is already in config `{cfg.get("id")}`.', color=discord.Color.orange())
+            await interaction.edit_original_response(embed=embed)
+            return
+        if any(str(ch.get('emoji')) == normalized_emoji for ch in choices if isinstance(ch, dict) and ch.get('emoji')):
+            embed = discord.Embed(description=f'⚠️ The emoji {normalized_emoji} is already used in this config. Please choose a different emoji.', color=discord.Color.orange())
+            await interaction.edit_original_response(embed=embed)
+            return
+
+        # Append the new mapping
+        try:
+            choices.append({
+                'emoji': normalized_emoji,
+                'id': role.id,
+                'hex': None,
+                'name': role.name
+            })
+            save_reaction_configs(self.configs)
+        except Exception:
+            logger.exception('[ReactionRoles] Failed to add custom mapping and save config')
+            embed = discord.Embed(description='❌ Failed to save your custom reaction role. Please try again.', color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
+            return
+
+        # Confirmation
+        embed = discord.Embed(title='✅ Custom Reaction Role Added', color=discord.Color.green())
+        embed.add_field(name='Config ID', value=f'`{cfg.get("id")}`', inline=False)
+        embed.add_field(name='Role', value=role.mention, inline=True)
+        embed.add_field(name='Emoji', value=normalized_emoji, inline=True)
+        embed.set_footer(text='Tip: use /reactionroles_post to (re)post this configuration to a channel.')
+
+        await interaction.edit_original_response(embed=embed)
+
     @app_commands.command(name='reactionroles_create', description='Create 1..50 color roles.')
     @app_commands.checks.has_permissions(manage_roles=True)
     @app_commands.describe(count=f'Number of color roles to create (1-{MAX_COLOR_COUNT})', base_name='Base name for the roles', interactive='Use interactive picker to choose colors', batch_size='Create roles in batches of this size to avoid rate limits')
@@ -374,15 +509,17 @@ class ReactionRoles(commands.Cog):
         is_admin = interaction.user.guild_permissions.manage_roles or interaction.user.guild_permissions.administrator
         app_owner = await self.bot.application_info()
         if not (is_admin or interaction.user.id == app_owner.owner.id):
-            # edit the original (deferred) ephemeral response with an error
-            await interaction.edit_original_response(content='❌ You do not have permission to use this command.')
+            # edit the original (deferred) response with an error embed
+            embed = discord.Embed(title='❌ Permission Denied', description='You do not have permission to use this command.', color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
             return
 
         # dynamic validation against available colors
         # dynamic validation against available colors (cap at MAX_COLOR_COUNT)
         max_count = min(len(COLOR_PALETTE), MAX_COLOR_COUNT)
         if count < 1 or count > max_count:
-            await interaction.edit_original_response(content=f'❌ Count must be between 1 and {max_count}.')
+            embed = discord.Embed(title='❌ Invalid Count', description=f'Count must be between 1 and {max_count}.', color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
             return
 
         # size-based per-user cooldown: 30m if <25 roles, else 1h
@@ -396,7 +533,8 @@ class ReactionRoles(commands.Cog):
             elapsed = now_ts - last
             if last > 0 and elapsed < cooldown_seconds:
                 remaining = cooldown_seconds - elapsed
-                await interaction.edit_original_response(content=f'⏳ Cooldown in effect. You can create roles again in { _fmt_remaining(remaining) } (based on requested count).')
+                embed = discord.Embed(title='⏳ Cooldown in effect', description=f'You can create roles again in { _fmt_remaining(remaining) } (based on requested count).', color=discord.Color.orange())
+                await interaction.edit_original_response(embed=embed)
                 return
             # record now to prevent spam starts; will overwrite on success as well
             cds.setdefault('guilds', {}).setdefault(gid, {}).setdefault(uid, {})['last_create'] = now_ts
@@ -416,7 +554,8 @@ class ReactionRoles(commands.Cog):
         guild = interaction.guild
         bot_member = guild.get_member(self.bot.user.id)
         if not bot_member:
-            await interaction.edit_original_response(content='❌ Could not determine bot member in this guild.')
+            embed = discord.Embed(description='❌ Could not determine bot member in this guild.', color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
             return
 
         # check for a recent large rate-limit cooldown for this guild
@@ -424,12 +563,14 @@ class ReactionRoles(commands.Cog):
         cooldown_until = self._guild_cooldowns.get(guild.id)
         if cooldown_until and cooldown_until > now_ts:
             remaining = int(cooldown_until - now_ts)
-            await interaction.edit_original_response(content=f'❌ This server is currently rate-limited for bulk role creation. Try again in {remaining}s.')
+            embed = discord.Embed(description=f'❌ This server is currently rate-limited for bulk role creation. Try again in {remaining}s.', color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
             return
 
         # check manage_roles permission
         if not guild.me.guild_permissions.manage_roles:
-            await interaction.edit_original_response(content='❌ I need the Manage Roles permission to create roles.')
+            embed = discord.Embed(description='❌ I need the Manage Roles permission to create roles.', color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
             return
 
     # NOTE: determine the bot's top role position AFTER creating roles to avoid stale data
@@ -449,7 +590,8 @@ class ReactionRoles(commands.Cog):
                     await view.wait()
                     if not view.value:
                         # cancelled or timed out
-                        await interaction.followup.send('Color selection cancelled or timed out.', ephemeral=True)
+                        embed = discord.Embed(description='Color selection cancelled or timed out.', color=discord.Color.orange())
+                        await interaction.followup.send(embed=embed, ephemeral=True)
                         return
                     indices = view.value
             else:
@@ -477,7 +619,8 @@ class ReactionRoles(commands.Cog):
             # Preflight: ensure we won't exceed Discord's hard role limit (250 roles)
             existing_role_count = len(guild.roles)
             if existing_role_count + len(indices) > 250:
-                await interaction.edit_original_response(content=f'❌ Creating {len(indices)} roles would exceed Discord\'s maximum of 250 roles per guild (current: {existing_role_count}). Reduce the count and try again.')
+                embed = discord.Embed(description=f'❌ Creating {len(indices)} roles would exceed Discord\'s maximum of 250 roles per guild (current: {existing_role_count}). Reduce the count and try again.', color=discord.Color.red())
+                await interaction.edit_original_response(embed=embed)
                 return
 
             # process indices in batches to avoid hammering the API
@@ -510,7 +653,8 @@ class ReactionRoles(commands.Cog):
                         # update progress using actual created/failed counts
                         if (len(created) + len(failed)) - last_progress_update >= 5 or (len(created) + len(failed)) == total:
                             try:
-                                await interaction.edit_original_response(content=f'Creating roles... {len(created)}/{total} succeeded, {len(failed)} failed', embed=None)
+                                prog = discord.Embed(title='Creating roles...', description=f'{len(created)}/{total} succeeded, {len(failed)} failed', color=discord.Color.blurple())
+                                await interaction.edit_original_response(embed=prog)
                             except Exception:
                                 pass
                             last_progress_update = len(created) + len(failed)
@@ -560,7 +704,8 @@ class ReactionRoles(commands.Cog):
                                             pass
                                     # notify the user and sleep the indicated retry_after, then retry the same role
                                     try:
-                                        await interaction.edit_original_response(content=f'Rate-limited by Discord; waiting {int(ra)}s before retrying...', embed=None)
+                                        prog = discord.Embed(title='Rate limited', description=f'Waiting {int(ra)}s before retrying...', color=discord.Color.orange())
+                                        await interaction.edit_original_response(embed=prog)
                                     except Exception:
                                         logger.exception('[ReactionRoles] Failed to notify user about rate limit')
                                     print(f"[DEBUG][ReactionRoles] Sleeping {min(ra, per_role_timeout)}s before retrying role '{name}'")
@@ -617,7 +762,8 @@ class ReactionRoles(commands.Cog):
                     # update progress using actual created/failed counts
                     if (len(created) + len(failed)) - last_progress_update >= 5 or (len(created) + len(failed)) == total:
                         try:
-                            await interaction.edit_original_response(content=f'Creating roles... {len(created)}/{total} succeeded, {len(failed)} failed', embed=None)
+                            prog = discord.Embed(title='Creating roles...', description=f'{len(created)}/{total} succeeded, {len(failed)} failed', color=discord.Color.blurple())
+                            await interaction.edit_original_response(embed=prog)
                         except Exception:
                             pass
                         last_progress_update = len(created) + len(failed)
@@ -783,7 +929,8 @@ class ReactionRoles(commands.Cog):
         is_admin = interaction.user.guild_permissions.manage_roles or interaction.user.guild_permissions.administrator
         app_owner = await self.bot.application_info()
         if not (is_admin or interaction.user.id == app_owner.owner.id):
-            await interaction.edit_original_response(content='❌ You do not have permission to use this command.')
+            embed = discord.Embed(title='❌ Permission Denied', description='You do not have permission to use this command.', color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
             return
 
         guild_cfgs = self.configs.get(str(interaction.guild.id), [])

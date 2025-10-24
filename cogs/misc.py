@@ -252,6 +252,7 @@ class Misc(commands.Cog):
         community_embed.add_field(name="/reactionroles_post <config_id> <channel> <message>", value="Post a reaction-roles message.", inline=False)
         community_embed.add_field(name="/reactionroles_remove <config_id>", value="Remove a color role set.", inline=False)
         community_embed.add_field(name="/reaction_list", value="List reaction configurations.", inline=False)
+        community_embed.add_field(name="/custom_reactionroles <role> <emoji> [config_id]", value="Add your own role+emoji to a reaction-role config. If no config_id is provided, a personal default is created and reused.", inline=False)
         community_embed.add_field(name="/counting <name> [chances]", value="Create a counting channel.", inline=False)
         community_embed.add_field(name="/delete_counting <channel>", value="Delete a counting channel.", inline=False)
         pages.append(community_embed)

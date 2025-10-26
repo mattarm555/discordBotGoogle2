@@ -193,7 +193,7 @@ class Misc(commands.Cog):
 
         # Gambling
         gambling_embed = Embed(title="🎰 Gambling", color=discord.Color.gold())
-        gambling_embed.add_field(name="/claimdaily", value="Claim your daily coin reward (10,000–100,000; 24h cooldown).", inline=False)
+        gambling_embed.add_field(name="/daily", value="Claim your daily coin reward (10,000–100,000; 24h cooldown).", inline=False)
         gambling_embed.add_field(name="/balance [user]", value="Check your balance or another user's balance.", inline=False)
         gambling_embed.add_field(name="/balancetop", value="Show the top balances in this server.", inline=False)
         gambling_embed.add_field(name="/pay <user> <amount>", value="Pay another user some of your coins.", inline=False)

@@ -686,40 +686,7 @@ class Blackjack(commands.Cog):
         except Exception:
             pass
 
-    @app_commands.command(name="daily", description="Claim your daily currency reward (once every 24 hours)")
-    async def daily(self, interaction: Interaction):
-        debug_command('daily', interaction.user, interaction.guild)
-        uid = str(interaction.user.id)
-        guild_id = str(interaction.guild.id) if interaction.guild else None
-        if not can_claim_daily(uid, guild_id=guild_id):
-            remaining = daily_time_until_next(uid, guild_id=guild_id)
-            hours, remainder = divmod(int(remaining.total_seconds()), 3600)
-            minutes, seconds = divmod(remainder, 60)
-            parts = []
-            if hours:
-                parts.append(f"{hours}h")
-            if minutes:
-                parts.append(f"{minutes}m")
-            if not hours and not minutes:
-                parts.append(f"{seconds}s")
-            time_str = " ".join(parts)
-            desc = (
-                "You already claimed your daily reward in this server.\n"
-                f"Next claim available in **{time_str}** (midnight UTC reset)."
-            )
-            embed = discord.Embed(title="⏳ Daily Already Claimed", description=desc, color=discord.Color.orange())
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        reward = random.randint(1, 1000)
-        add_currency(uid, reward, guild_id=guild_id)
-        set_daily_claim(uid, guild_id=guild_id)
-        embed = discord.Embed(
-            title="🎁 Daily Reward",
-            description=f"You received **{reward}** coins today! Come back after the next reset (midnight UTC).",
-            color=discord.Color.green()
-        )
-        await interaction.response.send_message(embed=embed)
-
+    
     @app_commands.command(name="balance", description="Check your or another user's coin balance")
     @app_commands.describe(user="User to check (optional)")
     async def balance(self, interaction: Interaction, user: discord.User | None = None):

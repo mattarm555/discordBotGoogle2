@@ -327,8 +327,8 @@ class Shop(commands.Cog):
         self._save_inventory(gid, inv_guild)
         await interaction.response.send_message(embed=Embed(title="✅ Purchase Successful", description=f"You bought **{amount}× {item_name}** for {total_cost:,} coins!", color=discord.Color.green()))
 
-    @app_commands.command(name="daily", description="Claim your daily coin reward (24h cooldown).")
-    async def daily(self, interaction: Interaction):
+    @app_commands.command(name="claimdaily", description="Claim your daily coin reward (24h cooldown).")
+    async def claimdaily(self, interaction: Interaction):
         guild = interaction.guild
         if guild is None:
             await interaction.response.send_message(embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()), ephemeral=True)

@@ -15,6 +15,7 @@ from utils.economy import (
 )
 import random
 import re
+from utils.debug import debug_command
 
 SHOP_FILE = "shop.json"
 INV_FILE = "shop_inventory.json"
@@ -327,30 +328,39 @@ class Shop(commands.Cog):
         self._save_inventory(gid, inv_guild)
         await interaction.response.send_message(embed=Embed(title="✅ Purchase Successful", description=f"You bought **{amount}× {item_name}** for {total_cost:,} coins!", color=discord.Color.green()))
 
-    @app_commands.command(name="claimdaily", description="Claim your daily coin reward (24h cooldown).")
-    async def claimdaily(self, interaction: Interaction):
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message(embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()), ephemeral=True)
-            return
+    @app_commands.command(name="daily", description="Claim your daily currency reward (once every 24 hours)")
+    async def daily(self, interaction: Interaction):
+        debug_command('daily', interaction.user, interaction.guild)
         uid = str(interaction.user.id)
-        gid = str(guild.id)
-        # Check claim eligibility (per-guild daily)
-        if not can_claim_daily(uid, guild_id=gid):
-            remaining = daily_time_until_next(uid, guild_id=gid)
-            mins, secs = divmod(int(remaining.total_seconds()), 60)
-            pretty = f"{mins}m {secs}s" if mins else f"{secs}s"
-            await interaction.response.send_message(embed=Embed(title="⏳ Already Claimed", description=f"You can claim again in {pretty}.", color=discord.Color.orange()), ephemeral=True)
+        guild_id = str(interaction.guild.id) if interaction.guild else None
+        if not can_claim_daily(uid, guild_id=guild_id):
+            remaining = daily_time_until_next(uid, guild_id=guild_id)
+            hours, remainder = divmod(int(remaining.total_seconds()), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            parts = []
+            if hours:
+                parts.append(f"{hours}h")
+            if minutes:
+                parts.append(f"{minutes}m")
+            if not hours and not minutes:
+                parts.append(f"{seconds}s")
+            time_str = " ".join(parts)
+            desc = (
+                "You already claimed your daily reward in this server.\n"
+                f"Next claim available in **{time_str}** (midnight UTC reset)."
+            )
+            embed = discord.Embed(title="⏳ Daily Already Claimed", description=desc, color=discord.Color.orange())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-
-        # Reward range updated as requested: 10,000 – 100,000
         reward = random.randint(10000, 100000)
-        add_currency(uid, reward, guild_id=gid)
-        set_daily_claim(uid, guild_id=gid)
-        new_bal = get_balance(uid, guild_id=gid)
-        e = Embed(title="🎁 Daily Claimed!", description=f"You received **{reward:,}** coins.", color=discord.Color.green())
-        e.set_footer(text=f"New balance: {new_bal:,} coins")
-        await interaction.response.send_message(embed=e)
+        add_currency(uid, reward, guild_id=guild_id)
+        set_daily_claim(uid, guild_id=guild_id)
+        embed = discord.Embed(
+            title="🎁 Daily Reward",
+            description=f"You received **{reward}** coins today! Come back after the next reset (midnight UTC).",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="inventory", description="See your owned items.")
     async def inventory(self, interaction: Interaction):

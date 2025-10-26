@@ -4,7 +4,16 @@ from discord import app_commands, Interaction, Embed, ui
 import json
 import os
 from datetime import datetime, timedelta
-from utils.economy import get_balance, add_currency, remove_currency, reset_guild_balances
+from utils.economy import (
+    get_balance,
+    add_currency,
+    remove_currency,
+    reset_guild_balances,
+    can_claim_daily,
+    set_daily_claim,
+    daily_time_until_next,
+)
+import random
 import re
 
 SHOP_FILE = "shop.json"
@@ -280,8 +289,8 @@ class Shop(commands.Cog):
         await interaction.response.send_message(embed=view.make_embed(), view=view)
 
     @app_commands.command(name="buy", description="Buy an item from the shop.")
-    @app_commands.describe(item_name="Name of the shop item to purchase (exact match)")
-    async def buy(self, interaction: Interaction, item_name: str):
+    @app_commands.describe(item_name="Name of the shop item to purchase (exact match)", amount="Quantity to buy (default 1)")
+    async def buy(self, interaction: Interaction, item_name: str, amount: int = 1):
         guild = interaction.guild
         if guild is None:
             await interaction.response.send_message(embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()), ephemeral=True)
@@ -294,20 +303,54 @@ class Shop(commands.Cog):
         uid = str(interaction.user.id)
         gid = str(guild.id)
         bal = get_balance(uid, guild_id=gid)
-        cost = int(item.get('cost', 0))
-        if bal < cost:
-            await interaction.response.send_message(embed=Embed(title="💸 Not Enough Coins", description=f"You need {cost} coins to buy {item_name}.", color=discord.Color.orange()), ephemeral=True)
+        # Validate amount
+        try:
+            amount = int(amount)
+        except Exception:
+            amount = 1
+        if amount <= 0:
+            await interaction.response.send_message(embed=Embed(title="❌ Invalid Amount", description="Amount must be at least 1.", color=discord.Color.red()), ephemeral=True)
+            return
+        unit_cost = int(item.get('cost', 0))
+        total_cost = unit_cost * amount
+        if bal < total_cost:
+            await interaction.response.send_message(embed=Embed(title="💸 Not Enough Coins", description=f"You need {total_cost:,} coins to buy {amount}× {item_name} (each {unit_cost:,}).", color=discord.Color.orange()), ephemeral=True)
             return
         # Deduct
-        if not remove_currency(uid, cost, guild_id=gid):
+        if not remove_currency(uid, total_cost, guild_id=gid):
             await interaction.response.send_message(embed=Embed(title="❌ Purchase Failed", description="Could not deduct coins.", color=discord.Color.red()), ephemeral=True)
             return
         # Update inv
         inv_guild = self._get_inventory(gid)
         user_inv = inv_guild.setdefault(uid, {})
-        user_inv[item_name] = int(user_inv.get(item_name, 0)) + 1
+        user_inv[item_name] = int(user_inv.get(item_name, 0)) + amount
         self._save_inventory(gid, inv_guild)
-        await interaction.response.send_message(embed=Embed(title="✅ Purchase Successful", description=f"You bought **{item_name}** for {cost} coins!", color=discord.Color.green()))
+        await interaction.response.send_message(embed=Embed(title="✅ Purchase Successful", description=f"You bought **{amount}× {item_name}** for {total_cost:,} coins!", color=discord.Color.green()))
+
+    @app_commands.command(name="daily", description="Claim your daily coin reward (24h cooldown).")
+    async def daily(self, interaction: Interaction):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()), ephemeral=True)
+            return
+        uid = str(interaction.user.id)
+        gid = str(guild.id)
+        # Check claim eligibility (per-guild daily)
+        if not can_claim_daily(uid, guild_id=gid):
+            remaining = daily_time_until_next(uid, guild_id=gid)
+            mins, secs = divmod(int(remaining.total_seconds()), 60)
+            pretty = f"{mins}m {secs}s" if mins else f"{secs}s"
+            await interaction.response.send_message(embed=Embed(title="⏳ Already Claimed", description=f"You can claim again in {pretty}.", color=discord.Color.orange()), ephemeral=True)
+            return
+
+        # Reward range updated as requested: 10,000 – 100,000
+        reward = random.randint(10000, 100000)
+        add_currency(uid, reward, guild_id=gid)
+        set_daily_claim(uid, guild_id=gid)
+        new_bal = get_balance(uid, guild_id=gid)
+        e = Embed(title="🎁 Daily Claimed!", description=f"You received **{reward:,}** coins.", color=discord.Color.green())
+        e.set_footer(text=f"New balance: {new_bal:,} coins")
+        await interaction.response.send_message(embed=e)
 
     @app_commands.command(name="inventory", description="See your owned items.")
     async def inventory(self, interaction: Interaction):

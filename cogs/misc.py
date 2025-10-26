@@ -208,7 +208,7 @@ class Misc(commands.Cog):
         gambling_embed.add_field(name="/setworkcooldown <duration>", value="Admin: Set /work cooldown (e.g., 15m, 2h, 1d).", inline=False)
         gambling_embed.add_field(name="/coin_reset", value="Admin: Reset all coin balances for this server.", inline=False)
         gambling_embed.add_field(name="/shop [page]", value="Browse passive income items (shows what you own).", inline=False)
-        gambling_embed.add_field(name="/buy <item_name>", value="Buy a passive item by exact name (see /shop).", inline=False)
+        gambling_embed.add_field(name="/buy <item_name> [amount]", value="Buy a passive item by exact name (see /shop). Amount defaults to 1.", inline=False)
         gambling_embed.add_field(name="/inventory", value="See the passive items you own and their income.", inline=False)
         gambling_embed.add_field(name="/shop_set_interval <duration>", value="Admin: Set how often items pay (e.g., 15m, 1h, 2h30m).", inline=False)
         gambling_embed.add_field(name="/item_add <name> <cost> <income> <description>", value="Admin: Add a server-specific shop item.", inline=False)

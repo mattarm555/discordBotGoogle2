@@ -701,8 +701,12 @@ class Blackjack(commands.Cog):
 
     @app_commands.command(name="pay", description="Pay another user some of your coins (server balance)")
     @app_commands.describe(user="The user to pay", amount="Amount of coins to send (must be positive)")
-    async def pay(self, interaction: Interaction, user: discord.User, amount: app_commands.Range[int, 1, 1_000_000]):
+    async def pay(self, interaction: Interaction, user: discord.User, amount: int):
         debug_command('pay', interaction.user, interaction.guild, target=user.id, amount=amount)
+        # Validate positive amount (no upper limit)
+        if amount <= 0:
+            await interaction.response.send_message(embed=discord.Embed(title="❌ Invalid Amount", description="Amount must be a positive number.", color=discord.Color.red()), ephemeral=True)
+            return
         if user.id == interaction.user.id:
             await interaction.response.send_message(embed=discord.Embed(title="❌ Invalid Target", description="You can't pay yourself.", color=discord.Color.red()), ephemeral=True)
             return

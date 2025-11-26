@@ -4,6 +4,8 @@ from discord import app_commands, Interaction, Embed
 import asyncio
 from datetime import datetime, timedelta
 import pytz
+import os
+import json
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -50,6 +52,26 @@ class Polls(commands.Cog):
         option5_text: str = None, option5_emoji: str = None,
         option6_text: str = None, option6_emoji: str = None
     ):
+        # Permission check: allow server administrators, app owner, or any role listed in xp_config.json permissions_roles
+        app_owner = await self.bot.application_info()
+        if not (interaction.user.guild_permissions.administrator or interaction.user.id == app_owner.owner.id):
+            try:
+                CONFIG_FILE = "xp_config.json"
+                perms = []
+                if os.path.exists(CONFIG_FILE):
+                    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                        perms = cfg.get(str(interaction.guild.id), {}).get("permissions_roles", [])
+                # perms is expected to be a list of role id strings
+                user_role_ids = {str(r.id) for r in interaction.user.roles}
+                if not (set(perms) & user_role_ids):
+                    await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+                    return
+            except Exception:
+                # on any failure, fall back to strict permission (deny)
+                await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+                return
+
         await interaction.response.defer()
 
         debug_command(
@@ -140,37 +162,6 @@ class Polls(commands.Cog):
         await msg.edit(embed=result_embed)
 
 # --- Cog setup ---
-    async def poll(
-        self,
-        interaction: Interaction,
-        question: str,
-        duration_minutes: int,
-        option1_text: str, option1_emoji: str,
-        option2_text: str, option2_emoji: str,
-        option3_text: str = None, option3_emoji: str = None,
-        option4_text: str = None, option4_emoji: str = None,
-        option5_text: str = None, option5_emoji: str = None,
-        option6_text: str = None, option6_emoji: str = None
-    ):
-        # Permission check
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
-            return
-        await interaction.response.defer()
-        debug_command(
-            "poll", interaction.user, interaction.guild,
-            question=question,
-            duration=f"{duration_minutes} min",
-            options={f"{text}": emoji for text, emoji in [
-                (option1_text, option1_emoji),
-                (option2_text, option2_emoji),
-                (option3_text, option3_emoji),
-                (option4_text, option4_emoji),
-                (option5_text, option5_emoji),
-                (option6_text, option6_emoji)
-            ] if text}
-        )
-
-# --- Cog Setup ---
+    # (removed duplicate permission-check wrapper that overrode the decorated /poll command)
 async def setup(bot):
     await bot.add_cog(Polls(bot))

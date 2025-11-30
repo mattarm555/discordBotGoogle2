@@ -215,19 +215,45 @@ class Moderator(commands.Cog):
     def _is_bot_admin(self, member: discord.Member) -> bool:
         """Return True if member is server admin or in the bot-admin roles listed in xp_config.json."""
         try:
+            # Check if user is a server administrator
             if member.guild_permissions.administrator:
                 return True
+            
+            # Check if xp_config.json exists
             if not XP_CONFIG_PATH.exists():
+                print(f"{YELLOW}[PERM CHECK]{RESET} xp_config.json not found for {member.display_name}")
                 return False
-            cfg = json.loads(XP_CONFIG_PATH.read_text(encoding='utf-8') or '{}')
+            
+            # Load and parse config
+            try:
+                cfg = json.loads(XP_CONFIG_PATH.read_text(encoding='utf-8') or '{}')
+            except json.JSONDecodeError as e:
+                print(f"{YELLOW}[PERM CHECK]{RESET} Failed to parse xp_config.json: {e}")
+                return False
+            
             guild_cfg = cfg.get(str(member.guild.id), {})
             perms = guild_cfg.get('permissions_roles', [])
+            
+            # Debug: print what roles we're checking
+            print(f"{CYAN}[PERM CHECK]{RESET} Checking {member.display_name} in {member.guild.name}")
+            print(f"{CYAN}[PERM CHECK]{RESET} Configured permission role IDs: {perms}")
+            print(f"{CYAN}[PERM CHECK]{RESET} User's role IDs: {[str(r.id) for r in member.roles]}")
+            
+            # Check if user has any of the permission roles
             for role in member.roles:
                 if str(role.id) in perms:
+                    print(f"{GREEN}[PERM CHECK]{RESET} ✓ User has permission role: {role.name} ({role.id})")
                     return True
-        except Exception:
-            pass
-        return False
+            
+            print(f"{YELLOW}[PERM CHECK]{RESET} ✗ User does not have any permission roles")
+            return False
+            
+        except AttributeError as e:
+            print(f"{YELLOW}[PERM CHECK]{RESET} AttributeError (member might not be a Member object): {e}")
+            return False
+        except Exception as e:
+            print(f"{YELLOW}[PERM CHECK]{RESET} Unexpected error in _is_bot_admin: {e}")
+            return False
 
     async def _safe_send_dm(self, user: discord.abc.User, embed: discord.Embed):
         try:

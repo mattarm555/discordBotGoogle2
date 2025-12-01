@@ -543,15 +543,15 @@ class Moderator(commands.Cog):
             await interaction.followup.send(embed=emb, ephemeral=True)
             return
 
-        # If a reason was provided, send an embedded message in the channel describing the mute
+        # Always send a confirmation embed (include reason only if provided)
+        length_text = f'{duration}' if duration else 'indefinitely'
+        emb = discord.Embed(title='Member muted', color=discord.Color.orange())
+        emb.add_field(name='Member', value=f'{member.mention}', inline=True)
+        emb.add_field(name='Duration', value=length_text, inline=True)
         if reason:
-            length_text = f'{duration}' if duration else 'indefinitely'
-            emb = discord.Embed(title='Member muted', color=discord.Color.orange())
-            emb.add_field(name='Member', value=f'{member.mention}', inline=True)
-            emb.add_field(name='Duration', value=length_text, inline=True)
             emb.add_field(name='Reason', value=reason, inline=False)
-            emb.set_footer(text=f'Muted by {interaction.user.display_name}')
-            await interaction.followup.send(embed=emb)
+        emb.set_footer(text=f'Muted by {interaction.user.display_name}')
+        await interaction.followup.send(embed=emb)
 
     @app_commands.command(name='mutestatus', description='Show mute remaining time for a member')
     @app_commands.describe(member='Member to check (defaults to yourself)')

@@ -277,6 +277,33 @@ class Work(commands.Cog):
         embed.set_footer(text=f"Balance: {balance} coins")
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(name="workinfo", description="Show this server's /work reward settings.")
+    async def workinfo(self, interaction: Interaction):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        mn, mx = self._get_guild_reward_range(guild.id)
+        cooldown_td = self._get_guild_cooldown(guild.id)
+
+        if mn is not None and mx is not None:
+            range_line = f"Reward range: **{mn:,}–{mx:,}** coins"
+        else:
+            range_line = "Reward range: **Not configured** (uses default job payouts)"
+
+        cd_line = f"Cooldown: **{self._format_timedelta_mm_ss(cooldown_td)}**"
+        note_line = "Positive rewards are affected by your rebirth multiplier."
+
+        desc = "\n".join([range_line, cd_line, note_line])
+        await interaction.response.send_message(
+            embed=Embed(title="📌 Work Settings", description=desc, color=discord.Color.blurple()),
+            ephemeral=True,
+        )
+
     # Admin command to set work cooldown per guild
     @app_commands.command(name="setworkcooldown", description="Admin: Set /work cooldown (e.g., 15m, 2h, 1d, 1h30m). Minimum 1m.")
     @app_commands.describe(duration="Duration like 15m, 2h, 1d, or combined like 1h30m")

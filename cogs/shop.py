@@ -410,6 +410,49 @@ class Shop(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(name="dailyinfo", description="Show this server's /daily reward settings.")
+    async def dailyinfo(self, interaction: Interaction):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        gid = str(guild.id)
+        uid = str(interaction.user.id)
+        mn, mx = self._get_daily_range(gid)
+
+        try:
+            mult = int(get_rebirth_multiplier(gid, uid))
+        except Exception:
+            mult = 1
+
+        base_line = f"Base range: **{mn:,}–{mx:,}** coins"
+        if mult > 1:
+            eff_line = f"Your multiplier: **x{mult}** → effective: **{mn*mult:,}–{mx*mult:,}**"
+        else:
+            eff_line = "Your multiplier: **x1**"
+
+        # Cooldown state (optional but useful)
+        if can_claim_daily(uid, guild_id=gid):
+            cd_line = "Cooldown: **Ready now**"
+        else:
+            remaining = daily_time_until_next(uid, guild_id=gid)
+            cd_line = f"Cooldown: **{int(remaining.total_seconds() // 60)}m** remaining (approx)"
+
+        desc = "\n".join([
+            base_line,
+            eff_line,
+            cd_line,
+            "Resets at **midnight UTC**.",
+        ])
+        await interaction.response.send_message(
+            embed=Embed(title="📌 Daily Settings", description=desc, color=discord.Color.blurple()),
+            ephemeral=True,
+        )
+
     @app_commands.command(name="setdailyreward", description="Admin: Set this server's /daily reward range (min/max coins).")
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(min_amount="Minimum coins for /daily", max_amount="Maximum coins for /daily")

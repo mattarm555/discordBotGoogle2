@@ -83,6 +83,10 @@ class XP(commands.Cog):
         cfg.setdefault("description", "Participate by chatting to earn rewards!")
         cfg.setdefault("xp_reward", 0)
         cfg.setdefault("coin_reward", 0)
+        cfg.setdefault("top1_xp_bonus", 0)
+        cfg.setdefault("top1_coin_bonus", 0)
+        cfg.setdefault("top2_xp_bonus", 0)
+        cfg.setdefault("top2_coin_bonus", 0)
         cfg.setdefault("start_ts", None)
         cfg.setdefault("end_ts", None)
         cfg.setdefault("counts", {})
@@ -110,6 +114,10 @@ class XP(commands.Cog):
         desc = cfg.get("description") or "Participate by chatting to earn rewards!"
         xp_reward = int(cfg.get("xp_reward") or 0)
         coin_reward = int(cfg.get("coin_reward") or 0)
+        top1_xp_bonus = int(cfg.get("top1_xp_bonus") or 0)
+        top1_coin_bonus = int(cfg.get("top1_coin_bonus") or 0)
+        top2_xp_bonus = int(cfg.get("top2_xp_bonus") or 0)
+        top2_coin_bonus = int(cfg.get("top2_coin_bonus") or 0)
         reward_bits: list[str] = []
         if xp_reward:
             reward_bits.append(f"+{xp_reward} XP")
@@ -117,6 +125,24 @@ class XP(commands.Cog):
             reward_bits.append(f"+{coin_reward} coins")
         if reward_bits:
             desc = f"{desc}\n\nParticipate by chatting to earn **{' and '.join(reward_bits)}**!"
+
+        bonus_lines: list[str] = []
+        if top1_xp_bonus or top1_coin_bonus:
+            parts: list[str] = []
+            if top1_xp_bonus:
+                parts.append(f"+{top1_xp_bonus} XP")
+            if top1_coin_bonus:
+                parts.append(f"+{top1_coin_bonus} coins")
+            bonus_lines.append(f"🥇 1st place bonus: **{' and '.join(parts)}**")
+        if top2_xp_bonus or top2_coin_bonus:
+            parts = []
+            if top2_xp_bonus:
+                parts.append(f"+{top2_xp_bonus} XP")
+            if top2_coin_bonus:
+                parts.append(f"+{top2_coin_bonus} coins")
+            bonus_lines.append(f"🥈 2nd place bonus: **{' and '.join(parts)}**")
+        if bonus_lines:
+            desc = f"{desc}\n" + "\n".join(bonus_lines)
 
         embed = Embed(title=title, description=desc, color=discord.Color.gold())
 
@@ -329,6 +355,14 @@ class XP(commands.Cog):
                 participants = [uid for uid, cnt in counts.items() if int(cnt) > 0]
                 xp_reward = int(cfg.get("xp_reward") or 0)
                 coin_reward = int(cfg.get("coin_reward") or 0)
+                top1_xp_bonus = int(cfg.get("top1_xp_bonus") or 0)
+                top1_coin_bonus = int(cfg.get("top1_coin_bonus") or 0)
+                top2_xp_bonus = int(cfg.get("top2_xp_bonus") or 0)
+                top2_coin_bonus = int(cfg.get("top2_coin_bonus") or 0)
+
+                sorted_counts = sorted(counts.items(), key=lambda kv: int(kv[1]), reverse=True)
+                top1_uid = sorted_counts[0][0] if len(sorted_counts) >= 1 and int(sorted_counts[0][1]) > 0 else None
+                top2_uid = sorted_counts[1][0] if len(sorted_counts) >= 2 and int(sorted_counts[1][1]) > 0 else None
 
                 if participants and (xp_reward or coin_reward):
                     for uid in participants:
@@ -342,6 +376,30 @@ class XP(commands.Cog):
                                 add_currency(str(uid), coin_reward, guild_id=str(guild.id))
                             except Exception:
                                 pass
+
+                # Apply winner bonuses in addition to participation rewards (optional)
+                if top1_uid and (top1_xp_bonus or top1_coin_bonus):
+                    if top1_xp_bonus:
+                        try:
+                            self._add_xp_record(str(guild.id), str(top1_uid), top1_xp_bonus)
+                        except Exception:
+                            pass
+                    if top1_coin_bonus:
+                        try:
+                            add_currency(str(top1_uid), top1_coin_bonus, guild_id=str(guild.id))
+                        except Exception:
+                            pass
+                if top2_uid and (top2_xp_bonus or top2_coin_bonus):
+                    if top2_xp_bonus:
+                        try:
+                            self._add_xp_record(str(guild.id), str(top2_uid), top2_xp_bonus)
+                        except Exception:
+                            pass
+                    if top2_coin_bonus:
+                        try:
+                            add_currency(str(top2_uid), top2_coin_bonus, guild_id=str(guild.id))
+                        except Exception:
+                            pass
 
                     save_json(XP_FILE, self.xp_data)
 
@@ -373,8 +431,12 @@ class XP(commands.Cog):
         channel="Channel to post the leaderboard in",
         xp_reward="XP each participant earns at week end",
         coin_reward="Coins each participant earns at week end",
-        title="Embed title",
-        message="Embed message/description"
+        title="Embed title (optional)",
+        message="Embed message/description (optional)",
+        top1_xp_bonus="Extra XP for 1st place (optional)",
+        top1_coin_bonus="Extra coins for 1st place (optional)",
+        top2_xp_bonus="Extra XP for 2nd place (optional)",
+        top2_coin_bonus="Extra coins for 2nd place (optional)"
     )
     async def weeklymessages_setup(
         self,
@@ -382,8 +444,12 @@ class XP(commands.Cog):
         channel: discord.TextChannel,
         xp_reward: int,
         coin_reward: int,
-        title: str,
-        message: str,
+        title: str | None = None,
+        message: str | None = None,
+        top1_xp_bonus: int = 0,
+        top1_coin_bonus: int = 0,
+        top2_xp_bonus: int = 0,
+        top2_coin_bonus: int = 0,
     ):
         if not self.has_bot_admin(interaction.user):
             await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
@@ -394,10 +460,16 @@ class XP(commands.Cog):
         cfg = self._get_weekly_cfg(guild_id)
         cfg["enabled"] = True
         cfg["channel_id"] = str(channel.id)
-        cfg["title"] = title
-        cfg["description"] = message
+        if title is not None and str(title).strip():
+            cfg["title"] = title
+        if message is not None and str(message).strip():
+            cfg["description"] = message
         cfg["xp_reward"] = max(0, int(xp_reward))
         cfg["coin_reward"] = max(0, int(coin_reward))
+        cfg["top1_xp_bonus"] = max(0, int(top1_xp_bonus))
+        cfg["top1_coin_bonus"] = max(0, int(top1_coin_bonus))
+        cfg["top2_xp_bonus"] = max(0, int(top2_xp_bonus))
+        cfg["top2_coin_bonus"] = max(0, int(top2_coin_bonus))
         cfg["counts"] = {}
 
         now = time.time()
@@ -415,7 +487,8 @@ class XP(commands.Cog):
 
         await interaction.followup.send(
             f"✅ Weekly messages leaderboard enabled in {channel.mention}.\n"
-            f"Rewards: {cfg['xp_reward']} XP, {cfg['coin_reward']} coins per participant.",
+            f"Rewards: {cfg['xp_reward']} XP, {cfg['coin_reward']} coins per participant. "
+            f"Bonuses: 1st(+{cfg['top1_xp_bonus']} XP, +{cfg['top1_coin_bonus']} coins), 2nd(+{cfg['top2_xp_bonus']} XP, +{cfg['top2_coin_bonus']} coins).",
             ephemeral=True,
         )
 

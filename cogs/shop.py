@@ -620,9 +620,33 @@ class Shop(commands.Cog):
             work_status,
         ]
 
+        # --- Shop passive income ---
+        try:
+            gcfg = self._get_shop_config(gid)
+            shop_interval = int(gcfg.get("interval_seconds", 1800))
+            shop_last = int(gcfg.get("last_payout", 0))
+        except Exception:
+            shop_interval = 1800
+            shop_last = 0
+        shop_interval = max(60, shop_interval)
+
+        now_ts = int(datetime.utcnow().timestamp())
+        if shop_last > 0 and (now_ts - shop_last) < shop_interval:
+            remaining = shop_interval - (now_ts - shop_last)
+            shop_next_line = f"Next payout: **~{self._fmt_interval(int(remaining))}**"
+        else:
+            shop_next_line = "Next payout: **Soon**"
+
+        shop_lines = [
+            f"Interval: **{self._fmt_interval(shop_interval)}**",
+            shop_next_line,
+            "Note: Payout requires owning shop items.",
+        ]
+
         embed = Embed(title="📊 Economy Settings", color=discord.Color.blurple())
         embed.add_field(name="🎁 Daily", value="\n".join(daily_lines), inline=False)
         embed.add_field(name="💼 Work", value="\n".join(work_lines), inline=False)
+        embed.add_field(name="🛒 Shop Passive Income", value="\n".join(shop_lines), inline=False)
         embed.add_field(name="🔁 Your Multiplier", value=f"**x{mult}** (see /rebirthinfo for details)", inline=False)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)

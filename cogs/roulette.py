@@ -300,39 +300,22 @@ class Roulette(commands.Cog):
         )
         await interaction.edit_original_response(embed=embed, view=None)
 
-    @app_commands.command(name="roulette", description="Play roulette: bet on a color or a number (0, 00, 1–36).")
-    @app_commands.describe(bet="Coins to wager", pick="Optional: red/black/green or a number (0, 00, 1-36)")
-    async def roulette(self, interaction: Interaction, bet: int, pick: str | None = None):
-        # If only bet is provided, show color buttons (and a number picker)
-        if pick is None or not str(pick).strip():
-            view = RoulettePickView(self, author_id=interaction.user.id, bet=bet)
-            await interaction.response.send_message(
-                embed=Embed(
-                    title="🎡 Roulette",
-                    description=(
-                        f"Bet: **{bet:,}**\n\n"
-                        "Choose a color, or pick a number."
-                    ),
-                    color=discord.Color.blurple(),
+    @app_commands.command(name="roulette", description="Play roulette: place a bet, then choose via buttons.")
+    @app_commands.describe(bet="Coins to wager")
+    async def roulette(self, interaction: Interaction, bet: int):
+        view = RoulettePickView(self, author_id=interaction.user.id, bet=bet)
+        await interaction.response.send_message(
+            embed=Embed(
+                title="🎡 Roulette",
+                description=(
+                    f"Bet: **{bet:,}**\n\n"
+                    "Choose a color, or pick a number."
                 ),
-                view=view,
-                ephemeral=True,
-            )
-            return
-
-        parsed = parse_pocket(pick)
-        if not parsed:
-            await interaction.response.send_message(
-                embed=Embed(
-                    title="❌ Invalid Pick",
-                    description="Pick `red`, `black`, `green`, or a number `0`, `00`, `1–36`.",
-                    color=discord.Color.red(),
-                ),
-                ephemeral=True,
-            )
-            return
-
-        await self._play(interaction, bet=bet, bet_type=parsed[0], value=parsed[1])
+                color=discord.Color.blurple(),
+            ),
+            view=view,
+            ephemeral=True,
+        )
 
 
 async def setup(bot: commands.Bot):

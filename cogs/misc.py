@@ -214,7 +214,7 @@ class Misc(commands.Cog):
             ("/casino_set_interval <duration>", "Admin: Set cooldown for casino games (blackjack/roulette) (min 10s). E.g., 10s, 30s, 1m."),
             ("/slots <bet> [lines]", "Spin the slots (1–10000 bet, 1–5 lines)."),
             ("/slots_set_cooldown <duration>", "Admin: Set cooldown between slot spins (min 1s). E.g., 1s, 10s, 1m."),
-            ("/roulette <bet> [pick]", "Roulette (shares blackjack cooldown). Pick red/black/green or a number (0, 00, 1–36)."),
+            ("/roulette <bet>", "Roulette (shares blackjack cooldown). Choose via buttons (red/black/green or number 0/00/1–36)."),
             ("/slotstats", "View your slot stats and session delta."),
             ("/slotresetsession", "Reset your slot session baseline."),
             ("/work", "Work a random job to earn coins (per-server cooldown)."),

@@ -137,6 +137,8 @@ class Shop(commands.Cog):
         self.bot = bot
         # Ensure default shop exists
         self._ensure_shop()
+        # Migrate any old/bad item names in stored inventories/items
+        self._migrate_shop_item_names()
         # Start passive loop
         self.passive_timer.start()
         # Category choices for guild-specific items
@@ -175,6 +177,81 @@ class Shop(commands.Cog):
                         changed = True
                 if changed:
                     _save_json(SHOP_FILE, data)
+        except Exception:
+            pass
+
+    def _migrate_shop_item_names(self):
+        """Normalize stored shop item names so updates don't break existing inventories.
+
+        Fixes:
+        - trailing/leading whitespace in item names
+        - known broken emoji placeholders ("�") to their intended emojis
+        """
+        name_map = {
+            "Gaming Café �️": "Gaming Café 🖥️",
+            "Clothing Store �": "Clothing Store 👕",
+            "Luxury Hotel �": "Luxury Hotel 🏰",
+            "Record Label �": "Record Label 🎵",
+            "Space Mining Operation �": "Space Mining Operation 🚀",
+        }
+
+        def normalize(name: str) -> str:
+            if not isinstance(name, str):
+                return name
+            s = name.strip()
+            return name_map.get(s, s)
+
+        changed_any = False
+
+        # Inventory: { guild_id: { user_id: { item_name: count } } }
+        try:
+            inv = _load_json(INV_FILE)
+            if isinstance(inv, dict):
+                for gid, users in list(inv.items()):
+                    if not isinstance(users, dict):
+                        continue
+                    for uid, owned in list(users.items()):
+                        if not isinstance(owned, dict):
+                            continue
+                        new_owned = {}
+                        changed_local = False
+                        for item_name, count in owned.items():
+                            new_name = normalize(item_name)
+                            try:
+                                c = int(count)
+                            except Exception:
+                                c = 0
+                            new_owned[new_name] = int(new_owned.get(new_name, 0)) + c
+                            if new_name != item_name:
+                                changed_local = True
+                        if changed_local:
+                            users[uid] = new_owned
+                            changed_any = True
+                if changed_any:
+                    _save_json(INV_FILE, inv)
+        except Exception:
+            pass
+
+        # Guild items: { guild_id: { item_name: {cost,income,...} } }
+        try:
+            gdata = _load_json(GUILD_ITEMS_FILE)
+            if isinstance(gdata, dict):
+                changed = False
+                for gid, items in list(gdata.items()):
+                    if not isinstance(items, dict):
+                        continue
+                    new_items = {}
+                    changed_local = False
+                    for item_name, info in items.items():
+                        new_name = normalize(item_name)
+                        new_items[new_name] = info
+                        if new_name != item_name:
+                            changed_local = True
+                    if changed_local:
+                        gdata[gid] = new_items
+                        changed = True
+                if changed:
+                    _save_json(GUILD_ITEMS_FILE, gdata)
         except Exception:
             pass
 
@@ -453,6 +530,102 @@ class Shop(commands.Cog):
             embed=Embed(title="📌 Daily Settings", description=desc, color=discord.Color.blurple()),
             ephemeral=True,
         )
+
+    @app_commands.command(name="econinfo", description="Show this server's /daily and /work settings.")
+    async def econinfo(self, interaction: Interaction):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        gid = str(guild.id)
+        uid = str(interaction.user.id)
+
+        # Rebirth multiplier (affects /daily, /work positives, and shop passive income)
+        try:
+            mult = int(get_rebirth_multiplier(gid, uid))
+        except Exception:
+            mult = 1
+
+        # --- Daily ---
+        mn, mx = self._get_daily_range(gid)
+        daily_status = "Status: **Ready now**" if can_claim_daily(uid, guild_id=gid) else None
+        if daily_status is None:
+            remaining = daily_time_until_next(uid, guild_id=gid)
+            daily_status = f"Status: **Available in {self._fmt_interval(int(remaining.total_seconds()))}**"
+        daily_lines = [
+            f"Range: **{mn:,}–{mx:,}** coins",
+            (f"Effective (you): **{mn*mult:,}–{mx*mult:,}**" if mult > 1 else "Effective (you): **same**"),
+            daily_status,
+            "Reset: **midnight UTC**",
+        ]
+
+        # --- Work ---
+        WORK_CONFIG_FILE = "work_config.json"
+        WORK_COOLDOWN_FILE = "work_cooldowns.json"
+        DEFAULT_WORK_COOLDOWN_SECONDS = 3600
+
+        wcfg = _load_json(WORK_CONFIG_FILE)
+        g = wcfg.get(gid, {}) if isinstance(wcfg, dict) else {}
+        try:
+            cooldown_seconds = int(g.get("cooldown_seconds", 0))
+        except Exception:
+            cooldown_seconds = 0
+        if cooldown_seconds <= 0:
+            cooldown_seconds = DEFAULT_WORK_COOLDOWN_SECONDS
+        cooldown_seconds = max(60, cooldown_seconds)
+
+        try:
+            wmn_raw = g.get("reward_min")
+            wmx_raw = g.get("reward_max")
+            wmn = int(wmn_raw) if wmn_raw is not None else None
+            wmx = int(wmx_raw) if wmx_raw is not None else None
+            if wmn is None or wmx is None or wmn > wmx:
+                wmn, wmx = None, None
+        except Exception:
+            wmn, wmx = None, None
+
+        if wmn is not None and wmx is not None:
+            work_range_line = f"Range: **{wmn:,}–{wmx:,}** coins"
+            if mult > 1:
+                work_eff_line = f"Effective (you): **{wmn*mult:,}–{wmx*mult:,}** (positive rewards only)"
+            else:
+                work_eff_line = "Effective (you): **same**"
+        else:
+            work_range_line = "Range: **Not configured** (uses default job payouts)"
+            work_eff_line = "Effective (you): **varies** (multiplier applies to positive rewards)"
+
+        work_status = "Status: **Ready now**"
+        try:
+            cooldowns = _load_json(WORK_COOLDOWN_FILE)
+            iso = None
+            if isinstance(cooldowns, dict):
+                iso = cooldowns.get(gid, {}).get(uid)
+            if iso:
+                next_allowed = datetime.fromisoformat(iso)
+                now = datetime.utcnow()
+                if now < next_allowed:
+                    remaining = next_allowed - now
+                    work_status = f"Status: **Available in {self._fmt_interval(int(remaining.total_seconds()))}**"
+        except Exception:
+            pass
+
+        work_lines = [
+            work_range_line,
+            work_eff_line,
+            f"Cooldown: **{self._fmt_interval(cooldown_seconds)}**",
+            work_status,
+        ]
+
+        embed = Embed(title="📊 Economy Settings", color=discord.Color.blurple())
+        embed.add_field(name="🎁 Daily", value="\n".join(daily_lines), inline=False)
+        embed.add_field(name="💼 Work", value="\n".join(work_lines), inline=False)
+        embed.add_field(name="🔁 Your Multiplier", value=f"**x{mult}** (see /rebirthinfo for details)", inline=False)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="setdailyreward", description="Admin: Set this server's /daily reward range (min/max coins).")
     @app_commands.checks.has_permissions(administrator=True)

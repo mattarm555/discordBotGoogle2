@@ -3,7 +3,6 @@ from discord.ext import commands
 from discord import app_commands, ui, Interaction, Embed
 import random
 from datetime import datetime
-import pytz
 from utils.debug import debug_command
 import asyncio
 import logging
@@ -207,7 +206,7 @@ class Misc(commands.Cog):
         # Gambling - owner-only commands intentionally excluded
         gambling_fields: list[tuple[str, str]] = [
             ("/daily", "Claim your daily coin reward (per-server range; 24h cooldown)."),
-            ("/dailyinfo", "Show this server's /daily reward settings."),
+            ("/econinfo", "Show this server's /daily and /work settings."),
             ("/balance [user]", "Check your balance or another user's balance."),
             ("/balancetop", "Show the top balances in this server."),
             ("/pay <user> <amount>", "Pay another user some of your coins."),
@@ -219,7 +218,6 @@ class Misc(commands.Cog):
             ("/slotstats", "View your slot stats and session delta."),
             ("/slotresetsession", "Reset your slot session baseline."),
             ("/work", "Work a random job to earn coins (per-server cooldown)."),
-            ("/workinfo", "Show this server's /work reward settings."),
             ("/setworkcooldown <duration>", "Admin: Set /work cooldown (e.g., 15m, 2h, 1d)."),
             ("/setworkreward <min> <max>", "Admin: Set this server's /work reward range."),
             ("/setdailyreward <min> <max>", "Admin: Set this server's /daily reward range."),

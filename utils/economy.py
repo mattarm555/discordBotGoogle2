@@ -24,32 +24,87 @@ economy.setdefault("global", {})
 economy.setdefault("guilds", {})
 
 
+def _ensure_user_record(container: dict, user_id: str) -> dict:
+    """Return a mutable user record dict, creating it if needed.
+
+    This preserves additional fields (e.g., rebirths) when updating balances.
+    """
+    uid = str(user_id)
+    rec = container.get(uid)
+    if not isinstance(rec, dict):
+        rec = {}
+        container[uid] = rec
+    return rec
+
+
 def get_balance(user_id: str, guild_id: str = None) -> int:
     """Return the balance for the user.
 
     If guild_id is provided, return the guild-scoped balance. Otherwise use global balance.
     """
     if guild_id:
-        return int(economy.get("guilds", {}).get(str(guild_id), {}).get(str(user_id), {}).get("balance", 0))
-    return int(economy.get("global", {}).get(str(user_id), {}).get("balance", 0))
+        rec = economy.get("guilds", {}).get(str(guild_id), {}).get(str(user_id), {})
+        return int(rec.get("balance", 0)) if isinstance(rec, dict) else 0
+    rec = economy.get("global", {}).get(str(user_id), {})
+    return int(rec.get("balance", 0)) if isinstance(rec, dict) else 0
 
 
 def set_balance(user_id: str, amount: int, guild_id: str = None):
     if guild_id:
-        economy.setdefault("guilds", {}).setdefault(str(guild_id), {})[str(user_id)] = {"balance": int(amount)}
+        g = economy.setdefault("guilds", {}).setdefault(str(guild_id), {})
+        rec = _ensure_user_record(g, str(user_id))
+        rec["balance"] = int(amount)
     else:
-        economy.setdefault("global", {})[str(user_id)] = {"balance": int(amount)}
+        g = economy.setdefault("global", {})
+        rec = _ensure_user_record(g, str(user_id))
+        rec["balance"] = int(amount)
     save_json(ECON_FILE, economy)
 
 
 def add_currency(user_id: str, amount: int, guild_id: str = None):
     if guild_id:
         g = economy.setdefault("guilds", {}).setdefault(str(guild_id), {})
-        g[str(user_id)] = {"balance": int(g.get(str(user_id), {}).get("balance", 0)) + int(amount)}
+        rec = _ensure_user_record(g, str(user_id))
+        rec["balance"] = int(rec.get("balance", 0)) + int(amount)
     else:
         g = economy.setdefault("global", {})
-        g[str(user_id)] = {"balance": int(g.get(str(user_id), {}).get("balance", 0)) + int(amount)}
+        rec = _ensure_user_record(g, str(user_id))
+        rec["balance"] = int(rec.get("balance", 0)) + int(amount)
     save_json(ECON_FILE, economy)
+
+
+def get_rebirths(user_id: str, guild_id: str | None = None) -> int:
+    """Return the rebirth count for a user in a guild (server).
+
+    Rebirths are guild-scoped.
+    """
+    if not guild_id:
+        return 0
+    rec = economy.get("guilds", {}).get(str(guild_id), {}).get(str(user_id), {})
+    if not isinstance(rec, dict):
+        return 0
+    try:
+        return int(rec.get("rebirths", 0))
+    except Exception:
+        return 0
+
+
+def set_rebirths(user_id: str, count: int, guild_id: str | None = None):
+    """Set the rebirth count for a user in a guild (server)."""
+    if not guild_id:
+        return
+    g = economy.setdefault("guilds", {}).setdefault(str(guild_id), {})
+    rec = _ensure_user_record(g, str(user_id))
+    rec["rebirths"] = int(count)
+    save_json(ECON_FILE, economy)
+
+
+def increment_rebirths(user_id: str, guild_id: str | None = None) -> int:
+    """Increment and return the user's guild-scoped rebirth count."""
+    current = get_rebirths(user_id, guild_id=guild_id)
+    new_val = int(current) + 1
+    set_rebirths(user_id, new_val, guild_id=guild_id)
+    return new_val
 
 
 def remove_currency(user_id: str, amount: int, guild_id: str = None) -> bool:
@@ -218,8 +273,12 @@ def reset_guild_balances(guild_id: str):
     """
     gid = str(guild_id)
     try:
-        # Remove all balances for this guild
-        economy.get("guilds", {}).pop(gid, None)
+        g = economy.get("guilds", {}).get(gid, {})
+        if isinstance(g, dict):
+            # Preserve other fields (e.g., rebirths) while zeroing balances.
+            for uid, rec in g.items():
+                if isinstance(rec, dict):
+                    rec["balance"] = 0
     except Exception:
         pass
     save_json(ECON_FILE, economy)

@@ -22,6 +22,7 @@ import json
 from datetime import timedelta
 from utils.botadmin import is_bot_admin
 import re
+from utils.casino_cooldown import cooldown_remaining_seconds, set_last_casino_play
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -581,18 +582,10 @@ class Blackjack(commands.Cog):
         except Exception:
             return 15
 
-    def _bj_cooldown_remaining(self, uid: str, cooldown_sec: int) -> int:
-        last = self._last_hand_at.get(uid)
-        if not last:
+    def _bj_cooldown_remaining(self, guild_id: str | None, uid: str, cooldown_sec: int) -> int:
+        if not guild_id:
             return 0
-        try:
-            elapsed = (datetime.utcnow() - last).total_seconds()
-            rem = cooldown_sec - elapsed
-            if rem <= 0:
-                return 0
-            return int(rem) if float(rem).is_integer() else int(rem) + 1
-        except Exception:
-            return 0
+        return cooldown_remaining_seconds(str(guild_id), str(uid), int(cooldown_sec))
 
     def _ensure_user(self, guild_id: str, user_id: str):
         g = self.stats.setdefault("guilds", {}).setdefault(str(guild_id), {})
@@ -774,7 +767,7 @@ class Blackjack(commands.Cog):
         try:
             guild_id = str(interaction.guild.id) if interaction.guild else None
             cd = self.get_blackjack_cooldown_seconds(guild_id)
-            remaining = self._bj_cooldown_remaining(uid, cd)
+            remaining = self._bj_cooldown_remaining(guild_id, uid, cd)
             if remaining > 0:
                 await interaction.response.send_message(
                     embed=discord.Embed(
@@ -805,6 +798,11 @@ class Blackjack(commands.Cog):
             return
         # Record cooldown start only after a wager is successfully placed
         self._last_hand_at[uid] = datetime.utcnow()
+        try:
+            if guild_id:
+                set_last_casino_play(str(guild_id), str(uid), when=self._last_hand_at[uid])
+        except Exception:
+            pass
         
         view = BlackjackView(self, interaction, wager)
 
@@ -893,11 +891,11 @@ class Blackjack(commands.Cog):
         view = BalanceLeaderboardView(guild, items, page_size=page_size, page=page)
         await interaction.response.send_message(embed=view.make_embed(), view=view)
 
-    # ---- Admin: set blackjack cooldown ----
-    @app_commands.command(name="blackjack_set_cooldown", description="Admin: Set per-user cooldown between blackjack hands (min 10s). Accepts 10, 10s, 2m, 1h.")
+    # ---- Admin: set casino interval (shared cooldown for blackjack/roulette) ----
+    @app_commands.command(name="casino_set_interval", description="Admin: Set per-user cooldown for casino games (blackjack/roulette). Min 10s. Accepts 10, 10s, 2m, 1h.")
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(duration="Cooldown duration (e.g., 10s, 15s, 1m)")
-    async def blackjack_set_cooldown(self, interaction: Interaction, duration: str):
+    async def casino_set_interval(self, interaction: Interaction, duration: str):
         guild = interaction.guild
         if not guild:
             await interaction.response.send_message("❌ Use this in a server.", ephemeral=True)
@@ -909,7 +907,7 @@ class Blackjack(commands.Cog):
         cfg = self._get_guild_cfg(str(guild.id))
         cfg["blackjack_cooldown"] = int(seconds)
         self._set_guild_cfg(str(guild.id), cfg)
-        await interaction.response.send_message(embed=discord.Embed(title="✅ Blackjack Cooldown Set", description=f"Blackjack hand cooldown set to {seconds}s.", color=discord.Color.green()), ephemeral=True)
+        await interaction.response.send_message(embed=discord.Embed(title="✅ Casino Interval Set", description=f"Casino cooldown set to {seconds}s (blackjack/roulette).", color=discord.Color.green()), ephemeral=True)
 
 
 class BalanceLeaderboardView(View):

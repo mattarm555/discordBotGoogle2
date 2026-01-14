@@ -110,7 +110,7 @@ class XP(commands.Cog):
         if leveled_up:
             try:
                 new_level = self.xp_data[guild_id][str(message.author.id)]["level"]
-                coin_reward = 1000 * new_level
+                coin_reward = 100 * new_level
                 # Prepare level-up embed
                 embed = Embed(
                     title="🎉 Level Up!",

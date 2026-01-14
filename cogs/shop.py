@@ -16,11 +16,16 @@ from utils.economy import (
 import random
 import re
 from utils.debug import debug_command
+from utils.rebirth import get_rebirth_multiplier
 
 SHOP_FILE = "shop.json"
 INV_FILE = "shop_inventory.json"
 GUILD_ITEMS_FILE = "shop_guild_items.json"  # per-guild custom items
 SHOP_CONFIG_FILE = "shop_config.json"       # per-guild payout interval and last payout
+DAILY_CONFIG_FILE = "daily_config.json"     # per-guild daily min/max rewards
+
+DEFAULT_DAILY_MIN = 10_000
+DEFAULT_DAILY_MAX = 100_000
 
 # Category ordering and name mapping for known default/extra items
 CATEGORY_ORDER = [
@@ -187,6 +192,28 @@ class Shop(commands.Cog):
         cfg[str(guild_id)] = gcfg
         _save_json(SHOP_CONFIG_FILE, cfg)
 
+    # -------- Daily Reward Config (per guild) --------
+    def _get_daily_range(self, guild_id: str) -> tuple[int, int]:
+        cfg = _load_json(DAILY_CONFIG_FILE)
+        if not isinstance(cfg, dict):
+            return (DEFAULT_DAILY_MIN, DEFAULT_DAILY_MAX)
+        g = cfg.get(str(guild_id), {})
+        try:
+            mn = int(g.get('min', DEFAULT_DAILY_MIN))
+            mx = int(g.get('max', DEFAULT_DAILY_MAX))
+        except Exception:
+            return (DEFAULT_DAILY_MIN, DEFAULT_DAILY_MAX)
+        if mn < 0 or mx < 0 or mn > mx:
+            return (DEFAULT_DAILY_MIN, DEFAULT_DAILY_MAX)
+        return (mn, mx)
+
+    def _set_daily_range(self, guild_id: str, mn: int, mx: int):
+        cfg = _load_json(DAILY_CONFIG_FILE)
+        if not isinstance(cfg, dict):
+            cfg = {}
+        cfg[str(guild_id)] = {'min': int(mn), 'max': int(mx)}
+        _save_json(DAILY_CONFIG_FILE, cfg)
+
     def _get_guild_items(self, guild_id: str) -> dict:
         data = _load_json(GUILD_ITEMS_FILE)
         return data.setdefault(str(guild_id), {})
@@ -352,15 +379,79 @@ class Shop(commands.Cog):
             embed = discord.Embed(title="⏳ Daily Already Claimed", description=desc, color=discord.Color.orange())
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        reward = random.randint(10000, 100000)
+
+        # Per-guild configurable daily range
+        if interaction.guild:
+            mn, mx = self._get_daily_range(str(interaction.guild.id))
+        else:
+            mn, mx = (DEFAULT_DAILY_MIN, DEFAULT_DAILY_MAX)
+        reward = random.randint(int(mn), int(mx))
+
+        # Apply rebirth multiplier (does not affect blackjack/slots, only economy payouts)
+        if guild_id is not None:
+            try:
+                mult = int(get_rebirth_multiplier(guild_id, uid))
+            except Exception:
+                mult = 1
+        else:
+            mult = 1
+        if mult > 1:
+            reward *= mult
         add_currency(uid, reward, guild_id=guild_id)
         set_daily_claim(uid, guild_id=guild_id)
         embed = discord.Embed(
             title="🎁 Daily Reward",
-            description=f"You received **{reward}** coins today! Come back after the next reset (midnight UTC).",
+            description=(
+                f"You received **{reward}** coins today!"
+                + (f" (rebirth multiplier **x{mult}**)" if mult > 1 else "")
+                + "\nCome back after the next reset (midnight UTC)."
+            ),
             color=discord.Color.green()
         )
         await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="setdailyreward", description="Admin: Set this server's /daily reward range (min/max coins).")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(min_amount="Minimum coins for /daily", max_amount="Maximum coins for /daily")
+    async def set_daily_reward(self, interaction: Interaction, min_amount: int, max_amount: int):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            mn = int(min_amount)
+            mx = int(max_amount)
+        except Exception:
+            await interaction.response.send_message(
+                embed=Embed(title="❌ Invalid Values", description="Min and max must be integers.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        if mn < 0 or mx < 0 or mn > mx:
+            await interaction.response.send_message(
+                embed=Embed(title="❌ Invalid Range", description="Please provide a valid range where 0 ≤ min ≤ max.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        # sanity cap to avoid absurd payouts
+        if mx > 1_000_000_000:
+            await interaction.response.send_message(
+                embed=Embed(title="❌ Too Large", description="Max must be ≤ 1,000,000,000 coins.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        self._set_daily_range(str(guild.id), mn, mx)
+        await interaction.response.send_message(
+            embed=Embed(title="✅ Daily Reward Updated", description=f"Set /daily reward range to **{mn:,}–{mx:,}** coins for this server.", color=discord.Color.green()),
+            ephemeral=True,
+        )
 
     @app_commands.command(name="inventory", description="See your owned items.")
     async def inventory(self, interaction: Interaction):
@@ -524,6 +615,12 @@ class Shop(commands.Cog):
                         continue
                     total_income += int(info.get('income', 0)) * int(count)
                 if total_income > 0:
+                    try:
+                        mult = int(get_rebirth_multiplier(gid, uid))
+                    except Exception:
+                        mult = 1
+                    if mult > 1:
+                        total_income *= mult
                     try:
                         add_currency(uid, total_income, guild_id=gid)
                         any_changes = True

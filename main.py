@@ -56,6 +56,26 @@ class JengBot(commands.Bot):
         except Exception as e:
             await interaction.response.send_message(f"⚠️ Sync failed: {e}", ephemeral=True)
 
+
+# --- Prefix fallback sync (use if /synccommands mismatches) ---
+@commands.command(name="syncguild")
+async def syncguild(ctx: commands.Context):
+    """Owner-only: sync slash commands to the current guild.
+
+    This exists as a fallback in case the /synccommands slash command has a signature mismatch
+    and can't be invoked.
+    """
+    if ctx.author.id != YOUR_USER_ID:
+        return
+    if not ctx.guild:
+        await ctx.send("❌ Use this in a server.")
+        return
+    try:
+        synced = await bot.tree.sync(guild=ctx.guild)
+        await ctx.send(f"✅ Synced {len(synced)} commands to this server.")
+    except Exception as e:
+        await ctx.send(f"⚠️ Sync failed: {e}")
+
     async def on_ready(self):
         try:
             synced = await self.tree.sync()
@@ -73,6 +93,7 @@ class JengBot(commands.Bot):
 
 # Initialize bot
 bot = JengBot()
+bot.add_command(syncguild)
 
 @bot.event
 async def on_message_delete(message):

@@ -9,6 +9,7 @@ from utils.economy import (
     add_currency,
     remove_currency,
     reset_guild_balances,
+    reset_guild_rebirths,
     can_claim_daily,
     set_daily_claim,
     daily_time_until_next,
@@ -24,8 +25,8 @@ GUILD_ITEMS_FILE = "shop_guild_items.json"  # per-guild custom items
 SHOP_CONFIG_FILE = "shop_config.json"       # per-guild payout interval and last payout
 DAILY_CONFIG_FILE = "daily_config.json"     # per-guild daily min/max rewards
 
-DEFAULT_DAILY_MIN = 10_000
-DEFAULT_DAILY_MAX = 100_000
+DEFAULT_DAILY_MIN = 1_000
+DEFAULT_DAILY_MAX = 10_000
 
 # Category ordering and name mapping for known default/extra items
 CATEGORY_ORDER = [
@@ -181,8 +182,8 @@ class Shop(commands.Cog):
     def _get_shop_config(self, guild_id: str) -> dict:
         cfg = _load_json(SHOP_CONFIG_FILE)
         g = cfg.setdefault(str(guild_id), {})
-        # default: 30 minutes interval, no last_payout yet
-        g.setdefault("interval_seconds", 1800)
+        # default: 2 hours interval, no last_payout yet
+        g.setdefault("interval_seconds", 7200)
         # last_payout is stored as integer epoch seconds
         g.setdefault("last_payout", 0)
         return g
@@ -620,6 +621,12 @@ class Shop(commands.Cog):
             reset_guild_balances(gid)
         except Exception:
             pass
+
+        # Reset rebirths for this guild
+        try:
+            reset_guild_rebirths(gid)
+        except Exception:
+            pass
         # Wipe owned items by clearing this guild's inventory bucket
         try:
             inv = _load_json(INV_FILE)
@@ -628,7 +635,7 @@ class Shop(commands.Cog):
                 _save_json(INV_FILE, inv)
         except Exception:
             pass
-        embed = Embed(title="✅ Economy Wiped", description="All coin balances and owned items for this server have been wiped.", color=discord.Color.green())
+        embed = Embed(title="✅ Economy Wiped", description="All coin balances, rebirths, and owned items for this server have been wiped.", color=discord.Color.green())
         await interaction.response.send_message(embed=embed)
 
     # Switch to 1-minute cadence and check per-guild interval

@@ -282,3 +282,21 @@ def reset_guild_balances(guild_id: str):
     except Exception:
         pass
     save_json(ECON_FILE, economy)
+
+
+def reset_guild_rebirths(guild_id: str):
+    """Reset all rebirth counts for a specific guild.
+
+    Rebirths are stored per-user in economy.json under economy['guilds'][gid][uid]['rebirths'].
+    This sets them to 0 while preserving other fields.
+    """
+    gid = str(guild_id)
+    try:
+        g = economy.get("guilds", {}).get(gid, {})
+        if isinstance(g, dict):
+            for _, rec in g.items():
+                if isinstance(rec, dict):
+                    rec["rebirths"] = 0
+    except Exception:
+        pass
+    save_json(ECON_FILE, economy)

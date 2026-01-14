@@ -1,8 +1,10 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands, Interaction, Embed, ui
 import json
 import os
+import time
+from datetime import datetime, timedelta, timezone
 from utils.economy import add_currency
 from utils.economy import reset_guild_balances
 from utils.botadmin import is_bot_admin
@@ -17,6 +19,7 @@ CYAN = "\033[36m"
 
 XP_FILE = "xp_data.json"
 CONFIG_FILE = "xp_config.json"
+WEEKLY_MESSAGES_FILE = "weekly_messages.json"
 
 def load_json(file):
     if os.path.exists(file):
@@ -59,6 +62,143 @@ class XP(commands.Cog):
         self.bot = bot
         self.xp_data = load_json(XP_FILE)
         self.config = load_json(CONFIG_FILE)
+        self.weekly_messages = load_json(WEEKLY_MESSAGES_FILE)
+        self._weekly_messages_dirty = False
+        self._weekly_messages_loop.start()
+
+    def cog_unload(self):
+        try:
+            self._weekly_messages_loop.cancel()
+        except Exception:
+            pass
+
+    def _get_weekly_cfg(self, guild_id: str) -> dict:
+        if guild_id not in self.weekly_messages:
+            self.weekly_messages[guild_id] = {}
+        cfg = self.weekly_messages[guild_id]
+        cfg.setdefault("enabled", False)
+        cfg.setdefault("channel_id", None)
+        cfg.setdefault("message_id", None)
+        cfg.setdefault("title", "🏆 Weekly Messages Leaderboard")
+        cfg.setdefault("description", "Participate by chatting to earn rewards!")
+        cfg.setdefault("xp_reward", 0)
+        cfg.setdefault("coin_reward", 0)
+        cfg.setdefault("start_ts", None)
+        cfg.setdefault("end_ts", None)
+        cfg.setdefault("counts", {})
+        return cfg
+
+    def _human_time_delta(self, seconds: float) -> str:
+        seconds = max(0, int(seconds))
+        days, rem = divmod(seconds, 86400)
+        if days > 0:
+            return f"{days} day{'s' if days != 1 else ''}"
+        hours, rem = divmod(rem, 3600)
+        if hours > 0:
+            return f"{hours} hour{'s' if hours != 1 else ''}"
+        minutes, _ = divmod(rem, 60)
+        if minutes > 0:
+            return f"{minutes} minute{'s' if minutes != 1 else ''}"
+        return "less than a minute"
+
+    def _build_weekly_messages_embed(self, guild: discord.Guild, cfg: dict) -> Embed:
+        now = time.time()
+        start_ts = cfg.get("start_ts")
+        end_ts = cfg.get("end_ts")
+
+        title = cfg.get("title") or "🏆 Weekly Messages Leaderboard"
+        desc = cfg.get("description") or "Participate by chatting to earn rewards!"
+        xp_reward = int(cfg.get("xp_reward") or 0)
+        coin_reward = int(cfg.get("coin_reward") or 0)
+        reward_bits: list[str] = []
+        if xp_reward:
+            reward_bits.append(f"+{xp_reward} XP")
+        if coin_reward:
+            reward_bits.append(f"+{coin_reward} coins")
+        if reward_bits:
+            desc = f"{desc}\n\nParticipate by chatting to earn **{' and '.join(reward_bits)}**!"
+
+        embed = Embed(title=title, description=desc, color=discord.Color.gold())
+
+        counts = cfg.get("counts", {}) if isinstance(cfg.get("counts"), dict) else {}
+        sorted_counts = sorted(counts.items(), key=lambda kv: int(kv[1]), reverse=True)
+        top = sorted_counts[:5]
+        if top:
+            lines: list[str] = []
+            for idx, (uid, cnt) in enumerate(top, start=1):
+                lines.append(f"{idx}. <@{uid}>: **{int(cnt)}** messages")
+            embed.add_field(name="Top 5", value="\n".join(lines), inline=False)
+        else:
+            embed.add_field(name="Top 5", value="No messages yet.", inline=False)
+
+        if start_ts:
+            embed.add_field(name="Contest began", value=f"{self._human_time_delta(now - float(start_ts))} ago", inline=True)
+        else:
+            embed.add_field(name="Contest began", value="Not started", inline=True)
+        if end_ts:
+            embed.add_field(name="Contest ends", value=f"in {self._human_time_delta(float(end_ts) - now)}", inline=True)
+        else:
+            embed.add_field(name="Contest ends", value="Not scheduled", inline=True)
+
+        return embed
+
+    def _ensure_week_window(self, cfg: dict) -> None:
+        now = time.time()
+        if not cfg.get("start_ts") or not cfg.get("end_ts"):
+            cfg["start_ts"] = now
+            cfg["end_ts"] = now + 7 * 86400
+
+    async def _upsert_weekly_message(self, guild: discord.Guild, cfg: dict) -> None:
+        channel_id = cfg.get("channel_id")
+        if not channel_id:
+            return
+        channel = guild.get_channel(int(channel_id))
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        embed = self._build_weekly_messages_embed(guild, cfg)
+
+        msg_id = cfg.get("message_id")
+        msg = None
+        if msg_id:
+            try:
+                msg = await channel.fetch_message(int(msg_id))
+            except Exception:
+                msg = None
+        if msg is None:
+            try:
+                sent = await channel.send(embed=embed)
+                cfg["message_id"] = str(sent.id)
+                self._weekly_messages_dirty = True
+            except Exception:
+                return
+        else:
+            try:
+                await msg.edit(embed=embed)
+            except Exception:
+                pass
+
+    def _add_xp_record(self, guild_id: str, user_id: str, amount: int) -> int:
+        if guild_id not in self.xp_data:
+            self.xp_data[guild_id] = {}
+        if user_id not in self.xp_data[guild_id]:
+            self.xp_data[guild_id][user_id] = {"xp": 0, "level": 1}
+
+        rec = self.xp_data[guild_id][user_id]
+        rec["xp"] = int(rec.get("xp", 0)) + int(amount)
+        rec["level"] = int(rec.get("level", 1))
+        if rec["level"] < 1:
+            rec["level"] = 1
+
+        gained = 0
+        while True:
+            required = int(rec["level"]) * 100
+            if rec["xp"] < required:
+                break
+            rec["xp"] -= required
+            rec["level"] += 1
+            gained += 1
+        return gained
 
     def get_xp_config(self, guild_id):
         # Ensure the guild entry exists and provides expected keys with defaults
@@ -76,23 +216,7 @@ class XP(commands.Cog):
     def add_xp(self, member: discord.Member, amount: int):
         guild_id = str(member.guild.id)
         user_id = str(member.id)
-
-        if guild_id not in self.xp_data:
-            self.xp_data[guild_id] = {}
-
-        if user_id not in self.xp_data[guild_id]:
-            self.xp_data[guild_id][user_id] = {"xp": 0, "level": 1}
-
-        self.xp_data[guild_id][user_id]["xp"] += amount
-
-        current_level = self.xp_data[guild_id][user_id]["level"]
-        required_xp = current_level * 100
-
-        if self.xp_data[guild_id][user_id]["xp"] >= required_xp:
-            self.xp_data[guild_id][user_id]["level"] += 1
-            self.xp_data[guild_id][user_id]["xp"] = 0
-            return True
-        return False
+        return self._add_xp_record(guild_id, user_id, int(amount))
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -106,11 +230,29 @@ class XP(commands.Cog):
         if channel_id in config["blocked_channels"]:
             return
 
-        leveled_up = self.add_xp(message.author, config["xp_per_message"])
-        if leveled_up:
+        # Weekly message contest tracking (separate from XP gain)
+        try:
+            weekly_cfg = self._get_weekly_cfg(guild_id)
+            if weekly_cfg.get("enabled"):
+                self._ensure_week_window(weekly_cfg)
+                now = time.time()
+                if float(weekly_cfg.get("start_ts") or 0) <= now < float(weekly_cfg.get("end_ts") or 0):
+                    # Respect XP blocked channels for contest counting (keeps farming consistent)
+                    if channel_id not in config["blocked_channels"]:
+                        uid = str(message.author.id)
+                        counts = weekly_cfg.setdefault("counts", {})
+                        counts[uid] = int(counts.get(uid, 0)) + 1
+                        self._weekly_messages_dirty = True
+        except Exception:
+            pass
+
+        old_level = int(self.xp_data.get(guild_id, {}).get(str(message.author.id), {}).get("level", 1))
+        levels_gained = self.add_xp(message.author, config["xp_per_message"])
+        if levels_gained and int(levels_gained) > 0:
             try:
-                new_level = self.xp_data[guild_id][str(message.author.id)]["level"]
-                coin_reward = 100 * new_level
+                new_level = int(self.xp_data[guild_id][str(message.author.id)]["level"])
+                # Reward coins once per level gained (prevents under/overpay when XP jumps multiple levels)
+                coin_reward = sum(100 * lvl for lvl in range(old_level + 1, new_level + 1))
                 # Prepare level-up embed
                 embed = Embed(
                     title="🎉 Level Up!",
@@ -147,6 +289,162 @@ class XP(commands.Cog):
                 pass
 
         save_json(XP_FILE, self.xp_data)
+        if self._weekly_messages_dirty:
+            try:
+                save_json(WEEKLY_MESSAGES_FILE, self.weekly_messages)
+                self._weekly_messages_dirty = False
+            except Exception:
+                pass
+
+    @tasks.loop(minutes=5)
+    async def _weekly_messages_loop(self):
+        now = time.time()
+        # Flush any pending counts periodically even if we can't edit messages
+        if self._weekly_messages_dirty:
+            try:
+                save_json(WEEKLY_MESSAGES_FILE, self.weekly_messages)
+                self._weekly_messages_dirty = False
+            except Exception:
+                pass
+
+        for gid, cfg in list(self.weekly_messages.items()):
+            if not isinstance(cfg, dict):
+                continue
+            if not cfg.get("enabled"):
+                continue
+            try:
+                guild = self.bot.get_guild(int(gid))
+            except Exception:
+                guild = None
+            if not guild:
+                continue
+
+            self._ensure_week_window(cfg)
+            end_ts = float(cfg.get("end_ts") or 0)
+            start_ts = float(cfg.get("start_ts") or 0)
+
+            # Rotate week + distribute participation rewards
+            if end_ts and now >= end_ts:
+                counts = cfg.get("counts", {}) if isinstance(cfg.get("counts"), dict) else {}
+                participants = [uid for uid, cnt in counts.items() if int(cnt) > 0]
+                xp_reward = int(cfg.get("xp_reward") or 0)
+                coin_reward = int(cfg.get("coin_reward") or 0)
+
+                if participants and (xp_reward or coin_reward):
+                    for uid in participants:
+                        if xp_reward:
+                            try:
+                                self._add_xp_record(str(guild.id), str(uid), xp_reward)
+                            except Exception:
+                                pass
+                        if coin_reward:
+                            try:
+                                add_currency(str(uid), coin_reward, guild_id=str(guild.id))
+                            except Exception:
+                                pass
+
+                    save_json(XP_FILE, self.xp_data)
+
+                # Reset week
+                cfg["counts"] = {}
+                cfg["start_ts"] = end_ts
+                cfg["end_ts"] = end_ts + 7 * 86400
+                self._weekly_messages_dirty = True
+
+            # Keep the leaderboard message fresh
+            try:
+                await self._upsert_weekly_message(guild, cfg)
+            except Exception:
+                pass
+
+        if self._weekly_messages_dirty:
+            try:
+                save_json(WEEKLY_MESSAGES_FILE, self.weekly_messages)
+                self._weekly_messages_dirty = False
+            except Exception:
+                pass
+
+    @_weekly_messages_loop.before_loop
+    async def _before_weekly_messages_loop(self):
+        await self.bot.wait_until_ready()
+
+    @app_commands.command(name="weeklymessages_setup", description="Admin: Post a weekly top-5 message leaderboard and auto-reward participants each week.")
+    @app_commands.describe(
+        channel="Channel to post the leaderboard in",
+        xp_reward="XP each participant earns at week end",
+        coin_reward="Coins each participant earns at week end",
+        title="Embed title",
+        message="Embed message/description"
+    )
+    async def weeklymessages_setup(
+        self,
+        interaction: Interaction,
+        channel: discord.TextChannel,
+        xp_reward: int,
+        coin_reward: int,
+        title: str,
+        message: str,
+    ):
+        if not self.has_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        guild_id = str(interaction.guild.id)
+        cfg = self._get_weekly_cfg(guild_id)
+        cfg["enabled"] = True
+        cfg["channel_id"] = str(channel.id)
+        cfg["title"] = title
+        cfg["description"] = message
+        cfg["xp_reward"] = max(0, int(xp_reward))
+        cfg["coin_reward"] = max(0, int(coin_reward))
+        cfg["counts"] = {}
+
+        now = time.time()
+        cfg["start_ts"] = now
+        cfg["end_ts"] = now + 7 * 86400
+        cfg["message_id"] = None
+
+        self._weekly_messages_dirty = True
+        save_json(WEEKLY_MESSAGES_FILE, self.weekly_messages)
+
+        try:
+            await self._upsert_weekly_message(interaction.guild, cfg)
+        except Exception:
+            pass
+
+        await interaction.followup.send(
+            f"✅ Weekly messages leaderboard enabled in {channel.mention}.\n"
+            f"Rewards: {cfg['xp_reward']} XP, {cfg['coin_reward']} coins per participant.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="weeklymessages_disable", description="Admin: Disable the weekly message leaderboard (keeps saved config).")
+    async def weeklymessages_disable(self, interaction: Interaction):
+        if not self.has_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+        guild_id = str(interaction.guild.id)
+        cfg = self._get_weekly_cfg(guild_id)
+        cfg["enabled"] = False
+        self._weekly_messages_dirty = True
+        save_json(WEEKLY_MESSAGES_FILE, self.weekly_messages)
+        await interaction.response.send_message("✅ Weekly messages leaderboard disabled.", ephemeral=True)
+
+    @app_commands.command(name="weeklymessages_postnow", description="Admin: Force an immediate leaderboard refresh.")
+    async def weeklymessages_postnow(self, interaction: Interaction):
+        if not self.has_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        guild_id = str(interaction.guild.id)
+        cfg = self._get_weekly_cfg(guild_id)
+        if not cfg.get("enabled"):
+            await interaction.followup.send("❌ Weekly messages leaderboard is not enabled.", ephemeral=True)
+            return
+        self._ensure_week_window(cfg)
+        await self._upsert_weekly_message(interaction.guild, cfg)
+        await interaction.followup.send("✅ Leaderboard updated.", ephemeral=True)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):

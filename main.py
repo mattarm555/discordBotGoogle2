@@ -68,8 +68,9 @@ class JengBot(commands.Bot):
             self._did_global_sync = True
 
         # Presence / status
+        # {len(self.guilds)} servers
         try:
-            activity_name = f"/help | {len(self.guilds)} servers"
+            activity_name = f"/help"
             await self.change_presence(
                 status=discord.Status.online,
                 activity=discord.Activity(type=discord.ActivityType.listening, name=activity_name)

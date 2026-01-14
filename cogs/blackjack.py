@@ -892,7 +892,7 @@ class Blackjack(commands.Cog):
         await interaction.response.send_message(embed=view.make_embed(), view=view)
 
     # ---- Admin: set casino interval (shared cooldown for blackjack/roulette) ----
-    @app_commands.command(name="casino_set_interval", description="Admin: Set per-user cooldown for casino games (blackjack/roulette). Min 10s. Accepts 10, 10s, 2m, 1h.")
+    @app_commands.command(name="casino_set_interval", description="Admin: Set casino game cooldown (blackjack/roulette). Min 10s.")
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(duration="Cooldown duration (e.g., 10s, 15s, 1m)")
     async def casino_set_interval(self, interaction: Interaction, duration: str):

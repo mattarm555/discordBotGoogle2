@@ -4,6 +4,7 @@ from discord import app_commands, Interaction, Embed, ui
 import json
 import os
 import time
+import asyncio
 from datetime import datetime, timedelta, timezone
 from utils.economy import add_currency
 from utils.economy import reset_guild_balances
@@ -64,6 +65,7 @@ class XP(commands.Cog):
         self.config = load_json(CONFIG_FILE)
         self.weekly_messages = load_json(WEEKLY_MESSAGES_FILE)
         self._weekly_messages_dirty = False
+        self._weekly_rotate_locks: dict[str, asyncio.Lock] = {}
         self._weekly_messages_loop.start()
 
     def cog_unload(self):
@@ -168,6 +170,169 @@ class XP(commands.Cog):
 
         return embed
 
+    def _top_n_counts(self, counts: dict, n: int = 5) -> list[tuple[str, int]]:
+        if not isinstance(counts, dict):
+            return []
+        items: list[tuple[str, int]] = []
+        for uid, cnt in counts.items():
+            try:
+                items.append((str(uid), int(cnt)))
+            except Exception:
+                continue
+        items.sort(key=lambda kv: kv[1], reverse=True)
+        # Only include users with at least 1 message
+        return [(uid, cnt) for uid, cnt in items if cnt > 0][:n]
+
+    def _get_rotate_lock(self, guild_id: str) -> asyncio.Lock:
+        lock = self._weekly_rotate_locks.get(guild_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._weekly_rotate_locks[guild_id] = lock
+        return lock
+
+    async def _announce_week_end(self, guild: discord.Guild, cfg: dict, counts: dict):
+        channel_id = cfg.get("channel_id")
+        if not channel_id:
+            return
+        channel = guild.get_channel(int(channel_id))
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        xp_reward = int(cfg.get("xp_reward") or 0)
+        coin_reward = int(cfg.get("coin_reward") or 0)
+        top1_xp_bonus = int(cfg.get("top1_xp_bonus") or 0)
+        top1_coin_bonus = int(cfg.get("top1_coin_bonus") or 0)
+        top2_xp_bonus = int(cfg.get("top2_xp_bonus") or 0)
+        top2_coin_bonus = int(cfg.get("top2_coin_bonus") or 0)
+
+        participants = [uid for uid, cnt in counts.items() if int(cnt) > 0]
+        top5 = self._top_n_counts(counts, n=5)
+
+        reward_bits: list[str] = []
+        if xp_reward:
+            reward_bits.append(f"{xp_reward} XP")
+        if coin_reward:
+            reward_bits.append(f"{coin_reward} coins")
+        reward_text = (" and ".join(reward_bits)) if reward_bits else "no rewards"
+
+        embed = Embed(
+            title="🏁 Weekly Messages Contest Ended!",
+            description=f"Rewards have been distributed to **{len(participants)}** participant(s): **{reward_text}** each.",
+            color=discord.Color.blurple(),
+        )
+
+        if top5:
+            lines = [f"{idx}. <@{uid}>: **{cnt}** messages" for idx, (uid, cnt) in enumerate(top5, start=1)]
+            embed.add_field(name="Final Top 5", value="\n".join(lines), inline=False)
+        else:
+            embed.add_field(name="Final Top 5", value="No messages this week.", inline=False)
+
+        bonus_lines: list[str] = []
+        if (top1_xp_bonus or top1_coin_bonus):
+            bits: list[str] = []
+            if top1_xp_bonus:
+                bits.append(f"+{top1_xp_bonus} XP")
+            if top1_coin_bonus:
+                bits.append(f"+{top1_coin_bonus} coins")
+            bonus_lines.append(f"🥇 1st place: **{' and '.join(bits)}**")
+        if (top2_xp_bonus or top2_coin_bonus):
+            bits = []
+            if top2_xp_bonus:
+                bits.append(f"+{top2_xp_bonus} XP")
+            if top2_coin_bonus:
+                bits.append(f"+{top2_coin_bonus} coins")
+            bonus_lines.append(f"🥈 2nd place: **{' and '.join(bits)}**")
+        if bonus_lines:
+            embed.add_field(name="Winner Bonuses", value="\n".join(bonus_lines), inline=False)
+
+        try:
+            await channel.send(embed=embed)
+        except Exception:
+            pass
+
+    async def _rotate_week(self, guild: discord.Guild, cfg: dict) -> None:
+        """End current week: reward participants, announce, then start a new week and post a fresh leaderboard message."""
+        now = time.time()
+        end_ts = float(cfg.get("end_ts") or 0)
+        if not end_ts or now < end_ts:
+            return
+
+        gid = str(guild.id)
+        async with self._get_rotate_lock(gid):
+            # Re-check under lock to prevent double rotations
+            now2 = time.time()
+            end_ts2 = float(cfg.get("end_ts") or 0)
+            if not end_ts2 or now2 < end_ts2:
+                return
+
+            counts = cfg.get("counts", {}) if isinstance(cfg.get("counts"), dict) else {}
+            participants = [uid for uid, cnt in counts.items() if int(cnt) > 0]
+            xp_reward = int(cfg.get("xp_reward") or 0)
+            coin_reward = int(cfg.get("coin_reward") or 0)
+            top1_xp_bonus = int(cfg.get("top1_xp_bonus") or 0)
+            top1_coin_bonus = int(cfg.get("top1_coin_bonus") or 0)
+            top2_xp_bonus = int(cfg.get("top2_xp_bonus") or 0)
+            top2_coin_bonus = int(cfg.get("top2_coin_bonus") or 0)
+
+            sorted_counts = sorted(counts.items(), key=lambda kv: int(kv[1]), reverse=True)
+            top1_uid = sorted_counts[0][0] if len(sorted_counts) >= 1 and int(sorted_counts[0][1]) > 0 else None
+            top2_uid = sorted_counts[1][0] if len(sorted_counts) >= 2 and int(sorted_counts[1][1]) > 0 else None
+
+            # Announce first (so it reflects the final leaderboard)
+            await self._announce_week_end(guild, cfg, counts)
+
+            # Participation rewards
+            if participants and (xp_reward or coin_reward):
+                for uid in participants:
+                    if xp_reward:
+                        try:
+                            self._add_xp_record(gid, str(uid), xp_reward)
+                        except Exception:
+                            pass
+                    if coin_reward:
+                        try:
+                            add_currency(str(uid), coin_reward, guild_id=gid)
+                        except Exception:
+                            pass
+
+            # Winner bonuses (in addition to participation)
+            if top1_uid and (top1_xp_bonus or top1_coin_bonus):
+                if top1_xp_bonus:
+                    try:
+                        self._add_xp_record(gid, str(top1_uid), top1_xp_bonus)
+                    except Exception:
+                        pass
+                if top1_coin_bonus:
+                    try:
+                        add_currency(str(top1_uid), top1_coin_bonus, guild_id=gid)
+                    except Exception:
+                        pass
+            if top2_uid and (top2_xp_bonus or top2_coin_bonus):
+                if top2_xp_bonus:
+                    try:
+                        self._add_xp_record(gid, str(top2_uid), top2_xp_bonus)
+                    except Exception:
+                        pass
+                if top2_coin_bonus:
+                    try:
+                        add_currency(str(top2_uid), top2_coin_bonus, guild_id=gid)
+                    except Exception:
+                        pass
+
+            save_json(XP_FILE, self.xp_data)
+
+            # Start the new week and force a fresh leaderboard message
+            cfg["counts"] = {}
+            cfg["start_ts"] = end_ts2
+            cfg["end_ts"] = end_ts2 + 7 * 86400
+            cfg["message_id"] = None
+            self._weekly_messages_dirty = True
+
+            try:
+                await self._upsert_weekly_message(guild, cfg)
+            except Exception:
+                pass
+
     def _ensure_week_window(self, cfg: dict) -> None:
         now = time.time()
         if not cfg.get("start_ts") or not cfg.get("end_ts"):
@@ -262,13 +427,30 @@ class XP(commands.Cog):
             if weekly_cfg.get("enabled"):
                 self._ensure_week_window(weekly_cfg)
                 now = time.time()
+                # If the week ended, rotate (this keeps it snappy even without waiting for the loop)
+                if float(weekly_cfg.get("end_ts") or 0) and now >= float(weekly_cfg.get("end_ts") or 0):
+                    try:
+                        await self._rotate_week(message.guild, weekly_cfg)
+                    except Exception:
+                        pass
+
                 if float(weekly_cfg.get("start_ts") or 0) <= now < float(weekly_cfg.get("end_ts") or 0):
                     # Respect XP blocked channels for contest counting (keeps farming consistent)
                     if channel_id not in config["blocked_channels"]:
                         uid = str(message.author.id)
                         counts = weekly_cfg.setdefault("counts", {})
+
+                        # Only update the embed if the top-5 leaderboard actually changes.
+                        old_top = self._top_n_counts(counts, n=5)
                         counts[uid] = int(counts.get(uid, 0)) + 1
+                        new_top = self._top_n_counts(counts, n=5)
                         self._weekly_messages_dirty = True
+
+                        if old_top != new_top:
+                            try:
+                                await self._upsert_weekly_message(message.guild, weekly_cfg)
+                            except Exception:
+                                pass
         except Exception:
             pass
 
@@ -322,7 +504,7 @@ class XP(commands.Cog):
             except Exception:
                 pass
 
-    @tasks.loop(minutes=5)
+    @tasks.loop(minutes=2)
     async def _weekly_messages_loop(self):
         now = time.time()
         # Flush any pending counts periodically even if we can't edit messages
@@ -349,71 +531,12 @@ class XP(commands.Cog):
             end_ts = float(cfg.get("end_ts") or 0)
             start_ts = float(cfg.get("start_ts") or 0)
 
-            # Rotate week + distribute participation rewards
+            # Rotate week + distribute rewards + announce + post a fresh leaderboard (fallback if chat is quiet)
             if end_ts and now >= end_ts:
-                counts = cfg.get("counts", {}) if isinstance(cfg.get("counts"), dict) else {}
-                participants = [uid for uid, cnt in counts.items() if int(cnt) > 0]
-                xp_reward = int(cfg.get("xp_reward") or 0)
-                coin_reward = int(cfg.get("coin_reward") or 0)
-                top1_xp_bonus = int(cfg.get("top1_xp_bonus") or 0)
-                top1_coin_bonus = int(cfg.get("top1_coin_bonus") or 0)
-                top2_xp_bonus = int(cfg.get("top2_xp_bonus") or 0)
-                top2_coin_bonus = int(cfg.get("top2_coin_bonus") or 0)
-
-                sorted_counts = sorted(counts.items(), key=lambda kv: int(kv[1]), reverse=True)
-                top1_uid = sorted_counts[0][0] if len(sorted_counts) >= 1 and int(sorted_counts[0][1]) > 0 else None
-                top2_uid = sorted_counts[1][0] if len(sorted_counts) >= 2 and int(sorted_counts[1][1]) > 0 else None
-
-                if participants and (xp_reward or coin_reward):
-                    for uid in participants:
-                        if xp_reward:
-                            try:
-                                self._add_xp_record(str(guild.id), str(uid), xp_reward)
-                            except Exception:
-                                pass
-                        if coin_reward:
-                            try:
-                                add_currency(str(uid), coin_reward, guild_id=str(guild.id))
-                            except Exception:
-                                pass
-
-                # Apply winner bonuses in addition to participation rewards (optional)
-                if top1_uid and (top1_xp_bonus or top1_coin_bonus):
-                    if top1_xp_bonus:
-                        try:
-                            self._add_xp_record(str(guild.id), str(top1_uid), top1_xp_bonus)
-                        except Exception:
-                            pass
-                    if top1_coin_bonus:
-                        try:
-                            add_currency(str(top1_uid), top1_coin_bonus, guild_id=str(guild.id))
-                        except Exception:
-                            pass
-                if top2_uid and (top2_xp_bonus or top2_coin_bonus):
-                    if top2_xp_bonus:
-                        try:
-                            self._add_xp_record(str(guild.id), str(top2_uid), top2_xp_bonus)
-                        except Exception:
-                            pass
-                    if top2_coin_bonus:
-                        try:
-                            add_currency(str(top2_uid), top2_coin_bonus, guild_id=str(guild.id))
-                        except Exception:
-                            pass
-
-                    save_json(XP_FILE, self.xp_data)
-
-                # Reset week
-                cfg["counts"] = {}
-                cfg["start_ts"] = end_ts
-                cfg["end_ts"] = end_ts + 7 * 86400
-                self._weekly_messages_dirty = True
-
-            # Keep the leaderboard message fresh
-            try:
-                await self._upsert_weekly_message(guild, cfg)
-            except Exception:
-                pass
+                try:
+                    await self._rotate_week(guild, cfg)
+                except Exception:
+                    pass
 
         if self._weekly_messages_dirty:
             try:

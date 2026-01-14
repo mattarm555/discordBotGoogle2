@@ -31,19 +31,58 @@ class JengBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
         self.sniped_messages = {}
+        self._did_global_sync = False
 
     async def setup_hook(self):
         # Load cogs
+        loaded: list[str] = []
+        failed: list[tuple[str, str]] = []
         for filename in os.listdir("./cogs"):
             if filename.endswith(".py") and filename != "__init__.py":
                 try:
                     await self.load_extension(f"cogs.{filename[:-3]}")
                     print(f"{GREEN}✅ Loaded cog: {filename}{RESET}")
+                    loaded.append(filename)
                 except Exception as e:
                     print(f"{RED}❌ Failed to load {filename}:{RESET} {e}")
+                    failed.append((filename, str(e)))
+
+        if loaded:
+            print(f"{GREEN}🧩 Cogs loaded ({len(loaded)}):{RESET} {', '.join(sorted(loaded))}")
+        if failed:
+            print(f"{RED}🧩 Cogs failed ({len(failed)}):{RESET}")
+            for name, err in failed:
+                print(f"{RED} - {name}:{RESET} {err}")
 
         # Register /synccommands command
         self.tree.add_command(self.sync_commands)
+
+    async def on_ready(self):
+        # Avoid re-syncing on reconnects
+        if not self._did_global_sync:
+            try:
+                synced = await self.tree.sync()
+                print(f"{GREEN}🔁 Global slash commands synced: {len(synced)}{RESET}")
+            except Exception as e:
+                print(f"{RED}⚠️ Slash sync failed: {e}{RESET}")
+            self._did_global_sync = True
+
+        # Presence / status
+        try:
+            activity_name = f"/help | {len(self.guilds)} servers"
+            await self.change_presence(
+                status=discord.Status.online,
+                activity=discord.Activity(type=discord.ActivityType.listening, name=activity_name)
+            )
+        except Exception as e:
+            print(f"{YELLOW}⚠️ Failed to set presence: {e}{RESET}")
+
+        print(f"{YELLOW}🔓 Logged in as {self.user}{RESET}")
+        print(f"{CYAN}📅 Ready at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{RESET}")
+        print(f"{RED}🌍 Connected to:{RESET}")
+        for guild in self.guilds:
+            print(f"{BLUE} - {guild.name} ({guild.id}){RESET}")
+        print(f"{RED}🔧 Cogs Loaded: {list(self.cogs.keys())}{RESET}")
 
     @app_commands.command(name="synccommands", description="Manually sync slash commands to this server.")
     async def sync_commands(self, interaction: discord.Interaction):
@@ -75,21 +114,6 @@ async def syncguild(ctx: commands.Context):
         await ctx.send(f"✅ Synced {len(synced)} commands to this server.")
     except Exception as e:
         await ctx.send(f"⚠️ Sync failed: {e}")
-
-    async def on_ready(self):
-        try:
-            synced = await self.tree.sync()
-            print(f"{GREEN}🔁 Global slash commands synced: {len(synced)}{RESET}")
-        except Exception as e:
-            print(f"{RED}⚠️ Slash sync failed: {e}{RESET}")
-
-        await self.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="/help"))
-        print(f"{YELLOW}🔓 Logged in as {self.user}{RESET}")
-        print(f"{CYAN}📅 Ready at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{RESET}")
-        print(f"{RED}🌍 Connected to:{RESET}")
-        for guild in self.guilds:
-            print(f"{BLUE} - {guild.name} ({guild.id}){RESET}")
-        print(f"{RED}🔧 Cogs Loaded: {list(self.cogs.keys())}{RESET}")
 
 # Initialize bot
 bot = JengBot()

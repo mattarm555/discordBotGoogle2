@@ -213,6 +213,9 @@ class SlotsView(View):
         if total_win:
             add_currency(str(self.user_id), total_win, guild_id=guild_id)
 
+        # Post-spin balance (after bet + payout)
+        balance_after = get_balance(str(self.user_id), guild_id=guild_id)
+
         grid = render_window_highlight(window, PAYLINES[self.lines])
         active_names = ", ".join(LINE_LABELS[:self.lines])
         desc = (
@@ -239,6 +242,9 @@ class SlotsView(View):
             color = discord.Color.red()
         footer = f"Net: {'+' if net>0 else ''}{net} (Win {total_win})"
         embed = discord.Embed(title="🎰 Slots", description=desc, color=color)
+        embed.add_field(name="🎁 Payout", value=f"{total_win:,}", inline=True)
+        embed.add_field(name="🧾 Net", value=f"{'+' if net > 0 else ''}{net:,}", inline=True)
+        embed.add_field(name="💰 Balance", value=f"{balance_after:,}", inline=True)
         embed.set_footer(text=footer)
         # Record stats
         self.cog.record_spin(user_id=str(self.user_id), guild_id=guild_id, bet=total_bet, win=total_win, lines=self.lines, net=net)
@@ -558,6 +564,9 @@ class Slots(commands.Cog):
         if total_win:
             add_currency(uid, total_win, guild_id=guild_id)
 
+        # Post-spin balance (after bet + payout)
+        balance_after = get_balance(uid, guild_id=guild_id)
+
         grid = render_window_highlight(window, PAYLINES[lines])
         active_names = ", ".join(LINE_LABELS[:lines])
         desc = (
@@ -583,6 +592,9 @@ class Slots(commands.Cog):
             color = discord.Color.red()
         footer = f"Net: {'+' if net>0 else ''}{net} (Win {total_win})"
         embed = discord.Embed(title="🎰 Slots", description=desc, color=color)
+        embed.add_field(name="🎁 Payout", value=f"{total_win:,}", inline=True)
+        embed.add_field(name="🧾 Net", value=f"{'+' if net > 0 else ''}{net:,}", inline=True)
+        embed.add_field(name="💰 Balance", value=f"{balance_after:,}", inline=True)
         embed.set_footer(text=footer)
 
         # Record stats

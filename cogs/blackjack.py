@@ -456,6 +456,9 @@ class BlackjackView(View):
         
         if payout > 0:
             add_currency(uid, payout, guild_id=guild_id)
+
+        # Post-hand balance (after wager already removed + payout applied)
+        balance_after = get_balance(uid, guild_id=guild_id)
         
         # Send the result message as embed
         if ("you win" in message.lower() or "blackjack!" in message.lower() or 
@@ -470,6 +473,7 @@ class BlackjackView(View):
             title = "💸 You Lose"
         
         result_embed = discord.Embed(title=title, description=message, color=embed_color)
+        result_embed.add_field(name="💰 Balance", value=f"{balance_after:,} coins", inline=False)
         try:
             await interaction.followup.send(embed=result_embed)
         except:

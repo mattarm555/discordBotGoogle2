@@ -26,14 +26,51 @@ def _load_json(path: str):
     return {}
 
 
+def _load_cfg() -> dict:
+    """Load casino_config.json and normalize to {"guilds": {guild_id: {...}}}."""
+    data = _load_json(CASINO_CONFIG_FILE)
+    if isinstance(data, dict) and isinstance(data.get("guilds"), dict):
+        return data
+    # Back-compat: old shape stored guild configs at the top level
+    if isinstance(data, dict):
+        return {"guilds": data}
+    return {"guilds": {}}
+
+
+def _get_guild_cfg(guild_id: str) -> dict:
+    cfg = _load_cfg()
+    guilds = cfg.get("guilds", {})
+    if not isinstance(guilds, dict):
+        return {}
+    g = guilds.get(str(guild_id), {})
+    return g if isinstance(g, dict) else {}
+
+
+def get_casino_bet_limits(guild_id: str | None) -> tuple[int, int]:
+    """Return (min_bet, max_bet) for casino games in this guild."""
+    default_min = 1
+    # Preserve roulette's historical default unless server sets casino limits
+    default_max = 10000
+    if not guild_id:
+        return default_min, default_max
+    try:
+        g = _get_guild_cfg(str(guild_id))
+        if "casino_min_bet" in g or "casino_max_bet" in g:
+            mn = int(g.get("casino_min_bet", default_min))
+            mx = int(g.get("casino_max_bet", default_max))
+            mn = max(1, mn)
+            mx = max(mn, mx)
+            return mn, mx
+    except Exception:
+        pass
+    return default_min, default_max
+
+
 def get_blackjack_cooldown_seconds(guild_id: str | None) -> int:
     if not guild_id:
         return 15
-    cfg = _load_json(CASINO_CONFIG_FILE)
-    g = cfg.get(str(guild_id), {}) if isinstance(cfg, dict) else {}
-    if not isinstance(g, dict):
-        return 15
     try:
+        g = _get_guild_cfg(str(guild_id))
         sec = int(g.get("blackjack_cooldown", 15))
     except Exception:
         sec = 15
@@ -236,10 +273,14 @@ class Roulette(commands.Cog):
             )
             return
 
-        # Bet limits similar to slots default range
-        if bet < 1 or bet > 100000:
+        min_bet, max_bet = get_casino_bet_limits(gid)
+        if bet < min_bet or bet > max_bet:
             await interaction.response.send_message(
-                embed=Embed(title="❌ Invalid Bet", description="Bet must be between 1 and 10000.", color=discord.Color.red()),
+                embed=Embed(
+                    title="❌ Invalid Bet",
+                    description=f"Bet must be between {min_bet:,} and {max_bet:,}.",
+                    color=discord.Color.red(),
+                ),
                 ephemeral=True,
             )
             return

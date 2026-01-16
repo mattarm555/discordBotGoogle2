@@ -369,6 +369,19 @@ class BlackjackView(View):
         
         uid = str(self.ctx.user.id)
         guild_id = str(interaction.guild.id) if interaction.guild else None
+
+        # Enforce server max bet on double-down
+        try:
+            _mn, mx = self.cog.get_casino_bet_limits(guild_id)
+            if (self.wager * 2) > mx:
+                await interaction.response.send_message(
+                    f"❌ Doubling would exceed the max bet ({mx:,}).",
+                    ephemeral=True,
+                )
+                return
+        except Exception:
+            pass
+
         current_balance = get_balance(uid, guild_id=guild_id)
         if current_balance < self.wager:
             try:
@@ -582,6 +595,24 @@ class Blackjack(commands.Cog):
         except Exception:
             return 15
 
+    def get_casino_bet_limits(self, guild_id: str | None) -> tuple[int, int]:
+        """Return (min_bet, max_bet) for casino games in this guild (blackjack/roulette)."""
+        default_min = 1
+        default_max = 100000
+        if not guild_id:
+            return default_min, default_max
+        try:
+            cfg = self._get_guild_cfg(str(guild_id))
+            if "casino_min_bet" in cfg or "casino_max_bet" in cfg:
+                mn = int(cfg.get("casino_min_bet", default_min))
+                mx = int(cfg.get("casino_max_bet", default_max))
+                mn = max(1, mn)
+                mx = max(mn, mx)
+                return mn, mx
+        except Exception:
+            pass
+        return default_min, default_max
+
     def _bj_cooldown_remaining(self, guild_id: str | None, uid: str, cooldown_sec: int) -> int:
         if not guild_id:
             return 0
@@ -753,8 +784,8 @@ class Blackjack(commands.Cog):
         embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after} coins", inline=True)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="blackjack", description="Play a hand of blackjack. Wager between 1 and 100000.")
-    @app_commands.describe(wager="Amount to wager (1-100000)")
+    @app_commands.command(name="blackjack", description="Play a hand of blackjack. Bet limits are server-configurable.")
+    @app_commands.describe(wager="Amount to wager")
     async def blackjack(self, interaction: Interaction, wager: int):
         debug_command('blackjack', interaction.user, interaction.guild, wager=wager)
         uid = str(interaction.user.id)
@@ -781,11 +812,16 @@ class Blackjack(commands.Cog):
         except Exception:
             # Fail-open on any unexpected error to avoid blocking users
             pass
-        if wager < 1 or wager > 100000:
-            embed = discord.Embed(title="❌ Invalid Wager", description="Wager must be between 1 and 100000.", color=discord.Color.red())
+        guild_id = str(interaction.guild.id) if interaction.guild else None
+        min_bet, max_bet = self.get_casino_bet_limits(guild_id)
+        if wager < min_bet or wager > max_bet:
+            embed = discord.Embed(
+                title="❌ Invalid Wager",
+                description=f"Wager must be between {min_bet:,} and {max_bet:,}.",
+                color=discord.Color.red(),
+            )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        guild_id = str(interaction.guild.id) if interaction.guild else None
         bal = get_balance(uid, guild_id=guild_id)
         if bal < wager:
             embed = discord.Embed(title="❌ Insufficient Funds", description=f"You need {wager} coins but only have {bal} coins.", color=discord.Color.red())
@@ -908,6 +944,40 @@ class Blackjack(commands.Cog):
         cfg["blackjack_cooldown"] = int(seconds)
         self._set_guild_cfg(str(guild.id), cfg)
         await interaction.response.send_message(embed=discord.Embed(title="✅ Casino Interval Set", description=f"Casino cooldown set to {seconds}s (blackjack/roulette).", color=discord.Color.green()), ephemeral=True)
+
+    @app_commands.command(name="casino_bet_limit", description="Admin: Set this server's casino bet limits (blackjack/roulette).")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(min_bet="Minimum bet (>= 1)", max_bet="Maximum bet (>= min_bet)")
+    async def casino_bet_limit(self, interaction: Interaction, min_bet: int, max_bet: int):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Use this in a server.", ephemeral=True)
+            return
+
+        try:
+            mn = int(min_bet)
+            mx = int(max_bet)
+        except Exception:
+            await interaction.response.send_message("❌ Invalid numbers.", ephemeral=True)
+            return
+
+        if mn < 1 or mx < mn:
+            await interaction.response.send_message("❌ Invalid range.", ephemeral=True)
+            return
+
+        cfg = self._get_guild_cfg(str(guild.id))
+        cfg["casino_min_bet"] = int(mn)
+        cfg["casino_max_bet"] = int(mx)
+        self._set_guild_cfg(str(guild.id), cfg)
+
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="✅ Casino Bet Limits Set",
+                description=f"Casino bet limits are now **{mn:,}–{mx:,}** (blackjack + roulette).",
+                color=discord.Color.green(),
+            ),
+            ephemeral=True,
+        )
 
 
 class BalanceLeaderboardView(View):

@@ -237,7 +237,7 @@ class Roulette(commands.Cog):
             return
 
         # Bet limits similar to slots default range
-        if bet < 1 or bet > 10000:
+        if bet < 1 or bet > 100000:
             await interaction.response.send_message(
                 embed=Embed(title="❌ Invalid Bet", description="Bet must be between 1 and 10000.", color=discord.Color.red()),
                 ephemeral=True,

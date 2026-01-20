@@ -7,6 +7,7 @@ from utils.economy import get_rebirths, increment_rebirths, set_rebirths
 REBIRTH_CONFIG_FILE = "rebirth_config.json"  # { guild_id: { "cost": int } }
 
 DEFAULT_REBIRTH_COST = 1_000_000
+DEFAULT_MAX_REBIRTHS = 1_000_000  # effectively unlimited unless configured
 
 
 def _load_json(path: str):
@@ -59,6 +60,33 @@ def set_rebirth_cost(guild_id: int | str, cost: int):
     if not isinstance(cfg, dict):
         cfg = {}
     cfg.setdefault(str(guild_id), {})["cost"] = int(cost)
+    _save_json(REBIRTH_CONFIG_FILE, cfg)
+
+
+def get_max_rebirths(guild_id: int | str) -> int:
+    """Return the max allowed rebirths for this guild.
+
+    If not set, returns a very large default (effectively unlimited).
+    """
+    cfg = _load_json(REBIRTH_CONFIG_FILE)
+    g = cfg.get(str(guild_id), {}) if isinstance(cfg, dict) else {}
+    try:
+        mx = int(g.get("max_rebirths", DEFAULT_MAX_REBIRTHS))
+    except Exception:
+        mx = DEFAULT_MAX_REBIRTHS
+    # Clamp to a sane range to avoid broken configs
+    return max(0, min(mx, DEFAULT_MAX_REBIRTHS))
+
+
+def set_max_rebirths(guild_id: int | str, max_rebirths: int):
+    """Set the max allowed rebirths for this guild.
+
+    Set to 0 to prevent rebirthing.
+    """
+    cfg = _load_json(REBIRTH_CONFIG_FILE)
+    if not isinstance(cfg, dict):
+        cfg = {}
+    cfg.setdefault(str(guild_id), {})["max_rebirths"] = int(max_rebirths)
     _save_json(REBIRTH_CONFIG_FILE, cfg)
 
 

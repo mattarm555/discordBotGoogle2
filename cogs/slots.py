@@ -545,7 +545,7 @@ class Slots(commands.Cog):
         bal = get_balance(uid, guild_id=guild_id)
         if bal < total_bet:
             await interaction.response.send_message(
-                f"❌ You need {total_bet} coins but only have {bal} coins.",
+                f"❌ You need {total_bet:,} coins but only have {bal:,} coins.",
                 ephemeral=True
             )
             return
@@ -570,7 +570,7 @@ class Slots(commands.Cog):
         grid = render_window_highlight(window, PAYLINES[lines])
         active_names = ", ".join(LINE_LABELS[:lines])
         desc = (
-            f"**Bet:** {total_bet}  |  **Lines:** {lines}\n"
+            f"**Bet:** {total_bet:,}  |  **Lines:** {lines}\n"
             f"Active Lines: {active_names}\n\n"
             f"```\n{grid}\n```\n"
         )
@@ -590,7 +590,7 @@ class Slots(commands.Cog):
             color = discord.Color.yellow()
         else:
             color = discord.Color.red()
-        footer = f"Net: {'+' if net>0 else ''}{net} (Win {total_win})"
+        footer = f"Net: {'+' if net>0 else ''}{net:,} (Win {total_win:,})"
         embed = discord.Embed(title="🎰 Slots", description=desc, color=color)
         embed.add_field(name="🎁 Payout", value=f"{total_win:,}", inline=True)
         embed.add_field(name="🧾 Net", value=f"{'+' if net > 0 else ''}{net:,}", inline=True)

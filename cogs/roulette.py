@@ -288,7 +288,7 @@ class Roulette(commands.Cog):
         bal = get_balance(uid, guild_id=gid)
         if bal < bet:
             await interaction.response.send_message(
-                embed=Embed(title="❌ Insufficient Funds", description=f"You need {bet} coins but only have {bal} coins.", color=discord.Color.red()),
+                embed=Embed(title="❌ Insufficient Funds", description=f"You need {bet:,} coins but only have {bal:,} coins.", color=discord.Color.red()),
                 ephemeral=True,
             )
             return

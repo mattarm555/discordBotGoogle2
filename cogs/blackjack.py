@@ -241,7 +241,7 @@ class BlackjackView(View):
                 if player_file:
                     files.append(player_file)
         
-        embed.set_footer(text=f"Wager: {self.wager}")
+        embed.set_footer(text=f"Wager: {self.wager:,}")
         
         # Update button states
         self.update_buttons()
@@ -311,7 +311,7 @@ class BlackjackView(View):
         add_currency(uid, self.wager, guild_id=guild_id)
         # Attempt to notify user if possible
         try:
-            embed = discord.Embed(title="Blackjack Closed", description=f"Game closed due to {reason}. Wager refunded ({self.wager}).", color=discord.Color.orange())
+            embed = discord.Embed(title="Blackjack Closed", description=f"Game closed due to {reason}. Wager refunded ({self.wager:,}).", color=discord.Color.orange())
             if self.ctx.channel:
                 await self.ctx.channel.send(content=self.ctx.user.mention, embed=embed)
         except Exception:
@@ -385,9 +385,9 @@ class BlackjackView(View):
         current_balance = get_balance(uid, guild_id=guild_id)
         if current_balance < self.wager:
             try:
-                await interaction.response.send_message(f"❌ Insufficient funds to double down! You need {self.wager} coins but only have {current_balance} coins.", ephemeral=True)
+                await interaction.response.send_message(f"❌ Insufficient funds to double down! You need {self.wager:,} coins but only have {current_balance:,} coins.", ephemeral=True)
             except:
-                await interaction.followup.send(f"❌ Insufficient funds to double down! You need {self.wager} coins but only have {current_balance} coins.", ephemeral=True)
+                await interaction.followup.send(f"❌ Insufficient funds to double down! You need {self.wager:,} coins but only have {current_balance:,} coins.", ephemeral=True)
             return
         
         # Double the wager and remove from balance
@@ -420,39 +420,39 @@ class BlackjackView(View):
         # Handle main game
         if p_value > 21:
             # Player busted
-            message += f"You busted! Lost {self.wager} coins."
+            message += f"You busted! Lost {self.wager:,} coins."
         elif d_value > 21:
             # Dealer busted, player wins
             if p_blackjack and not self.doubled:
                 # Natural blackjack pays 3:2
                 payout = int(self.wager * 2.5)
-                message += f"Blackjack! You win {payout} coins!"
+                message += f"Blackjack! You win {payout:,} coins!"
             else:
                 # Regular win pays 1:1
                 payout = self.wager * 2
-                message += f"Dealer busts! You win {payout} coins!"
+                message += f"Dealer busts! You win {payout:,} coins!"
         elif p_blackjack and d_blackjack:
             # Both blackjack = push
             payout = self.wager
-            message += f"Both have blackjack! Push. {payout} coins returned."
+            message += f"Both have blackjack! Push. {payout:,} coins returned."
         elif p_blackjack and not d_blackjack:
             # Player blackjack wins 3:2
             payout = int(self.wager * 2.5)
-            message += f"Blackjack! You win {payout} coins!"
+            message += f"Blackjack! You win {payout:,} coins!"
         elif d_blackjack and not p_blackjack:
             # Dealer blackjack wins
-            message += f"Dealer blackjack! You lose {self.wager} coins."
+            message += f"Dealer blackjack! You lose {self.wager:,} coins."
         elif p_value > d_value:
             # Player wins
             payout = self.wager * 2
-            message += f"You win! +{payout} coins!"
+            message += f"You win! +{payout:,} coins!"
         elif p_value == d_value:
             # Push
             payout = self.wager
-            message += f"Push! {payout} coins returned."
+            message += f"Push! {payout:,} coins returned."
         else:
             # Dealer wins
-            message += f"Dealer wins! You lose {self.wager} coins."
+            message += f"Dealer wins! You lose {self.wager:,} coins."
         
         if payout > 0:
             add_currency(uid, payout, guild_id=guild_id)
@@ -723,7 +723,7 @@ class Blackjack(commands.Cog):
         uid = str(target.id)
         guild_id = str(interaction.guild.id) if interaction.guild else None
         bal = get_balance(uid, guild_id=guild_id)
-        embed = discord.Embed(title="💰 Balance", description=f"{target.mention} has **{bal}** coins.", color=discord.Color.gold())
+        embed = discord.Embed(title="💰 Balance", description=f"{target.mention} has **{bal:,}** coins.", color=discord.Color.gold())
         embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
         await interaction.response.send_message(embed=embed)
 
@@ -750,7 +750,7 @@ class Blackjack(commands.Cog):
         receiver_id = str(user.id)
         sender_balance = get_balance(sender_id, guild_id=guild_id)
         if amount > sender_balance:
-            await interaction.response.send_message(embed=discord.Embed(title="❌ Insufficient Funds", description=f"You tried to pay {amount} but only have {sender_balance} coins.", color=discord.Color.red()), ephemeral=True)
+            await interaction.response.send_message(embed=discord.Embed(title="❌ Insufficient Funds", description=f"You tried to pay {amount:,} but only have {sender_balance:,} coins.", color=discord.Color.red()), ephemeral=True)
             return
         # Perform transfer atomically (read -> validate -> write both)
         remove_currency(sender_id, amount, guild_id=guild_id)
@@ -759,11 +759,11 @@ class Blackjack(commands.Cog):
         receiver_after = get_balance(receiver_id, guild_id=guild_id)
         embed = discord.Embed(
             title="💸 Payment Sent",
-            description=f"{interaction.user.mention} paid {user.mention} **{amount}** coins.",
+            description=f"{interaction.user.mention} paid {user.mention} **{amount:,}** coins.",
             color=discord.Color.green()
         )
-        embed.add_field(name="Your New Balance", value=f"{sender_after} coins", inline=True)
-        embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after} coins", inline=True)
+        embed.add_field(name="Your New Balance", value=f"{sender_after:,} coins", inline=True)
+        embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after:,} coins", inline=True)
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="add", description="Add coins to a user's server balance (bot-admin only)")
@@ -784,8 +784,8 @@ class Blackjack(commands.Cog):
         receiver_id = str(user.id)
         add_currency(receiver_id, int(amount), guild_id=guild_id)
         receiver_after = get_balance(receiver_id, guild_id=guild_id)
-        embed = discord.Embed(title="✅ Coins Added", description=f"{user.mention} received **{amount}** coins.", color=discord.Color.green())
-        embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after} coins", inline=True)
+        embed = discord.Embed(title="✅ Coins Added", description=f"{user.mention} received **{int(amount):,}** coins.", color=discord.Color.green())
+        embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after:,} coins", inline=True)
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="blackjack", description="Play a hand of blackjack. Bet limits are server-configurable.")
@@ -828,7 +828,7 @@ class Blackjack(commands.Cog):
             return
         bal = get_balance(uid, guild_id=guild_id)
         if bal < wager:
-            embed = discord.Embed(title="❌ Insufficient Funds", description=f"You need {wager} coins but only have {bal} coins.", color=discord.Color.red())
+            embed = discord.Embed(title="❌ Insufficient Funds", description=f"You need {wager:,} coins but only have {bal:,} coins.", color=discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         # remove wager upfront
@@ -853,7 +853,7 @@ class Blackjack(commands.Cog):
         embed = discord.Embed(title="🂠 Blackjack", color=discord.Color.blurple())
         embed.add_field(name="👤 Your Hand", value=format_hand_with_total(view.player_hand), inline=False)
         embed.add_field(name="🤖 Dealer's Hand", value=format_hand(view.dealer_hand, hide_second=True), inline=False)
-        embed.set_footer(text=f"Wager: {wager}")
+        embed.set_footer(text=f"Wager: {wager:,}")
 
         # Add combined image if available
         files = []
@@ -1009,7 +1009,7 @@ class BalanceLeaderboardView(View):
             display_name = member.display_name if member else f"<@{uid}>"
             if member and first_member is None:
                 first_member = member
-            embed.add_field(name=f"#{idx} {display_name}", value=f"{bal} coins", inline=False)
+            embed.add_field(name=f"#{idx} {display_name}", value=f"{bal:,} coins", inline=False)
         if first_member:
             embed.set_thumbnail(url=first_member.avatar.url if first_member.avatar else first_member.default_avatar.url)
         return embed

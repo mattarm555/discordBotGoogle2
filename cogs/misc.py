@@ -9,7 +9,13 @@ import logging
 import json
 from pathlib import Path
 from typing import Optional
-from utils.botadmin import app_check_bot_admin, add_bot_admin_role, remove_bot_admin_role, get_bot_admin_role_ids
+from utils.botadmin import (
+    app_check_bot_admin,
+    app_check_can_manage_bot_permissions,
+    add_bot_admin_role,
+    remove_bot_admin_role,
+    get_bot_admin_role_ids,
+)
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -62,6 +68,7 @@ class Misc(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
     @app_commands.command(name="listpermissions", description="List all roles with bot admin permissions for this server.")
+    @app_check_can_manage_bot_permissions()
     async def listpermissions(self, interaction: Interaction):
         guild_id = str(interaction.guild.id)
         perms = get_bot_admin_role_ids(guild_id)
@@ -83,7 +90,7 @@ class Misc(commands.Cog):
     
     @app_commands.command(name="removepermissions", description="Remove a role from bot admin permissions for this server.")
     @app_commands.describe(role="Role to remove from bot admin permissions")
-    @app_check_bot_admin()
+    @app_check_can_manage_bot_permissions()
     async def removepermissions(self, interaction: Interaction, role: discord.Role):
         guild_id = str(interaction.guild.id)
         perms = set(get_bot_admin_role_ids(guild_id))
@@ -97,7 +104,7 @@ class Misc(commands.Cog):
     
     @app_commands.command(name="setpermissions", description="Set a role as bot admin for this server.")
     @app_commands.describe(role="Role to grant bot admin permissions")
-    @app_check_bot_admin()
+    @app_check_can_manage_bot_permissions()
     async def setpermissions(self, interaction: Interaction, role: discord.Role):
         guild_id = str(interaction.guild.id)
         perms = set(get_bot_admin_role_ids(guild_id))

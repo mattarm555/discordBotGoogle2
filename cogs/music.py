@@ -35,6 +35,7 @@ import os
 import random
 import sys
 import shutil
+from utils.botadmin import is_bot_admin
 
 
 # --- Persistent Queue File ---
@@ -1211,11 +1212,11 @@ class Music(commands.Cog):
     @app_commands.command(name="setdj", description="Assign or update the DJ role for this server.")
     @app_commands.describe(role="Role that will have permission to control music features")
     async def set_dj(self, interaction: Interaction, role: discord.Role):
-        # Require manage_guild to set
-        if not interaction.user.guild_permissions.manage_guild and interaction.user != interaction.guild.owner:
+        # Bot-admin role check (configured via /setpermissions)
+        if not is_bot_admin(interaction.user):
             await interaction.response.send_message(embed=Embed(
                 title="❌ Missing Permission",
-                description="You need Manage Server to set the DJ role.",
+                description="You do not have permission to set the DJ role.",
                 color=discord.Color.red()
             ), ephemeral=True)
             return
@@ -1229,10 +1230,10 @@ class Music(commands.Cog):
 
     @app_commands.command(name="cleardj", description="Remove the configured DJ role (revert to everyone allowed).")
     async def clear_dj(self, interaction: Interaction):
-        if not interaction.user.guild_permissions.manage_guild and interaction.user != interaction.guild.owner:
+        if not is_bot_admin(interaction.user):
             await interaction.response.send_message(embed=Embed(
                 title="❌ Missing Permission",
-                description="You need Manage Server to clear the DJ role.",
+                description="You do not have permission to clear the DJ role.",
                 color=discord.Color.red()
             ), ephemeral=True)
             return

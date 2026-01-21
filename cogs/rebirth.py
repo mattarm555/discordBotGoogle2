@@ -16,6 +16,7 @@ from utils.rebirth import (
     get_rebirth_count,
 )
 from utils.debug import debug_command
+from utils.botadmin import app_check_bot_admin
 
 SHOP_INV_FILE = "shop_inventory.json"  # { guild_id: { user_id: { item_name: count } } }
 
@@ -25,7 +26,7 @@ class Rebirth(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="setmaxrebirths", description="Admin: Set the maximum number of rebirths allowed in this server.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(max_rebirths="Max rebirths allowed (0 disables rebirth; default is effectively unlimited)")
     async def set_max_rebirths_cmd(self, interaction: Interaction, max_rebirths: int):
         guild = interaction.guild
@@ -73,7 +74,7 @@ class Rebirth(commands.Cog):
         )
 
     @app_commands.command(name="setrebirthcost", description="Admin: Set how many coins are required to /rebirth in this server.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(cost="Coins required to rebirth")
     async def set_rebirth_cost(self, interaction: Interaction, cost: int):
         guild = interaction.guild

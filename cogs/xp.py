@@ -89,6 +89,8 @@ class XP(commands.Cog):
         cfg.setdefault("top1_coin_bonus", 0)
         cfg.setdefault("top2_xp_bonus", 0)
         cfg.setdefault("top2_coin_bonus", 0)
+        cfg.setdefault("top3_xp_bonus", 0)
+        cfg.setdefault("top3_coin_bonus", 0)
         cfg.setdefault("start_ts", None)
         cfg.setdefault("end_ts", None)
         cfg.setdefault("counts", {})
@@ -120,6 +122,8 @@ class XP(commands.Cog):
         top1_coin_bonus = int(cfg.get("top1_coin_bonus") or 0)
         top2_xp_bonus = int(cfg.get("top2_xp_bonus") or 0)
         top2_coin_bonus = int(cfg.get("top2_coin_bonus") or 0)
+        top3_xp_bonus = int(cfg.get("top3_xp_bonus") or 0)
+        top3_coin_bonus = int(cfg.get("top3_coin_bonus") or 0)
         reward_bits: list[str] = []
         if xp_reward:
             reward_bits.append(f"+{xp_reward} XP")
@@ -143,6 +147,13 @@ class XP(commands.Cog):
             if top2_coin_bonus:
                 parts.append(f"+{top2_coin_bonus} coins")
             bonus_lines.append(f"🥈 2nd place bonus: **{' and '.join(parts)}**")
+        if top3_xp_bonus or top3_coin_bonus:
+            parts = []
+            if top3_xp_bonus:
+                parts.append(f"+{top3_xp_bonus} XP")
+            if top3_coin_bonus:
+                parts.append(f"+{top3_coin_bonus} coins")
+            bonus_lines.append(f"🥉 3rd place bonus: **{' and '.join(parts)}**")
         if bonus_lines:
             desc = f"{desc}\n" + "\n".join(bonus_lines)
 
@@ -204,6 +215,8 @@ class XP(commands.Cog):
         top1_coin_bonus = int(cfg.get("top1_coin_bonus") or 0)
         top2_xp_bonus = int(cfg.get("top2_xp_bonus") or 0)
         top2_coin_bonus = int(cfg.get("top2_coin_bonus") or 0)
+        top3_xp_bonus = int(cfg.get("top3_xp_bonus") or 0)
+        top3_coin_bonus = int(cfg.get("top3_coin_bonus") or 0)
 
         participants = [uid for uid, cnt in counts.items() if int(cnt) > 0]
         top5 = self._top_n_counts(counts, n=5)
@@ -242,6 +255,13 @@ class XP(commands.Cog):
             if top2_coin_bonus:
                 bits.append(f"+{top2_coin_bonus} coins")
             bonus_lines.append(f"🥈 2nd place: **{' and '.join(bits)}**")
+        if (top3_xp_bonus or top3_coin_bonus):
+            bits = []
+            if top3_xp_bonus:
+                bits.append(f"+{top3_xp_bonus} XP")
+            if top3_coin_bonus:
+                bits.append(f"+{top3_coin_bonus} coins")
+            bonus_lines.append(f"🥉 3rd place: **{' and '.join(bits)}**")
         if bonus_lines:
             embed.add_field(name="Winner Bonuses", value="\n".join(bonus_lines), inline=False)
 
@@ -273,10 +293,13 @@ class XP(commands.Cog):
             top1_coin_bonus = int(cfg.get("top1_coin_bonus") or 0)
             top2_xp_bonus = int(cfg.get("top2_xp_bonus") or 0)
             top2_coin_bonus = int(cfg.get("top2_coin_bonus") or 0)
+            top3_xp_bonus = int(cfg.get("top3_xp_bonus") or 0)
+            top3_coin_bonus = int(cfg.get("top3_coin_bonus") or 0)
 
             sorted_counts = sorted(counts.items(), key=lambda kv: int(kv[1]), reverse=True)
             top1_uid = sorted_counts[0][0] if len(sorted_counts) >= 1 and int(sorted_counts[0][1]) > 0 else None
             top2_uid = sorted_counts[1][0] if len(sorted_counts) >= 2 and int(sorted_counts[1][1]) > 0 else None
+            top3_uid = sorted_counts[2][0] if len(sorted_counts) >= 3 and int(sorted_counts[2][1]) > 0 else None
 
             # Announce first (so it reflects the final leaderboard)
             await self._announce_week_end(guild, cfg, counts)
@@ -316,6 +339,18 @@ class XP(commands.Cog):
                 if top2_coin_bonus:
                     try:
                         add_currency(str(top2_uid), top2_coin_bonus, guild_id=gid)
+                    except Exception:
+                        pass
+
+            if top3_uid and (top3_xp_bonus or top3_coin_bonus):
+                if top3_xp_bonus:
+                    try:
+                        self._add_xp_record(gid, str(top3_uid), top3_xp_bonus)
+                    except Exception:
+                        pass
+                if top3_coin_bonus:
+                    try:
+                        add_currency(str(top3_uid), top3_coin_bonus, guild_id=gid)
                     except Exception:
                         pass
 
@@ -559,7 +594,9 @@ class XP(commands.Cog):
         top1_xp_bonus="Extra XP for 1st place (optional)",
         top1_coin_bonus="Extra coins for 1st place (optional)",
         top2_xp_bonus="Extra XP for 2nd place (optional)",
-        top2_coin_bonus="Extra coins for 2nd place (optional)"
+        top2_coin_bonus="Extra coins for 2nd place (optional)",
+        top3_xp_bonus="Extra XP for 3rd place (optional)",
+        top3_coin_bonus="Extra coins for 3rd place (optional)"
     )
     async def weeklymessages_setup(
         self,
@@ -573,6 +610,8 @@ class XP(commands.Cog):
         top1_coin_bonus: int = 0,
         top2_xp_bonus: int = 0,
         top2_coin_bonus: int = 0,
+        top3_xp_bonus: int = 0,
+        top3_coin_bonus: int = 0,
     ):
         if not self.has_bot_admin(interaction.user):
             await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
@@ -593,6 +632,8 @@ class XP(commands.Cog):
         cfg["top1_coin_bonus"] = max(0, int(top1_coin_bonus))
         cfg["top2_xp_bonus"] = max(0, int(top2_xp_bonus))
         cfg["top2_coin_bonus"] = max(0, int(top2_coin_bonus))
+        cfg["top3_xp_bonus"] = max(0, int(top3_xp_bonus))
+        cfg["top3_coin_bonus"] = max(0, int(top3_coin_bonus))
         cfg["counts"] = {}
 
         now = time.time()
@@ -611,7 +652,9 @@ class XP(commands.Cog):
         await interaction.followup.send(
             f"✅ Weekly messages leaderboard enabled in {channel.mention}.\n"
             f"Rewards: {cfg['xp_reward']} XP, {cfg['coin_reward']} coins per participant. "
-            f"Bonuses: 1st(+{cfg['top1_xp_bonus']} XP, +{cfg['top1_coin_bonus']} coins), 2nd(+{cfg['top2_xp_bonus']} XP, +{cfg['top2_coin_bonus']} coins).",
+            f"Bonuses: 1st(+{cfg['top1_xp_bonus']} XP, +{cfg['top1_coin_bonus']} coins), "
+            f"2nd(+{cfg['top2_xp_bonus']} XP, +{cfg['top2_coin_bonus']} coins), "
+            f"3rd(+{cfg['top3_xp_bonus']} XP, +{cfg['top3_coin_bonus']} coins).",
             ephemeral=True,
         )
 

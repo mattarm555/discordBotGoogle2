@@ -7,6 +7,7 @@ from discord.ext import commands
 from discord import app_commands, Interaction
 from discord.ui import View, button
 from utils.economy import get_balance, add_currency, remove_currency
+from utils.botadmin import app_check_bot_admin
 import re
 
 # Owner ID (allow overriding via env YOUR_USER_ID)
@@ -454,7 +455,7 @@ class Slots(commands.Cog):
 
     # ---- Admin: set slots cooldown ----
     @app_commands.command(name="slots_set_cooldown", description="Admin: Set per-user cooldown between slot spins (min 1s). Accepts 10, 10s, 2m, 1h.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(duration="Cooldown duration (e.g., 3s, 5s, 10s, 1m)")
     async def slots_set_cooldown(self, interaction: Interaction, duration: str):
         guild = interaction.guild
@@ -471,7 +472,7 @@ class Slots(commands.Cog):
         await interaction.response.send_message(embed=discord.Embed(title="✅ Slots Cooldown Set", description=f"Slots spin cooldown set to {seconds}s.", color=discord.Color.green()), ephemeral=True)
 
     @app_commands.command(name="slots_bet_limit", description="Admin: Set this server's slots bet limits.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(min_bet="Minimum bet (>= 1)", max_bet="Maximum bet (>= min_bet)")
     async def slots_bet_limit(self, interaction: Interaction, min_bet: int, max_bet: int):
         guild = interaction.guild

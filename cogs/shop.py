@@ -18,6 +18,7 @@ import random
 import re
 from utils.debug import debug_command
 from utils.rebirth import get_rebirth_multiplier
+from utils.botadmin import app_check_bot_admin
 
 SHOP_FILE = "shop.json"
 INV_FILE = "shop_inventory.json"
@@ -652,7 +653,7 @@ class Shop(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="setdailyreward", description="Admin: Set this server's /daily reward range (min/max coins).")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(min_amount="Minimum coins for /daily", max_amount="Maximum coins for /daily")
     async def set_daily_reward(self, interaction: Interaction, min_amount: int, max_amount: int):
         guild = interaction.guild
@@ -718,7 +719,7 @@ class Shop(commands.Cog):
 
     # -------- Admin: Set payout interval --------
     @app_commands.command(name="shop_set_interval", description="Admin: Set how often items pay out (e.g., 15m, 1h, 2h30m). Minimum 1 minute.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(duration="Interval between payouts, e.g., 15m, 1h, 2h30m")
     async def shop_set_interval(self, interaction: Interaction, duration: str):
         guild = interaction.guild
@@ -737,7 +738,7 @@ class Shop(commands.Cog):
 
     # -------- Admin: Guild-specific items --------
     @app_commands.command(name="item_add", description="Admin: Add a guild-specific shop item.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(name="Item name (exact)", cost="Purchase cost (coins)", income="Income paid each interval", description="Short description", category="Category for grouping in /shop")
     @app_commands.choices(category=[
         app_commands.Choice(name="🌱 Starter", value="Starter"),
@@ -771,7 +772,7 @@ class Shop(commands.Cog):
         await interaction.response.send_message(embed=Embed(title="✅ Item Added", description=f"Added item {name} (cost {cost}, income {income}, category {cat_label}).", color=discord.Color.green()))
 
     @app_commands.command(name="item_delete", description="Admin: Delete a guild-specific shop item by name.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(name="Item name to delete (exact)")
     async def item_delete(self, interaction: Interaction, name: str):
         guild = interaction.guild
@@ -806,7 +807,7 @@ class Shop(commands.Cog):
 
     # -------- Admin: Wipe coins and owned items (inventory) --------
     @app_commands.command(name="econ_wipe", description="Admin: Wipe all users' coins and their owned items for this server.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     async def econ_wipe(self, interaction: Interaction):
         guild = interaction.guild
         if guild is None:

@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands, Interaction, Embed, ui
 from datetime import datetime
 import pytz
+from utils.botadmin import is_bot_admin
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -77,7 +78,7 @@ class Events(commands.Cog):
     )
     async def event(self, interaction: Interaction, title: str, time: str, location: str, details: str = "", description: str = "Click a button to RSVP!"):
         # Permission check
-        if not interaction.user.guild_permissions.administrator:
+        if not is_bot_admin(interaction.user):
             await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
             return
         await interaction.response.defer()

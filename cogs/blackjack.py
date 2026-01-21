@@ -20,7 +20,7 @@ from utils.economy import (
 from datetime import datetime
 import json
 from datetime import timedelta
-from utils.botadmin import is_bot_admin
+from utils.botadmin import is_bot_admin, app_check_bot_admin
 import re
 from utils.casino_cooldown import cooldown_remaining_seconds, set_last_casino_play
 
@@ -933,7 +933,7 @@ class Blackjack(commands.Cog):
 
     # ---- Admin: set casino interval (shared cooldown for blackjack/roulette) ----
     @app_commands.command(name="casino_set_interval", description="Admin: Set casino game cooldown (blackjack/roulette). Min 10s.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(duration="Cooldown duration (e.g., 10s, 15s, 1m)")
     async def casino_set_interval(self, interaction: Interaction, duration: str):
         guild = interaction.guild
@@ -950,7 +950,7 @@ class Blackjack(commands.Cog):
         await interaction.response.send_message(embed=discord.Embed(title="✅ Casino Interval Set", description=f"Casino cooldown set to {seconds}s (blackjack/roulette).", color=discord.Color.green()), ephemeral=True)
 
     @app_commands.command(name="casino_bet_limit", description="Admin: Set this server's casino bet limits (blackjack/roulette).")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(min_bet="Minimum bet (>= 1)", max_bet="Maximum bet (>= min_bet)")
     async def casino_bet_limit(self, interaction: Interaction, min_bet: int, max_bet: int):
         guild = interaction.guild

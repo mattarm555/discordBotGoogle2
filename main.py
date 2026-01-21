@@ -33,6 +33,28 @@ class JengBot(commands.Bot):
         self.sniped_messages = {}
         self._did_global_sync = False
 
+    async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        # Provide user-friendly permission errors for app_commands.check decorators.
+        if isinstance(error, app_commands.CheckFailure):
+            msg = str(error) if str(error) else "❌ You do not have permission to use this command."
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(msg, ephemeral=True)
+                else:
+                    await interaction.response.send_message(msg, ephemeral=True)
+            except Exception:
+                pass
+            return
+
+        # Fallback: surface a minimal error message without leaking internals.
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send("⚠️ Something went wrong while running that command.", ephemeral=True)
+            else:
+                await interaction.response.send_message("⚠️ Something went wrong while running that command.", ephemeral=True)
+        except Exception:
+            pass
+
     async def setup_hook(self):
         # Load cogs
         loaded: list[str] = []

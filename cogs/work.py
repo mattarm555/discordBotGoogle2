@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timedelta
 from utils.economy import add_currency, get_balance
 from utils.rebirth import get_rebirth_multiplier
+from utils.botadmin import is_bot_admin
 
 COOLDOWN_FILE = "work_cooldowns.json"
 CONFIG_FILE = "work_config.json"  # per-guild config, e.g., cooldown seconds
@@ -315,11 +316,10 @@ class Work(commands.Cog):
                 ephemeral=True,
             )
             return
-        # Require admin role/permission
-        perms = interaction.user.guild_permissions
-        if not (perms.administrator or perms.manage_guild):
+        # Bot-admin role check (configured via /setpermissions)
+        if not is_bot_admin(interaction.user):
             await interaction.response.send_message(
-                embed=Embed(title="❌ Missing Permission", description="You need Administrator or Manage Server to change the cooldown.", color=discord.Color.red()),
+                embed=Embed(title="❌ Missing Permission", description="You do not have permission to change the cooldown.", color=discord.Color.red()),
                 ephemeral=True,
             )
             return
@@ -350,10 +350,10 @@ class Work(commands.Cog):
             )
             return
 
-        perms = interaction.user.guild_permissions
-        if not (perms.administrator or perms.manage_guild):
+        # Bot-admin role check (configured via /setpermissions)
+        if not is_bot_admin(interaction.user):
             await interaction.response.send_message(
-                embed=Embed(title="❌ Missing Permission", description="You need Administrator or Manage Server to change the work reward.", color=discord.Color.red()),
+                embed=Embed(title="❌ Missing Permission", description="You do not have permission to change the work reward.", color=discord.Color.red()),
                 ephemeral=True,
             )
             return

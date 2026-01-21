@@ -9,6 +9,7 @@ import logging
 import json
 from pathlib import Path
 from typing import Optional
+from utils.botadmin import app_check_bot_admin
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -90,7 +91,7 @@ class Misc(commands.Cog):
     
     @app_commands.command(name="removepermissions", description="Remove a role from bot admin permissions for this server.")
     @app_commands.describe(role="Role to remove from bot admin permissions")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     async def removepermissions(self, interaction: Interaction, role: discord.Role):
         CONFIG_FILE = "xp_config.json"
         def load_json(file):
@@ -117,7 +118,7 @@ class Misc(commands.Cog):
     
     @app_commands.command(name="setpermissions", description="Set a role as bot admin for this server.")
     @app_commands.describe(role="Role to grant bot admin permissions")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     async def setpermissions(self, interaction: Interaction, role: discord.Role):
         # Load config
         CONFIG_FILE = "xp_config.json"
@@ -361,8 +362,7 @@ class Misc(commands.Cog):
 
     # Admin: Send a message as the bot with optional embed formatting
     @app_commands.command(name="bot_say", description="Admin: Make the bot send a message, with optional embed formatting.")
-    @app_commands.checks.has_permissions(administrator=True)
-    @commands.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(
         channel="Channel to post in (defaults to current)",
         message="Plain text content (required if not using embed)",

@@ -10,6 +10,7 @@ import random
 import asyncio
 import time
 from utils.debug import debug_command
+from utils.botadmin import is_bot_admin, app_check_bot_admin
 
 logger = logging.getLogger('jeng.reactionroles')
 logger.setLevel(logging.INFO)
@@ -499,16 +500,15 @@ class ReactionRoles(commands.Cog):
         await interaction.edit_original_response(embed=embed)
 
     @app_commands.command(name='reactionroles_create', description='Create 1..50 color roles.')
-    @app_commands.checks.has_permissions(manage_roles=True)
+    @app_check_bot_admin()
     @app_commands.describe(count=f'Number of color roles to create (1-{MAX_COLOR_COUNT})', base_name='Base name for the roles', interactive='Use interactive picker to choose colors', batch_size='Create roles in batches of this size to avoid rate limits')
     async def create_roles(self, interaction: Interaction, count: int, base_name: Optional[str] = 'Color', interactive: Optional[bool] = False, batch_size: Optional[int] = 10):
         # Defer immediately (public response) so we can edit it later.
         await interaction.response.defer(thinking=True, ephemeral=False)
         debug_command('reactionroles_create', interaction.user, guild=interaction.guild, count=count, base_name=base_name)
-        # permission check
-        is_admin = interaction.user.guild_permissions.manage_roles or interaction.user.guild_permissions.administrator
+        # permission check (configured via /setpermissions)
         app_owner = await self.bot.application_info()
-        if not (is_admin or interaction.user.id == app_owner.owner.id):
+        if not is_bot_admin(interaction.user, allow_owner_id=app_owner.owner.id):
             # edit the original (deferred) response with an error embed
             embed = discord.Embed(title='❌ Permission Denied', description='You do not have permission to use this command.', color=discord.Color.red())
             await interaction.edit_original_response(embed=embed)
@@ -920,15 +920,14 @@ class ReactionRoles(commands.Cog):
                     logger.exception('[ReactionRoles] Additionally failed to notify user about the create_roles failure')
 
     @app_commands.command(name='reactionroles_post', description='Post a reaction-roles message for a previously created role set')
-    @app_commands.checks.has_permissions(manage_roles=True)
+    @app_check_bot_admin()
     @app_commands.describe(config_id='Config ID from reactionroles_create', channel='Channel to post in', message='Optional message to post (leave blank to omit description)', title='Optional title for the posted embed')
     async def post_message(self, interaction: Interaction, config_id: str, channel: discord.TextChannel, message: Optional[str] = None, title: Optional[str] = None):
         # Defer immediately (public response) so we can edit it later.
         await interaction.response.defer(thinking=True, ephemeral=False)
         debug_command('reactionroles_post', interaction.user, guild=interaction.guild, channel=channel, config_id=config_id)
-        is_admin = interaction.user.guild_permissions.manage_roles or interaction.user.guild_permissions.administrator
         app_owner = await self.bot.application_info()
-        if not (is_admin or interaction.user.id == app_owner.owner.id):
+        if not is_bot_admin(interaction.user, allow_owner_id=app_owner.owner.id):
             embed = discord.Embed(title='❌ Permission Denied', description='You do not have permission to use this command.', color=discord.Color.red())
             await interaction.edit_original_response(embed=embed)
             return
@@ -1050,15 +1049,14 @@ class ReactionRoles(commands.Cog):
             await interaction.edit_original_response(embed=embed)
 
     @app_commands.command(name='reactionroles_remove', description='Remove a previously created color role set (deletes roles)')
-    @app_commands.checks.has_permissions(manage_roles=True)
+    @app_check_bot_admin()
     @app_commands.describe(config_id='Config ID from reactionroles_create')
     async def remove_roles(self, interaction: Interaction, config_id: str):
         # Defer immediately (public response) so we can edit it later.
         await interaction.response.defer(thinking=True, ephemeral=False)
         debug_command('reactionroles_remove', interaction.user, guild=interaction.guild, config_id=config_id)
-        is_admin = interaction.user.guild_permissions.manage_roles or interaction.user.guild_permissions.administrator
         app_owner = await self.bot.application_info()
-        if not (is_admin or interaction.user.id == app_owner.owner.id):
+        if not is_bot_admin(interaction.user, allow_owner_id=app_owner.owner.id):
             embed = discord.Embed(title='❌ Permission Denied', description='You do not have permission to use this command.', color=discord.Color.red())
             await interaction.edit_original_response(embed=embed)
             return
@@ -1189,7 +1187,7 @@ class ReactionRoles(commands.Cog):
             await interaction.edit_original_response(embed=embed)
 
     @app_commands.command(name='reaction_list', description='List reaction-role configs and posted mappings for this server')
-    @app_commands.checks.has_permissions(manage_roles=True)
+    @app_check_bot_admin()
     async def reaction_list(self, interaction: Interaction):
         # Defer immediately (public response)
         await interaction.response.defer(thinking=True, ephemeral=False)

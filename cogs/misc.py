@@ -9,7 +9,7 @@ import logging
 import json
 from pathlib import Path
 from typing import Optional
-from utils.botadmin import app_check_bot_admin
+from utils.botadmin import app_check_bot_admin, add_bot_admin_role, remove_bot_admin_role, get_bot_admin_role_ids
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -63,16 +63,8 @@ class Misc(commands.Cog):
         self.bot = bot
     @app_commands.command(name="listpermissions", description="List all roles with bot admin permissions for this server.")
     async def listpermissions(self, interaction: Interaction):
-        CONFIG_FILE = "xp_config.json"
-        def load_json(file):
-            import os, json
-            if os.path.exists(file):
-                with open(file, "r") as f:
-                    return json.load(f)
-            return {}
-        config = load_json(CONFIG_FILE)
         guild_id = str(interaction.guild.id)
-        perms = config.get(guild_id, {}).get("permissions_roles", [])
+        perms = get_bot_admin_role_ids(guild_id)
         if not perms:
             err = Embed(title='No Roles', description='No roles have bot admin permissions.', color=discord.Color.red())
             await interaction.response.send_message(embed=err, ephemeral=True)
@@ -93,23 +85,10 @@ class Misc(commands.Cog):
     @app_commands.describe(role="Role to remove from bot admin permissions")
     @app_check_bot_admin()
     async def removepermissions(self, interaction: Interaction, role: discord.Role):
-        CONFIG_FILE = "xp_config.json"
-        def load_json(file):
-            import os, json
-            if os.path.exists(file):
-                with open(file, "r") as f:
-                    return json.load(f)
-            return {}
-        def save_json(file, data):
-            import json
-            with open(file, "w") as f:
-                json.dump(data, f, indent=4)
-        config = load_json(CONFIG_FILE)
         guild_id = str(interaction.guild.id)
-        perms = config.setdefault(guild_id, {}).setdefault("permissions_roles", [])
+        perms = set(get_bot_admin_role_ids(guild_id))
         if str(role.id) in perms:
-            perms.remove(str(role.id))
-            save_json(CONFIG_FILE, config)
+            remove_bot_admin_role(guild_id, role.id)
             info = Embed(title='Role Removed', description=f'Role {role.mention} removed from bot admin permissions.', color=discord.Color.green())
             await interaction.response.send_message(embed=info, ephemeral=True)
         else:
@@ -120,24 +99,10 @@ class Misc(commands.Cog):
     @app_commands.describe(role="Role to grant bot admin permissions")
     @app_check_bot_admin()
     async def setpermissions(self, interaction: Interaction, role: discord.Role):
-        # Load config
-        CONFIG_FILE = "xp_config.json"
-        def load_json(file):
-            import os, json
-            if os.path.exists(file):
-                with open(file, "r") as f:
-                    return json.load(f)
-            return {}
-        def save_json(file, data):
-            import json
-            with open(file, "w") as f:
-                json.dump(data, f, indent=4)
-        config = load_json(CONFIG_FILE)
         guild_id = str(interaction.guild.id)
-        perms = config.setdefault(guild_id, {}).setdefault("permissions_roles", [])
+        perms = set(get_bot_admin_role_ids(guild_id))
         if str(role.id) not in perms:
-            perms.append(str(role.id))
-            save_json(CONFIG_FILE, config)
+            add_bot_admin_role(guild_id, role.id)
             info = Embed(title='Role Added', description=f'Role {role.mention} added as bot admin.', color=discord.Color.green())
             await interaction.response.send_message(embed=info, ephemeral=True)
         else:

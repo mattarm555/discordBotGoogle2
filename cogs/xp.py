@@ -218,8 +218,8 @@ class XP(commands.Cog):
         top3_xp_bonus = int(cfg.get("top3_xp_bonus") or 0)
         top3_coin_bonus = int(cfg.get("top3_coin_bonus") or 0)
 
-        participants = [uid for uid, cnt in counts.items() if int(cnt) > 0]
         top5 = self._top_n_counts(counts, n=5)
+        winners = [uid for uid, _cnt in top5]
 
         reward_bits: list[str] = []
         if xp_reward:
@@ -238,7 +238,7 @@ class XP(commands.Cog):
         embed = Embed(
             title="🏁 Weekly Messages Contest Ended!",
             description=(
-                f"Final results are in. Rewards were issued to **{len(participants)}** participant(s): **{reward_text}** each."
+                f"Final results are in. Rewards were issued to **Top {len(winners)}**: **{reward_text}** each."
                 f"{status_line}"
             ),
             color=discord.Color.blurple(),
@@ -299,7 +299,8 @@ class XP(commands.Cog):
                 return
 
             counts = cfg.get("counts", {}) if isinstance(cfg.get("counts"), dict) else {}
-            participants = [uid for uid, cnt in counts.items() if int(cnt) > 0]
+            top5 = self._top_n_counts(counts, n=5)
+            winners = [uid for uid, _cnt in top5]
             xp_reward = int(cfg.get("xp_reward") or 0)
             coin_reward = int(cfg.get("coin_reward") or 0)
             top1_xp_bonus = int(cfg.get("top1_xp_bonus") or 0)
@@ -309,17 +310,16 @@ class XP(commands.Cog):
             top3_xp_bonus = int(cfg.get("top3_xp_bonus") or 0)
             top3_coin_bonus = int(cfg.get("top3_coin_bonus") or 0)
 
-            sorted_counts = sorted(counts.items(), key=lambda kv: int(kv[1]), reverse=True)
-            top1_uid = sorted_counts[0][0] if len(sorted_counts) >= 1 and int(sorted_counts[0][1]) > 0 else None
-            top2_uid = sorted_counts[1][0] if len(sorted_counts) >= 2 and int(sorted_counts[1][1]) > 0 else None
-            top3_uid = sorted_counts[2][0] if len(sorted_counts) >= 3 and int(sorted_counts[2][1]) > 0 else None
+            top1_uid = winners[0] if len(winners) >= 1 else None
+            top2_uid = winners[1] if len(winners) >= 2 else None
+            top3_uid = winners[2] if len(winners) >= 3 else None
 
             # Pay rewards first, then announce (so the message can truthfully say payouts are done).
             rewards_paid = False
 
-            # Participation rewards
-            if participants and (xp_reward or coin_reward):
-                for uid in participants:
+            # Base rewards: Top 5 only
+            if winners and (xp_reward or coin_reward):
+                for uid in winners:
                     if xp_reward:
                         try:
                             self._add_xp_record(gid, str(uid), xp_reward)
@@ -331,7 +331,7 @@ class XP(commands.Cog):
                         except Exception:
                             pass
 
-            if participants and (xp_reward or coin_reward):
+            if winners and (xp_reward or coin_reward):
                 rewards_paid = True
 
             # Winner bonuses (in addition to participation)
@@ -375,6 +375,18 @@ class XP(commands.Cog):
 
             save_json(XP_FILE, self.xp_data)
 
+            # Announce first (rewards message), then start a new week + post a fresh leaderboard.
+            try:
+                await self._announce_week_end(
+                    guild,
+                    cfg,
+                    counts,
+                    rewards_paid=rewards_paid,
+                    leaderboard_reposted=False,
+                )
+            except Exception:
+                pass
+
             # Start the new week and force a fresh leaderboard message
             cfg["counts"] = {}
             cfg["start_ts"] = end_ts2
@@ -382,22 +394,8 @@ class XP(commands.Cog):
             cfg["message_id"] = None
             self._weekly_messages_dirty = True
 
-            leaderboard_reposted = False
             try:
                 await self._upsert_weekly_message(guild, cfg)
-                leaderboard_reposted = bool(cfg.get("message_id"))
-            except Exception:
-                leaderboard_reposted = False
-
-            # Announce at the end with Top 3 + Top 5 + payout confirmation.
-            try:
-                await self._announce_week_end(
-                    guild,
-                    cfg,
-                    counts,
-                    rewards_paid=rewards_paid,
-                    leaderboard_reposted=leaderboard_reposted,
-                )
             except Exception:
                 pass
 

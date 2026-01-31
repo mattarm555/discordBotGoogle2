@@ -220,38 +220,5 @@ class Rebirth(commands.Cog):
             embed=Embed(title="🔁 Rebirth", description=desc, color=discord.Color.green())
         )
 
-    @app_commands.command(name="rebirthinfo", description="View your rebirths, multiplier, and the server rebirth cost.")
-    async def rebirthinfo(self, interaction: Interaction):
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message(
-                embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()),
-                ephemeral=True,
-            )
-            return
-
-        uid = str(interaction.user.id)
-        gid = str(guild.id)
-        cost = get_required_rebirth_cost(gid, uid)
-        bal = get_balance(uid, guild_id=gid)
-        count = get_rebirth_count(gid, uid)
-        mult = get_rebirth_multiplier(gid, uid)
-        max_rebirths = get_max_rebirths(gid)
-        remaining = max(0, int(cost) - int(bal))
-
-        desc = (
-            f"Rebirths: **{count}/{max_rebirths}**\n"
-            f"Multiplier: **x{mult}**\n\n"
-            f"Rebirth cost (next): **{int(cost):,}** coins\n"
-            f"Your balance: **{int(bal):,}** coins\n"
-            + (f"You need **{remaining:,}** more coins to rebirth.\n\n" if remaining > 0 else "You can rebirth now.\n\n")
-            + "To rebirth: `/rebirth confirm:true`"
-        )
-        await interaction.response.send_message(
-            embed=Embed(title="🔁 Rebirth Info", description=desc, color=discord.Color.blurple()),
-            ephemeral=True,
-        )
-
-
 async def setup(bot: commands.Bot):
     await bot.add_cog(Rebirth(bot))

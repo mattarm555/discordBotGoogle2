@@ -24,6 +24,9 @@ from utils.botadmin import is_bot_admin, app_check_bot_admin
 import re
 from utils.casino_cooldown import cooldown_remaining_seconds, set_last_casino_play
 
+PAYBLOCK_FILE = "payblock.json"
+PAYLIMITS_FILE = "paylimits.json"
+
 # --- Color Codes ---
 RESET = "\033[0m"
 YELLOW = "\033[33m"
@@ -527,6 +530,95 @@ class Blackjack(commands.Cog):
         self.SESSION_TIMEOUT = timedelta(minutes=30)
         # Shared casino config file (used by slots too)
         self._cfg_file = "casino_config.json"
+        # Per-guild locks for /pay updates (prevents races on limits)
+        self._pay_locks: dict[str, asyncio.Lock] = {}
+
+    # ---- /pay limits + blocks ----
+    def _get_pay_lock(self, guild_id: str) -> asyncio.Lock:
+        lock = self._pay_locks.get(str(guild_id))
+        if lock is None:
+            lock = asyncio.Lock()
+            self._pay_locks[str(guild_id)] = lock
+        return lock
+
+    def _load_json_file(self, path: str, default: dict) -> dict:
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return default
+
+    def _save_json_file(self, path: str, data: dict) -> None:
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+        except Exception:
+            pass
+
+    def _is_pay_blocked(self, guild_id: str, sender_id: str, receiver_id: str) -> bool:
+        """Return True if sender and receiver are configured to be blocked from paying each other."""
+        cfg = self._load_json_file(PAYBLOCK_FILE, {"guilds": {}})
+        g = cfg.get("guilds", {}).get(str(guild_id), {}) if isinstance(cfg, dict) else {}
+        blocked_pairs = g.get("blocked_pairs", {}) if isinstance(g, dict) else {}
+        if not isinstance(blocked_pairs, dict):
+            return False
+
+        s = str(sender_id)
+        r = str(receiver_id)
+        try:
+            s_list = blocked_pairs.get(s, [])
+            if isinstance(s_list, list) and r in [str(x) for x in s_list]:
+                return True
+            r_list = blocked_pairs.get(r, [])
+            if isinstance(r_list, list) and s in [str(x) for x in r_list]:
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _check_and_increment_pay_pair_limit(self, guild_id: str, sender_id: str, receiver_id: str) -> tuple[bool, int]:
+        """Enforce max 2 payments per sender->receiver per UTC day.
+
+        Returns (allowed, remaining_after).
+        """
+        today = datetime.utcnow().date().isoformat()
+        data = self._load_json_file(PAYLIMITS_FILE, {"guilds": {}})
+        guild_bucket = data.setdefault("guilds", {}).setdefault(str(guild_id), {})
+        pairs = guild_bucket.setdefault("pairs", {})
+
+        s = str(sender_id)
+        r = str(receiver_id)
+
+        sender_pairs = pairs.setdefault(s, {})
+        rec = sender_pairs.get(r)
+        if not isinstance(rec, dict):
+            rec = {"date": today, "count": 0}
+            sender_pairs[r] = rec
+
+        if str(rec.get("date")) != today:
+            rec["date"] = today
+            rec["count"] = 0
+
+        try:
+            count = int(rec.get("count", 0))
+        except Exception:
+            count = 0
+
+        if count >= 2:
+            return False, 0
+
+        count += 1
+        rec["count"] = count
+        sender_pairs[r] = rec
+        pairs[s] = sender_pairs
+        guild_bucket["pairs"] = pairs
+        data["guilds"][str(guild_id)] = guild_bucket
+
+        self._save_json_file(PAYLIMITS_FILE, data)
+        remaining = max(0, 2 - count)
+        return True, remaining
 
     # ---- Blackjack Stats Persistence ----
     def _load_stats(self):
@@ -748,23 +840,59 @@ class Blackjack(commands.Cog):
         guild_id = str(guild.id)
         sender_id = str(interaction.user.id)
         receiver_id = str(user.id)
-        sender_balance = get_balance(sender_id, guild_id=guild_id)
-        if amount > sender_balance:
-            await interaction.response.send_message(embed=discord.Embed(title="❌ Insufficient Funds", description=f"You tried to pay {amount:,} but only have {sender_balance:,} coins.", color=discord.Color.red()), ephemeral=True)
-            return
-        # Perform transfer atomically (read -> validate -> write both)
-        remove_currency(sender_id, amount, guild_id=guild_id)
-        add_currency(receiver_id, amount, guild_id=guild_id)
-        sender_after = get_balance(sender_id, guild_id=guild_id)
-        receiver_after = get_balance(receiver_id, guild_id=guild_id)
-        embed = discord.Embed(
-            title="💸 Payment Sent",
-            description=f"{interaction.user.mention} paid {user.mention} **{amount:,}** coins.",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Your New Balance", value=f"{sender_after:,} coins", inline=True)
-        embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after:,} coins", inline=True)
-        await interaction.response.send_message(embed=embed)
+
+        async with self._get_pay_lock(guild_id):
+            # Blocklist check (per server)
+            if self._is_pay_blocked(guild_id, sender_id, receiver_id):
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="❌ Payment Blocked",
+                        description="You cannot pay this user (blocked pair configured for this server).",
+                        color=discord.Color.red(),
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            # Per-pair daily limit (2 per day per sender->receiver)
+            allowed, remaining = self._check_and_increment_pay_pair_limit(guild_id, sender_id, receiver_id)
+            if not allowed:
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="⏳ Daily Pay Limit Reached",
+                        description=f"You can only pay {user.mention} **twice per day**. Try again tomorrow (UTC).",
+                        color=discord.Color.orange(),
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            sender_balance = get_balance(sender_id, guild_id=guild_id)
+            if amount > sender_balance:
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="❌ Insufficient Funds",
+                        description=f"You tried to pay {amount:,} but only have {sender_balance:,} coins.",
+                        color=discord.Color.red(),
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            # Perform transfer (economy is guild-scoped here)
+            remove_currency(sender_id, amount, guild_id=guild_id)
+            add_currency(receiver_id, amount, guild_id=guild_id)
+            sender_after = get_balance(sender_id, guild_id=guild_id)
+            receiver_after = get_balance(receiver_id, guild_id=guild_id)
+            embed = discord.Embed(
+                title="💸 Payment Sent",
+                description=f"{interaction.user.mention} paid {user.mention} **{amount:,}** coins.",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Your New Balance", value=f"{sender_after:,} coins", inline=True)
+            embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after:,} coins", inline=True)
+            embed.add_field(name="Daily Pair Limit", value=f"You have **{remaining}** pay(s) left today to this user (UTC).", inline=False)
+            await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="add", description="Add coins to a user's server balance (bot-admin only)")
     @app_commands.describe(user="User to receive coins", amount="Amount of coins to add (1-1,000,000)")

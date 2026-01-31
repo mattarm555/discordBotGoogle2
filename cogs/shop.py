@@ -17,7 +17,13 @@ from utils.economy import (
 import random
 import re
 from utils.debug import debug_command
-from utils.rebirth import get_rebirth_multiplier
+from utils.rebirth import (
+    get_rebirth_multiplier,
+    get_rebirth_cost,
+    get_required_rebirth_cost,
+    get_rebirth_count,
+    get_max_rebirths,
+)
 from utils.botadmin import app_check_bot_admin
 
 SHOP_FILE = "shop.json"
@@ -489,50 +495,7 @@ class Shop(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="dailyinfo", description="Show this server's /daily reward settings.")
-    async def dailyinfo(self, interaction: Interaction):
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message(
-                embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()),
-                ephemeral=True,
-            )
-            return
-
-        gid = str(guild.id)
-        uid = str(interaction.user.id)
-        mn, mx = self._get_daily_range(gid)
-
-        try:
-            mult = int(get_rebirth_multiplier(gid, uid))
-        except Exception:
-            mult = 1
-
-        base_line = f"Base range: **{mn:,}–{mx:,}** coins"
-        if mult > 1:
-            eff_line = f"Your multiplier: **x{mult}** → effective: **{mn*mult:,}–{mx*mult:,}**"
-        else:
-            eff_line = "Your multiplier: **x1**"
-
-        # Cooldown state (optional but useful)
-        if can_claim_daily(uid, guild_id=gid):
-            cd_line = "Cooldown: **Ready now**"
-        else:
-            remaining = daily_time_until_next(uid, guild_id=gid)
-            cd_line = f"Cooldown: **{int(remaining.total_seconds() // 60)}m** remaining (approx)"
-
-        desc = "\n".join([
-            base_line,
-            eff_line,
-            cd_line,
-            "Resets at **midnight UTC**.",
-        ])
-        await interaction.response.send_message(
-            embed=Embed(title="📌 Daily Settings", description=desc, color=discord.Color.blurple()),
-            ephemeral=True,
-        )
-
-    @app_commands.command(name="econinfo", description="Show this server's /daily and /work settings.")
+    @app_commands.command(name="econinfo", description="Show this server's /daily, /work, /shop, and rebirth settings.")
     async def econinfo(self, interaction: Interaction):
         guild = interaction.guild
         if guild is None:
@@ -550,6 +513,44 @@ class Shop(commands.Cog):
             mult = int(get_rebirth_multiplier(gid, uid))
         except Exception:
             mult = 1
+
+        # --- Rebirth ---
+        try:
+            rebirth_count = int(get_rebirth_count(gid, uid))
+        except Exception:
+            rebirth_count = 0
+        try:
+            max_rebirths = int(get_max_rebirths(gid))
+        except Exception:
+            max_rebirths = 0
+        try:
+            base_cost = int(get_rebirth_cost(gid))
+        except Exception:
+            base_cost = 0
+        try:
+            next_cost = int(get_required_rebirth_cost(gid, uid))
+        except Exception:
+            next_cost = base_cost
+
+        try:
+            bal = int(get_balance(uid, guild_id=gid))
+        except Exception:
+            bal = 0
+        remaining_for_rebirth = max(0, int(next_cost) - int(bal))
+        rebirth_status = "Status: **Ready now**" if bal >= next_cost else f"Status: **Need {remaining_for_rebirth:,} more coins**"
+        if max_rebirths == 0:
+            rebirth_limit_line = "Limit: **Disabled (max rebirths = 0)**"
+        else:
+            rebirth_limit_line = f"Limit: **{rebirth_count}/{max_rebirths}**"
+        rebirth_lines = [
+            rebirth_limit_line,
+            f"Multiplier: **x{mult}**",
+            f"Rebirth cost (next): **{next_cost:,}** coins",
+            f"Base cost: **{base_cost:,}** (doubles each rebirth)",
+            f"Your balance: **{bal:,}** coins",
+            rebirth_status,
+            "To rebirth: `/rebirth confirm:true`",
+        ]
 
         # --- Daily ---
         mn, mx = self._get_daily_range(gid)
@@ -648,7 +649,7 @@ class Shop(commands.Cog):
         embed.add_field(name="🎁 Daily", value="\n".join(daily_lines), inline=False)
         embed.add_field(name="💼 Work", value="\n".join(work_lines), inline=False)
         embed.add_field(name="🛒 Shop Passive Income", value="\n".join(shop_lines), inline=False)
-        embed.add_field(name="🔁 Your Multiplier", value=f"**x{mult}** (see /rebirthinfo for details)", inline=False)
+        embed.add_field(name="🔁 Rebirth", value="\n".join(rebirth_lines), inline=False)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

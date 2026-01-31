@@ -6,8 +6,6 @@ from datetime import datetime
 from utils.debug import debug_command
 import asyncio
 import logging
-import json
-from pathlib import Path
 from typing import Optional
 from utils.botadmin import (
     app_check_bot_admin,
@@ -179,7 +177,7 @@ class Misc(commands.Cog):
         # Gambling - owner-only commands intentionally excluded
         gambling_fields: list[tuple[str, str]] = [
             ("/daily", "Claim your daily coin reward (per-server range; 24h cooldown)."),
-            ("/econinfo", "Show this server's /daily and /work settings."),
+            ("/econinfo", "Show this server's /daily, /work, /shop, and rebirth settings."),
             ("/balance [user]", "Check your balance or another user's balance."),
             ("/balancetop", "Show the top balances in this server."),
             ("/pay <user> <amount>", "Pay another user some of your coins."),
@@ -197,7 +195,6 @@ class Misc(commands.Cog):
             ("/setworkreward <min> <max>", "Admin: Set this server's /work reward range."),
             ("/setdailyreward <min> <max>", "Admin: Set this server's /daily reward range."),
             ("/rebirth [confirm]", "Reset your coins to gain a multiplier on /daily, /work, and shop passive income."),
-            ("/rebirthinfo", "Show your rebirth count, multiplier, and this server's rebirth cost."),
             ("/setrebirthcost <amount>", "Admin: Set how many coins are required to /rebirth in this server."),
             ("/coin_reset", "Admin: Reset all coin balances for this server."),
             ("/shop [page]", "Browse passive income items (shows what you own)."),
@@ -216,6 +213,7 @@ class Misc(commands.Cog):
             ("/level", "Shows your XP level and server rank."),
             ("/xpleaderboard [page]", "Shows the leaders in XP in this server."),
             ("/xpset <amount>", "Sets the amount of XP gained per message."),
+            ("/addxp <user> <amount>", "Admin: Add XP to a user (applies any earned level roles)."),
             ("/xpblock <channel>", "Blocks XP in the given channel."),
             ("/xpunblock <channel>", "Unblocks XP in the given channel."),
             ("/xpconfig", "Shows the current XP settings."),
@@ -264,7 +262,6 @@ class Misc(commands.Cog):
             ("/mutelist_add <phrase> <duration> [reason]", "Add auto-mute phrase."),
             ("/mutelist_remove <phrase>", "Remove auto-mute phrase."),
             ("/mutelist_list", "List auto-mute phrases."),
-            ("/help_message <message>", "DM the bot owner feedback."),
         ]
         pages.extend(build_section_pages("🛡️ Moderating", discord.Color.red(), moderating_fields))
 
@@ -284,53 +281,6 @@ class Misc(commands.Cog):
                 color=discord.Color.red()
             )
             await interaction.response.send_message(embed=error, ephemeral=True)
-
-    @app_commands.command(name="help_message", description="Send a help message to the bot owner (DM)")
-    @app_commands.describe(message='Message to send to the bot owner, reccomendations are welcome!')
-    async def help_message(self, interaction: Interaction, message: str):
-        debug_command('help_message', interaction.user, interaction.guild, message=message)
-
-        # Try to read an owner_id from xp_config.json under top-level 'owner_id'
-        owner_id = None
-        try:
-            cfg_path = Path('xp_config.json')
-            if cfg_path.exists():
-                cfg = json.loads(cfg_path.read_text(encoding='utf-8') or '{}')
-                owner_id = cfg.get('owner_id')
-        except Exception:
-            owner_id = None
-
-        owner = None
-        try:
-            if owner_id:
-                owner = await self.bot.fetch_user(int(owner_id))
-            else:
-                app_info = await self.bot.application_info()
-                owner = app_info.owner
-        except Exception:
-            owner = None
-
-        # build embed to DM the owner: only include user (no ID), server name, and message
-        owner_emb = Embed(title=f'Help message from {interaction.user.display_name}', color=discord.Color.blue())
-        owner_emb.add_field(name='User', value=f'{interaction.user}', inline=False)
-        owner_emb.add_field(name='Server', value=f'{interaction.guild.name}', inline=False)
-        owner_emb.add_field(name='Message', value=message, inline=False)
-        owner_emb.set_footer(text=f'Sent via /help_message')
-
-        sent = False
-        if owner:
-            try:
-                await owner.send(embed=owner_emb)
-                sent = True
-            except Exception:
-                sent = False
-
-        if sent:
-            emb = Embed(title='Message sent', description='Your message was delivered to the bot owner.', color=discord.Color.green())
-            await interaction.response.send_message(embed=emb, ephemeral=True)
-        else:
-            emb = Embed(title='Delivery failed', description='Could not deliver your message to the bot owner. They may have DMs closed or an error occurred.', color=discord.Color.red())
-            await interaction.response.send_message(embed=emb, ephemeral=True)
 
     # Admin: Send a message as the bot with optional embed formatting
     @app_commands.command(name="bot_say", description="Admin: Make the bot send a message, with optional embed formatting.")

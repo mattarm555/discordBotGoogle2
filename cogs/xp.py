@@ -475,6 +475,52 @@ class XP(commands.Cog):
         user_id = str(member.id)
         return self._add_xp_record(guild_id, user_id, int(amount))
 
+    async def _award_level_roles(
+        self,
+        member: discord.Member,
+        *,
+        old_level: int,
+        new_level: int,
+        config: dict,
+        reason: str = "Level up reward",
+    ) -> list[discord.Role]:
+        """Assign any configured level roles for levels reached.
+
+        If XP jumps multiple levels at once, this will attempt to award any roles
+        configured for each level in the range (old_level, new_level].
+        """
+        added: list[discord.Role] = []
+        try:
+            old_level = int(old_level)
+            new_level = int(new_level)
+        except Exception:
+            return added
+        if new_level <= old_level:
+            return added
+
+        level_roles = config.get("level_roles", {}) if isinstance(config, dict) else {}
+        if not isinstance(level_roles, dict):
+            return added
+
+        for lvl in range(old_level + 1, new_level + 1):
+            role_id = level_roles.get(str(lvl))
+            if not role_id:
+                continue
+            role = member.guild.get_role(int(role_id))
+            if not role:
+                continue
+            if role in member.roles:
+                continue
+            try:
+                await member.add_roles(role, reason=reason)
+                added.append(role)
+            except discord.Forbidden:
+                break
+            except Exception:
+                continue
+
+        return added
+
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot or not message.guild:
@@ -551,14 +597,17 @@ class XP(commands.Cog):
                     add_currency(str(message.author.id), coin_reward, guild_id=guild_id)
                 except Exception:
                     pass
-                # Assign role if configured for this level
-                level_roles = config.get("level_roles", {})
-                new_level = self.xp_data[guild_id][str(message.author.id)]["level"]
-                role_id = level_roles.get(str(new_level))
-                if role_id:
-                    role = message.guild.get_role(int(role_id))
-                    if role and role not in message.author.roles:
-                        await message.author.add_roles(role, reason="Level up reward")
+                # Assign any configured roles for all levels gained
+                try:
+                    await self._award_level_roles(
+                        message.author,
+                        old_level=old_level,
+                        new_level=int(self.xp_data[guild_id][str(message.author.id)]["level"]),
+                        config=config,
+                        reason="Level up reward",
+                    )
+                except Exception:
+                    pass
             except discord.Forbidden:
                 pass
 
@@ -814,6 +863,60 @@ class XP(commands.Cog):
             color=discord.Color.green()
         )
         await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="addxp", description="Admin: Add XP to a user and apply any level roles earned.")
+    @app_commands.describe(member="User to add XP to", amount="XP amount to add (positive integer)")
+    async def addxp(self, interaction: Interaction, member: discord.Member, amount: int):
+        if not self.has_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+
+        debug_command("addxp", interaction.user, interaction.guild, member=str(member), amount=amount)
+
+        try:
+            amount = int(amount)
+        except Exception:
+            await interaction.response.send_message("❌ Invalid XP amount.", ephemeral=True)
+            return
+        if amount <= 0:
+            await interaction.response.send_message("❌ XP amount must be a positive number.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        guild_id = str(interaction.guild.id)
+        config = self.get_xp_config(guild_id)
+
+        old_level = int(self.xp_data.get(guild_id, {}).get(str(member.id), {}).get("level", 1))
+        levels_gained = self.add_xp(member, amount)
+        new_level = int(self.xp_data.get(guild_id, {}).get(str(member.id), {}).get("level", 1))
+        new_xp = int(self.xp_data.get(guild_id, {}).get(str(member.id), {}).get("xp", 0))
+        required_xp = max(100, new_level * 100)
+
+        roles_added: list[discord.Role] = []
+        if int(levels_gained or 0) > 0:
+            try:
+                roles_added = await self._award_level_roles(
+                    member,
+                    old_level=old_level,
+                    new_level=new_level,
+                    config=config,
+                    reason=f"Admin /addxp by {interaction.user}"
+                )
+            except Exception:
+                roles_added = []
+
+        save_json(XP_FILE, self.xp_data)
+
+        desc = (
+            f"Added **{amount} XP** to {member.mention}.\n"
+            f"Level: **{old_level} → {new_level}**\n"
+            f"XP: **{new_xp} / {required_xp}**"
+        )
+        embed = Embed(title="✅ XP Updated", description=desc, color=discord.Color.green())
+        if roles_added:
+            embed.add_field(name="Roles Awarded", value="\n".join(r.mention for r in roles_added), inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="xpblock", description="Block XP gain in a channel.")
     @app_commands.describe(channel="The channel to block")

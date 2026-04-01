@@ -131,6 +131,79 @@ class Music(commands.Cog):
         # DJ role configuration cache: guild_id -> role_id
         self.dj_roles = self._load_dj_config()
 
+    def _looks_like_voice_e2ee_dave_4017(self, exc: Exception) -> bool:
+        """Best-effort detection for Discord voice close code 4017 (DAVE/E2EE required)."""
+        try:
+            text = f"{exc}".lower()
+        except Exception:
+            text = ""
+        return (
+            "4017" in text
+            or "dave" in text
+            or "e2ee" in text
+            or "end-to-end" in text
+            or "requires a client supporting" in text
+        )
+
+    async def _report_voice_connect_failure(self, interaction: Interaction, exc: Exception):
+        guild_id = str(interaction.guild.id)
+        channel = last_channels.get(guild_id, interaction.channel)
+
+        if self._looks_like_voice_e2ee_dave_4017(exc):
+            desc = (
+                "I couldn't join that voice channel because it appears to require Discord's E2EE/DAVE voice mode (close code 4017).\n\n"
+                "What you can do:\n"
+                "- Try a different voice channel (one without E2EE/DAVE enabled)\n"
+                "- Disable E2EE/DAVE for that channel/server (if you control it)\n\n"
+                "This is a voice-protocol compatibility issue; yt-dlp/FFmpeg changes won't fix it."
+            )
+            title = "❌ Can't Join Voice (4017)"
+        else:
+            desc = (
+                "I couldn't join your voice channel.\n\n"
+                "Common causes: missing permissions, server region/voice settings, or a temporary voice gateway issue."
+            )
+            title = "❌ Couldn't Join Voice"
+
+        embed = Embed(title=title, description=desc, color=discord.Color.red())
+        try:
+            embed.add_field(name="Error", value=str(exc)[:900] or "(no details)", inline=False)
+        except Exception:
+            pass
+
+        # Prefer editing the deferred response if possible; otherwise send to the channel.
+        try:
+            if interaction.response.is_done():
+                await interaction.edit_original_response(embed=embed)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception:
+            try:
+                await channel.send(embed=embed)
+            except Exception:
+                pass
+
+    async def _confirm_voice_connected(self, interaction: Interaction, vc: discord.VoiceClient, seconds: float = 1.25):
+        """After connect(), wait briefly and ensure the voice client is still connected.
+
+        Some failures (notably 4017/DAVE/E2EE channels) can disconnect immediately after the
+        initial handshake, without raising from connect().
+        """
+        try:
+            await asyncio.sleep(seconds)
+        except Exception:
+            return
+
+        current = getattr(interaction.guild, "voice_client", None)
+        if current is None:
+            raise RuntimeError("Voice handshake failed (disconnected immediately)")
+
+        try:
+            if hasattr(current, "is_connected") and not current.is_connected():
+                raise RuntimeError("Voice handshake failed (not connected)")
+        except Exception:
+            raise RuntimeError("Voice handshake failed (not connected)")
+
     DJ_CONFIG_FILE = "dj_config.json"
 
     # ---- DJ Role Persistence ----
@@ -193,6 +266,10 @@ class Music(commands.Cog):
         vc = interaction.guild.voice_client
         if vc:
             await vc.disconnect(force=True)  # Kill zombie session
+
+        # Ensure the user is actually in voice
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            raise RuntimeError("User is not connected to a voice channel")
 
         try:
             return await interaction.user.voice.channel.connect()
@@ -344,13 +421,25 @@ class Music(commands.Cog):
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+
+            if not info or not isinstance(info, dict):
+                raise RuntimeError("yt-dlp returned no info")
+
+            resolved = info.get('url')
+            if not resolved:
+                raise RuntimeError("yt-dlp info missing stream url")
+
             # Debug: show what URL/format we resolved to for easier troubleshooting
             try:
                 fmt = info.get('format') or info.get('requested_formats')
             except Exception:
                 fmt = None
-            print(f"[DEBUG] Resolved stream for target={url} title={info.get('title')} format={fmt} url={info.get('url')}")
-            return info['url']
+            try:
+                title = info.get('title')
+            except Exception:
+                title = None
+            print(f"[DEBUG] Resolved stream for target={url} title={title} format={fmt} url={resolved}")
+            return resolved
 
 
     async def auto_disconnect(self, interaction: Interaction):
@@ -566,7 +655,12 @@ class Music(commands.Cog):
 
         was_playing = voice_client.is_playing() if voice_client else False
         if not voice_client:
-            voice_client = await self.safe_connect(interaction)
+            try:
+                voice_client = await self.safe_connect(interaction)
+                await self._confirm_voice_connected(interaction, voice_client)
+            except Exception as e:
+                await self._report_voice_connect_failure(interaction, e)
+                return
 
         if not was_playing and len(queues[guild_id]) == len(songs_added):
             msg = await interaction.edit_original_response(embed=Embed(title="Now Playing...", color=discord.Color.blurple()))
@@ -587,6 +681,17 @@ class Music(commands.Cog):
             
         voice_client = interaction.guild.voice_client
         channel = last_channels.get(guild_id, interaction.channel)
+
+        # If we are not connected to voice, do not attempt to play.
+        if voice_client is None:
+            await channel.send(embed=Embed(
+                title="❌ Not Connected to Voice",
+                description="I can't play music because I'm not connected to a voice channel.",
+                color=discord.Color.red()
+            ))
+            # Prevent tight retry loops if something called start_next after a failed connect.
+            self.force_stopped[guild_id] = True
+            return
 
         while queues[guild_id]:  # keep going until a song works or queue is empty
             next_song = queues[guild_id].pop(0)
@@ -652,6 +757,9 @@ class Music(commands.Cog):
 
                     # blocking extraction in thread; prefer progressive formats to avoid HLS
                     stream = await asyncio.to_thread(self.get_stream_url, resolve_target)
+
+                    if not stream or not isinstance(stream, str):
+                        raise RuntimeError("No stream URL resolved")
                     # If yt-dlp still returned an HLS (.m3u8) playlist URL, retry once with explicit non-HLS preference
                     try:
                         if isinstance(stream, str) and stream.lower().endswith('.m3u8'):
@@ -674,9 +782,16 @@ class Music(commands.Cog):
                     next_song['stream_url'] = stream
                 except Exception as e:
                     print(f"{RED}⚠️ Failed to resolve stream for {next_song.get('title')}: {e}{RESET}")
+                    # Give a more actionable message for the common 403 case.
+                    extra = ""
+                    try:
+                        if "403" in str(e):
+                            extra = "\n\nThis often means YouTube blocked the request (HTTP 403). Updating yt-dlp and/or using fresh cookies usually fixes it."
+                    except Exception:
+                        pass
                     await channel.send(embed=Embed(
                         title="❌ Failed to Resolve Stream",
-                        description=f"Could not resolve a playable stream for **{next_song.get('title')}**, skipping...",
+                        description=f"Could not resolve a playable stream for **{next_song.get('title')}**, skipping...{extra}",
                         color=discord.Color.red()
                     ))
                     if await self._record_failure_and_maybe_abort(interaction, "Failed to resolve stream"):
@@ -684,7 +799,23 @@ class Music(commands.Cog):
                     continue
 
                 stream_url = next_song.get('stream_url')
+                if not stream_url:
+                    raise RuntimeError("Resolved stream URL was empty")
                 source = self.get_audio_source(stream_url)
+                if source is None:
+                    raise RuntimeError("FFmpeg audio source creation failed")
+
+                # Voice connection might have dropped while we were extracting the stream.
+                # Always re-fetch the current VC right before play.
+                voice_client = interaction.guild.voice_client
+                if voice_client is None:
+                    raise RuntimeError("Voice client disconnected")
+                try:
+                    if hasattr(voice_client, "is_connected") and not voice_client.is_connected():
+                        raise RuntimeError("Voice client not connected")
+                except Exception:
+                    raise RuntimeError("Voice client not connected")
+
                 voice_client.play(source, after=lambda e: self._after_song(interaction))
 
                 embed = Embed(title="Now Playing", description=next_song['title'], color=discord.Color.green())
@@ -712,6 +843,18 @@ class Music(commands.Cog):
 
             except Exception as e:
                 print(f"{RED}⚠️ Failed to play: {next_song['title']} — {e}{RESET}")
+                # If voice connection is failing with 4017/DAVE, stop trying to loop.
+                if self._looks_like_voice_e2ee_dave_4017(e):
+                    await channel.send(embed=Embed(
+                        title="❌ Voice Connection Rejected (4017)",
+                        description=(
+                            "This voice channel appears to require E2EE/DAVE voice, which this bot cannot join right now.\n"
+                            "Please move to a non-E2EE voice channel or disable E2EE/DAVE for the channel."
+                        ),
+                        color=discord.Color.red()
+                    ))
+                    self.force_stopped[guild_id] = True
+                    return
                 await channel.send(embed=Embed(
                     title="❌ Failed to Play",
                     description=f"Sorry, **{next_song['title']}** could not be downloaded properly.",
@@ -1070,7 +1213,12 @@ class Music(commands.Cog):
 
         was_playing = voice_client.is_playing() if voice_client else False
         if not voice_client:
-            voice_client = await self.safe_connect(interaction)
+            try:
+                voice_client = await self.safe_connect(interaction)
+                await self._confirm_voice_connected(interaction, voice_client)
+            except Exception as e:
+                await self._report_voice_connect_failure(interaction, e)
+                return
 
         if not was_playing and len(queues[guild_id]) == len(songs_added):
             msg = await interaction.followup.send(embed=Embed(title="Now Playing...", color=discord.Color.blurple()), wait=True)

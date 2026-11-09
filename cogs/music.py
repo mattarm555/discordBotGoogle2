@@ -4,6 +4,10 @@ import math
 import os
 import random
 import re
+import shutil
+import subprocess
+import sys
+import time
 from typing import Awaitable, Callable, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -52,6 +56,27 @@ def _log(msg: str):
             print(msg.encode("ascii", "replace").decode("ascii"), flush=True)
         except Exception:
             pass
+
+
+class _StderrTail:
+    """Write-only sink for FFmpeg's stderr that keeps the last few KB.
+
+    It has no fileno(), so discord.py pipes stderr through a reader thread into write()."""
+
+    def __init__(self, limit: int = 4096):
+        self._buf = bytearray()
+        self._limit = limit
+
+    def write(self, data: bytes):
+        self._buf.extend(data)
+        if len(self._buf) > self._limit:
+            del self._buf[:-self._limit]
+
+    def fileno(self):
+        raise OSError("no fileno")
+
+    def text(self) -> str:
+        return self._buf.decode(errors="replace").strip()
 
 
 def parse_iso8601_duration(iso: str) -> int:
@@ -145,6 +170,8 @@ class Music(commands.Cog):
         self.fail_counts = {}        # guild_id -> consecutive failure count
         self.play_last_used = {}     # user_id -> last monotonic timestamp
         self.locks: dict[str, asyncio.Lock] = {}  # guild_id -> lock around start_next
+        self.user_stopped: dict[str, bool] = {}   # guild_id -> True when /skip or /leave ended the song
+        self.last_playback: dict[str, dict] = {}  # guild_id -> diagnostics about the last song started
         self.PLAY_COOLDOWN = 10
         # Allow up to 2 failures; on the 3rd ("> 2"), abort and leave
         self.FAILURE_THRESHOLD = 2
@@ -606,7 +633,13 @@ class Music(commands.Cog):
                     return
 
                 try:
-                    source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTS)
+                    stderr_tail = _StderrTail()
+                    source = discord.FFmpegPCMAudio(stream_url, stderr=stderr_tail, **FFMPEG_OPTS)
+                    self.user_stopped[guild_id] = False
+                    self.last_playback[guild_id] = {
+                        "title": song.get("title"), "via": via or "YouTube/direct",
+                        "started": time.monotonic(), "stderr": stderr_tail, "error": None, "ended_after": None,
+                    }
                     vc.play(source, after=lambda err, gid=guild_id: self._after_song(gid, err))
                 except Exception as e:
                     _log(f"{RED}⚠️ Failed to play: {song.get('title')} — {e}{RESET}")
@@ -654,13 +687,39 @@ class Music(commands.Cog):
 
     def _after_song(self, guild_id: str, error: Optional[Exception]):
         """Runs in the audio thread when a song finishes/is stopped."""
-        if error:
-            _log(f"{RED}⚠️ Player error in guild {guild_id}: {error}{RESET}")
+        info = self.last_playback.get(guild_id) or {}
+        elapsed = time.monotonic() - info.get("started", time.monotonic())
+        info["ended_after"] = round(elapsed, 1)
+        info["error"] = str(error) if error else None
+        song_len = (self.currently_playing.get(guild_id) or {}).get("duration") or 0
+        # A song that ends within a few seconds on its own (not /skip or /leave) means FFmpeg
+        # couldn't read/decode the stream -> tell the channel instead of failing silently.
+        died_early = (not self.user_stopped.get(guild_id) and not self.force_stopped.get(guild_id)
+                      and elapsed < 8 and (song_len == 0 or song_len > 10))
+        ff = info["stderr"].text() if info.get("stderr") else ""
+        if error or died_early:
+            _log(f"{RED}⚠️ Playback problem in guild {guild_id} after {elapsed:.1f}s: {error} | ffmpeg: {ff}{RESET}")
 
         async def advance():
+            if error or died_early:
+                channel = last_channels.get(guild_id)
+                details = (info.get("error") or "") + ("\n" + ff if ff else "")
+                if channel:
+                    try:
+                        await channel.send(embed=Embed(
+                            title="⚠️ Playback Stopped Unexpectedly",
+                            description=(f"**{info.get('title')}** stopped after {elapsed:.1f}s.\n"
+                                         f"```{(details.strip() or 'FFmpeg exited without an error message')[:1500]}```"
+                                         "The bot owner can run `/musicdebug` for details."),
+                            color=discord.Color.orange()))
+                    except Exception:
+                        pass
             await asyncio.sleep(0.3)  # let FFmpeg shut down cleanly
             guild = self.bot.get_guild(int(guild_id))
             if guild:
+                if (error or died_early) and await self._record_failure_and_maybe_abort(
+                        guild, last_channels.get(guild_id), f"Playback stopped after {elapsed:.1f}s"):
+                    return
                 await self.start_next(guild)
 
         asyncio.run_coroutine_threadsafe(advance(), self.bot.loop)
@@ -762,6 +821,7 @@ class Music(commands.Cog):
         last_channels[str(interaction.guild.id)] = interaction.channel
         vc = interaction.guild.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
+            self.user_stopped[str(interaction.guild.id)] = True
             vc.stop()  # triggers _after_song -> start_next
             await interaction.response.send_message(embed=Embed(title="Skipped", description="Skipped to the next song.", color=discord.Color.orange()))
         else:
@@ -955,6 +1015,90 @@ class Music(commands.Cog):
         else:
             desc = "No DJ role is set. Everyone can use music commands. Use /setdj to restrict access."
         await interaction.response.send_message(embed=Embed(title="🎧 DJ Info", description=desc, color=discord.Color.blurple()), ephemeral=True)
+
+    # ---- Diagnostics ----
+    def _audio_selftest(self) -> str:
+        """Blocking: resolve a known YouTube video and decode 5s with FFmpeg."""
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            return "❌ ffmpeg not found on PATH"
+        try:
+            url = self.get_stream_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        except Exception as e:
+            return f"❌ yt-dlp could not resolve a YouTube stream: {str(e)[:300]}"
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", *FFMPEG_OPTS["before_options"].split(),
+               "-i", url, "-t", "5", "-vn", "-f", "s16le", "-ar", "48000", "-ac", "2", "-"]
+        try:
+            p = subprocess.run(cmd, capture_output=True, timeout=60,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except Exception as e:
+            return f"❌ ffmpeg failed to run: {e}"
+        got, want = len(p.stdout), 48000 * 2 * 2 * 5
+        ok = "✅" if got >= want * 0.9 else "❌"
+        err = p.stderr.decode(errors="replace").strip()[:300]
+        return f"{ok} decoded {got:,}/{want:,} bytes (rc={p.returncode})" + (f"\n{err}" if err else "")
+
+    @app_commands.command(name="musicdebug", description="Owner-only: diagnose music playback problems.")
+    async def music_debug(self, interaction: Interaction):
+        app_info = await self.bot.application_info()
+        if interaction.user.id != app_info.owner.id:
+            await interaction.response.send_message("❌ Owner only.", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True, ephemeral=True)
+
+        def ver(mod):
+            try:
+                return __import__(mod).__version__
+            except Exception:
+                return "not installed"
+
+        def first_line(exe, *args):
+            path = shutil.which(exe)
+            if not path:
+                return "❌ not on PATH"
+            try:
+                out = subprocess.run([path, *args], capture_output=True, text=True, timeout=15,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                return f"✅ {(out.stdout or out.stderr).splitlines()[0][:80]}"
+            except Exception as e:
+                return f"⚠️ {path}: {e}"
+
+        try:
+            opus_ok = discord.opus.is_loaded() or bool(discord.opus._load_default())
+        except Exception:
+            opus_ok = False
+
+        embed = Embed(title="🔧 Music Debug", color=discord.Color.blurple())
+        embed.add_field(name="Versions", inline=False, value=(
+            f"Python {sys.version.split()[0]} · discord.py {discord.__version__} · davey {ver('davey')} · "
+            f"yt-dlp {yt_dlp.version.__version__} · PyNaCl {ver('nacl')}"))
+        embed.add_field(name="Tools", inline=False, value=(
+            f"ffmpeg: {await asyncio.to_thread(first_line, 'ffmpeg', '-version')}\n"
+            f"deno: {await asyncio.to_thread(first_line, 'deno', '--version')}\n"
+            f"opus loaded: {'✅' if opus_ok else '❌'}"))
+
+        vc = interaction.guild.voice_client
+        if vc:
+            conn = getattr(vc, "_connection", None)
+            embed.add_field(name="Voice", inline=False, value=(
+                f"connected: {vc.is_connected()} · channel: {getattr(vc.channel, 'name', '?')}\n"
+                f"playing: {vc.is_playing()} · paused: {vc.is_paused()} · latency: {vc.latency * 1000:.0f} ms\n"
+                f"DAVE version: {getattr(conn, 'dave_protocol_version', '?')} · "
+                f"encrypting: {getattr(conn, 'can_encrypt', '?')} · privacy code: {getattr(vc, 'voice_privacy_code', None)}"))
+        else:
+            embed.add_field(name="Voice", value="Not connected in this server.", inline=False)
+
+        lp = self.last_playback.get(str(interaction.guild.id))
+        if lp:
+            ff = lp["stderr"].text() if lp.get("stderr") else ""
+            ran = "still playing" if lp.get("ended_after") is None else f"ended after {lp['ended_after']}s"
+            embed.add_field(name="Last song", inline=False, value=(
+                f"**{lp.get('title')}** via {lp.get('via')} — {ran}\n"
+                f"error: {lp.get('error') or 'none'}\nffmpeg: {(ff or 'no output')[:500]}"))
+
+        embed.add_field(name="Self-test (YouTube → FFmpeg, 5s)", inline=False,
+                        value=(await asyncio.to_thread(self._audio_selftest))[:1000])
+        await interaction.edit_original_response(embed=embed)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):

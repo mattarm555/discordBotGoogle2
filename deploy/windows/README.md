@@ -32,6 +32,11 @@ If it says a command "is not on PATH yet", close the window, open a new Admin Po
 last line again. That's normal right after winget installs things.
 
 ## 3. Day-to-day
+**Redeploy from Discord (no need to touch the laptop):** merge or push your changes to `main` on GitHub,
+then run **`/redeploy`** in any server. It's owner-only. The bot pulls the new code, restarts, and installs
+any new packages by itself. **`/musicdebug`** (owner-only) shows FFmpeg/Deno/voice status and runs a
+5-second YouTube → FFmpeg audio test on the laptop.
+
 | Task | Command (PowerShell, in `C:\JengBot`) |
 | --- | --- |
 | Watch the log live | `Get-Content logs\bot.log -Wait -Tail 50` |

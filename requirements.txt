@@ -1,11 +1,13 @@
-discord.py
-openai
-speechrecognition
-pyaudio
-gtts
-yt-dlp
+# discord.py 2.7+ is required: Discord enforces DAVE (E2EE) voice since March 2026.
+# The [voice] extra pulls in PyNaCl + davey.
+discord.py[voice]>=2.7.1
+# Keep yt-dlp current (deploy/update.sh upgrades it). [default] includes yt-dlp-ejs,
+# which needs the Deno runtime installed on the host for YouTube.
+yt-dlp[default]>=2026.10.26
+# PO token plugin for yt-dlp; talks to the bgutil provider container (see deploy/README.md).
+bgutil-ytdlp-pot-provider
 aiohttp
+requests
 python-dotenv
-curl_cffi
-PyNaCl
 pillow
+pytz

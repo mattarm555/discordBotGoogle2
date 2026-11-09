@@ -3,13 +3,17 @@ from discord.ext import commands
 from discord import app_commands, ui, Interaction, Embed
 import random
 from datetime import datetime
-import pytz
 from utils.debug import debug_command
 import asyncio
 import logging
-import json
-from pathlib import Path
 from typing import Optional
+from utils.botadmin import (
+    app_check_bot_admin,
+    app_check_can_manage_bot_permissions,
+    add_bot_admin_role,
+    remove_bot_admin_role,
+    get_bot_admin_role_ids,
+)
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -62,17 +66,10 @@ class Misc(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
     @app_commands.command(name="listpermissions", description="List all roles with bot admin permissions for this server.")
+    @app_check_can_manage_bot_permissions()
     async def listpermissions(self, interaction: Interaction):
-        CONFIG_FILE = "xp_config.json"
-        def load_json(file):
-            import os, json
-            if os.path.exists(file):
-                with open(file, "r") as f:
-                    return json.load(f)
-            return {}
-        config = load_json(CONFIG_FILE)
         guild_id = str(interaction.guild.id)
-        perms = config.get(guild_id, {}).get("permissions_roles", [])
+        perms = get_bot_admin_role_ids(guild_id)
         if not perms:
             err = Embed(title='No Roles', description='No roles have bot admin permissions.', color=discord.Color.red())
             await interaction.response.send_message(embed=err, ephemeral=True)
@@ -91,25 +88,12 @@ class Misc(commands.Cog):
     
     @app_commands.command(name="removepermissions", description="Remove a role from bot admin permissions for this server.")
     @app_commands.describe(role="Role to remove from bot admin permissions")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_can_manage_bot_permissions()
     async def removepermissions(self, interaction: Interaction, role: discord.Role):
-        CONFIG_FILE = "xp_config.json"
-        def load_json(file):
-            import os, json
-            if os.path.exists(file):
-                with open(file, "r") as f:
-                    return json.load(f)
-            return {}
-        def save_json(file, data):
-            import json
-            with open(file, "w") as f:
-                json.dump(data, f, indent=4)
-        config = load_json(CONFIG_FILE)
         guild_id = str(interaction.guild.id)
-        perms = config.setdefault(guild_id, {}).setdefault("permissions_roles", [])
+        perms = set(get_bot_admin_role_ids(guild_id))
         if str(role.id) in perms:
-            perms.remove(str(role.id))
-            save_json(CONFIG_FILE, config)
+            remove_bot_admin_role(guild_id, role.id)
             info = Embed(title='Role Removed', description=f'Role {role.mention} removed from bot admin permissions.', color=discord.Color.green())
             await interaction.response.send_message(embed=info, ephemeral=True)
         else:
@@ -118,26 +102,12 @@ class Misc(commands.Cog):
     
     @app_commands.command(name="setpermissions", description="Set a role as bot admin for this server.")
     @app_commands.describe(role="Role to grant bot admin permissions")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_can_manage_bot_permissions()
     async def setpermissions(self, interaction: Interaction, role: discord.Role):
-        # Load config
-        CONFIG_FILE = "xp_config.json"
-        def load_json(file):
-            import os, json
-            if os.path.exists(file):
-                with open(file, "r") as f:
-                    return json.load(f)
-            return {}
-        def save_json(file, data):
-            import json
-            with open(file, "w") as f:
-                json.dump(data, f, indent=4)
-        config = load_json(CONFIG_FILE)
         guild_id = str(interaction.guild.id)
-        perms = config.setdefault(guild_id, {}).setdefault("permissions_roles", [])
+        perms = set(get_bot_admin_role_ids(guild_id))
         if str(role.id) not in perms:
-            perms.append(str(role.id))
-            save_json(CONFIG_FILE, config)
+            add_bot_admin_role(guild_id, role.id)
             info = Embed(title='Role Added', description=f'Role {role.mention} added as bot admin.', color=discord.Color.green())
             await interaction.response.send_message(embed=info, ephemeral=True)
         else:
@@ -171,119 +141,129 @@ class Misc(commands.Cog):
         debug_command("help", interaction.user, interaction.guild)
         pages: list[Embed] = []
 
-        # Music (includes DJ commands)
-        music_embed = Embed(title="🎵 Music Commands", color=discord.Color.blue())
-        music_embed.add_field(name="/play <url>", value="Plays a song or playlist from the given URL.", inline=False)
-        music_embed.add_field(name="/queue", value="Shows the current music queue.", inline=False)
-        music_embed.add_field(name="/skip", value="Skips the current song.", inline=False)
-        music_embed.add_field(name="/stop", value="Pauses the music.", inline=False)
-        music_embed.add_field(name="/start", value="Resumes paused music.", inline=False)
-        music_embed.add_field(name="/leave", value="Clears the queue and makes the bot leave the voice channel.", inline=False)
-        music_embed.add_field(name="/playplaylist <name>", value="Play a previously saved playlist.", inline=False)
-        music_embed.add_field(name="/saveplaylist <name> <link>", value="Save a playlist link under a custom name.", inline=False)
-        music_embed.add_field(name="/removeplaylist <name>", value="Delete a saved playlist.", inline=False)
-        music_embed.add_field(name="/listplaylists", value="List saved playlists for this server.", inline=False)
-        music_embed.add_field(name="/queueshuffle", value="Shuffles the current queue.", inline=False)
-        music_embed.add_field(name="/np", value="Shows the currently playing song.", inline=False)
-        music_embed.add_field(name="/setdj <role>", value="Assign or update the DJ role (Manage Guild).", inline=False)
-        music_embed.add_field(name="/cleardj", value="Remove the configured DJ role restriction.", inline=False)
-        music_embed.add_field(name="/djinfo", value="Show the current DJ role configuration.", inline=False)
-        music_embed.add_field(name="/refresh_cookies", value="Owner only: Run refresh_cookies.py and sync cookies for YouTube playback.", inline=False)
-        pages.append(music_embed)
+        def build_section_pages(title: str, color: discord.Color, fields: list[tuple[str, str]], max_fields: int = 25) -> list[Embed]:
+            if not fields:
+                return []
+            chunks = [fields[i:i + max_fields] for i in range(0, len(fields), max_fields)]
+            built: list[Embed] = []
+            for idx, chunk in enumerate(chunks, start=1):
+                page_title = title if len(chunks) == 1 else f"{title} (Part {idx}/{len(chunks)})"
+                emb = Embed(title=page_title, color=color)
+                for name, value in chunk:
+                    emb.add_field(name=name, value=value, inline=False)
+                built.append(emb)
+            return built
 
-        # Gambling
-        gambling_embed = Embed(title="🎰 Gambling", color=discord.Color.gold())
-        gambling_embed.add_field(name="/daily", value="Claim your daily coin reward (10,000–100,000; 24h cooldown).", inline=False)
-        gambling_embed.add_field(name="/balance [user]", value="Check your balance or another user's balance.", inline=False)
-        gambling_embed.add_field(name="/balancetop", value="Show the top balances in this server.", inline=False)
-        gambling_embed.add_field(name="/pay <user> <amount>", value="Pay another user some of your coins.", inline=False)
-        gambling_embed.add_field(name="/blackjack <bet>", value="Play a hand of blackjack (1–10000 bet).", inline=False)
-        gambling_embed.add_field(name="/blackjack_set_cooldown <duration>", value="Admin: Set cooldown between blackjack hands (min 10s). E.g., 10s, 30s, 1m.", inline=False)
-        gambling_embed.add_field(name="/slots <bet> [lines]", value="Spin the slots (1–10000 bet, 1–5 lines).", inline=False)
-        gambling_embed.add_field(name="/slots_set_cooldown <duration>", value="Admin: Set cooldown between slot spins (min 1s). E.g., 1s, 10s, 1m.", inline=False)
-        gambling_embed.add_field(name="/slotstats", value="View your slot stats and session delta.", inline=False)
-        gambling_embed.add_field(name="/slotresetsession", value="Reset your slot session baseline.", inline=False)
-        gambling_embed.add_field(name="/slotsim [spins] [wager] [lines]", value="Owner only: Simulate slot spins to estimate RTP (no balance impact).", inline=False)
-        gambling_embed.add_field(name="/work", value="Work a random job to earn coins (per-server cooldown).", inline=False)
-        gambling_embed.add_field(name="/setworkcooldown <duration>", value="Admin: Set /work cooldown (e.g., 15m, 2h, 1d).", inline=False)
-        gambling_embed.add_field(name="/coin_reset", value="Admin: Reset all coin balances for this server.", inline=False)
-        gambling_embed.add_field(name="/shop [page]", value="Browse passive income items (shows what you own).", inline=False)
-        gambling_embed.add_field(name="/buy <item_name> [amount]", value="Buy a passive item by exact name (see /shop). Amount defaults to 1.", inline=False)
-        gambling_embed.add_field(name="/inventory", value="See the passive items you own and their income.", inline=False)
-        gambling_embed.add_field(name="/shop_set_interval <duration>", value="Admin: Set how often items pay (e.g., 15m, 1h, 2h30m).", inline=False)
-        gambling_embed.add_field(name="/item_add <name> <cost> <income> <description>", value="Admin: Add a server-specific shop item.", inline=False)
-        gambling_embed.add_field(name="/item_delete <name>", value="Admin: Delete a server-specific shop item.", inline=False)
-        gambling_embed.add_field(name="/item_list", value="List this server's custom shop items.", inline=False)
-        gambling_embed.add_field(name="/econ_wipe", value="Admin: Wipe all users' coins and owned items for this server.", inline=False)
-        pages.append(gambling_embed)
+        # Music (includes DJ commands) - owner-only commands intentionally excluded
+        music_fields: list[tuple[str, str]] = [
+            ("/play <url>", "Plays a song or playlist from the given URL."),
+            ("/queue", "Shows the current music queue."),
+            ("/skip", "Skips the current song."),
+            ("/stop", "Pauses the music."),
+            ("/start", "Resumes paused music."),
+            ("/leave", "Clears the queue and makes the bot leave the voice channel."),
+            ("/playplaylist <name>", "Play a previously saved playlist."),
+            ("/saveplaylist <name> <link>", "Save a playlist link under a custom name."),
+            ("/removeplaylist <name>", "Delete a saved playlist."),
+            ("/listplaylists", "List saved playlists for this server."),
+            ("/queueshuffle", "Shuffles the current queue."),
+            ("/np", "Shows the currently playing song."),
+            ("/setdj <role>", "Assign or update the DJ role (Manage Guild)."),
+            ("/cleardj", "Remove the configured DJ role restriction."),
+            ("/djinfo", "Show the current DJ role configuration."),
+        ]
+        pages.extend(build_section_pages("🎵 Music Commands", discord.Color.blue(), music_fields))
+
+        # Gambling - owner-only commands intentionally excluded
+        gambling_fields: list[tuple[str, str]] = [
+            ("/daily", "Claim your daily coin reward (per-server range; 24h cooldown)."),
+            ("/econinfo", "Show this server's /daily, /work, /shop, and rebirth settings."),
+            ("/balance [user]", "Check your balance or another user's balance."),
+            ("/balancetop", "Show the top balances in this server."),
+            ("/pay <user> <amount>", "Pay another user some of your coins."),
+            ("/blackjack <bet>", "Play a hand of blackjack (bet limits are server-configurable)."),
+            ("/casino_set_interval <duration>", "Admin: Set cooldown for casino games (blackjack/roulette) (min 10s). E.g., 10s, 30s, 1m."),
+            ("/slots <bet> [lines]", "Spin the slots (bet limits are server-configurable; 1–5 lines)."),
+            ("/slots_set_cooldown <duration>", "Admin: Set cooldown between slot spins (min 1s). E.g., 1s, 10s, 1m."),
+            ("/roulette <bet>", "Roulette (shares blackjack cooldown). Choose via buttons (red/black/green or number 0/00/1–36)."),
+            ("/casino_bet_limit <min> <max>", "Admin: Set casino bet limits for blackjack/roulette."),
+            ("/slots_bet_limit <min> <max>", "Admin: Set slots bet limits."),
+            ("/slotstats", "View your slot stats and session delta."),
+            ("/slotresetsession", "Reset your slot session baseline."),
+            ("/work", "Work a random job to earn coins (per-server cooldown)."),
+            ("/setworkcooldown <duration>", "Admin: Set /work cooldown (e.g., 15m, 2h, 1d)."),
+            ("/setworkreward <min> <max>", "Admin: Set this server's /work reward range."),
+            ("/setdailyreward <min> <max>", "Admin: Set this server's /daily reward range."),
+            ("/rebirth [confirm]", "Reset your coins to gain a multiplier on /daily, /work, and shop passive income."),
+            ("/setrebirthcost <amount>", "Admin: Set how many coins are required to /rebirth in this server."),
+            ("/coin_reset", "Admin: Reset all coin balances for this server."),
+            ("/shop [page]", "Browse passive income items (shows what you own)."),
+            ("/buy <item_name> [amount]", "Buy a passive item by exact name (see /shop). Amount defaults to 1."),
+            ("/inventory", "See the passive items you own and their income."),
+            ("/shop_set_interval <duration>", "Admin: Set how often items pay (e.g., 15m, 1h, 2h30m)."),
+            ("/item_add <name> <cost> <income> <description>", "Admin: Add a server-specific shop item."),
+            ("/item_delete <name>", "Admin: Delete a server-specific shop item."),
+            ("/item_list", "List this server's custom shop items."),
+            ("/econ_wipe", "Admin: Wipe all users' coins and owned items for this server."),
+        ]
+        pages.extend(build_section_pages("🎰 Gambling", discord.Color.gold(), gambling_fields))
 
         # XP
-        xp_embed = Embed(title="📈 XP System", color=discord.Color.green())
-        xp_embed.add_field(name="/level", value="Shows your XP level and server rank.", inline=False)
-        xp_embed.add_field(name="/xpleaderboard [page]", value="Shows the leaders in XP in this server.", inline=False)
-        xp_embed.add_field(name="/xpset <amount>", value="Sets the amount of XP gained per message.", inline=False)
-        xp_embed.add_field(name="/xpblock <channel>", value="Blocks XP in the given channel.", inline=False)
-        xp_embed.add_field(name="/xpunblock <channel>", value="Unblocks XP in the given channel.", inline=False)
-        xp_embed.add_field(name="/xpconfig", value="Shows the current XP settings.", inline=False)
-        xp_embed.add_field(name="/setlevelrole <level> <role>", value="Set which role is given at a specific level.", inline=False)
-        xp_embed.add_field(name="/resetxp", value="Admin: Reset all XP and levels for this server.", inline=False)
-        xp_embed.add_field(name="/levelup_silence <channel>", value="Admin: Toggle muting level-up messages in a channel.", inline=False)
-        xp_embed.add_field(name="/levelup_channel [channel]", value="Admin: Set or clear a dedicated channel for level-up messages.", inline=False)
-        pages.append(xp_embed)
+        xp_fields: list[tuple[str, str]] = [
+            ("/level", "Shows your XP level and server rank."),
+            ("/xpleaderboard [page]", "Shows the leaders in XP in this server."),
+            ("/xpset <amount>", "Sets the amount of XP gained per message."),
+            ("/addxp <user> <amount>", "Admin: Add XP to a user (applies any earned level roles)."),
+            ("/xpblock <channel>", "Blocks XP in the given channel."),
+            ("/xpunblock <channel>", "Unblocks XP in the given channel."),
+            ("/xpconfig", "Shows the current XP settings."),
+            ("/setlevelrole <level> <role>", "Set which role is given at a specific level."),
+            ("/resetxp", "Admin: Reset all XP and levels for this server."),
+            ("/levelup_silence <channel>", "Admin: Toggle muting level-up messages in a channel."),
+            ("/levelup_channel [channel]", "Admin: Set or clear a dedicated channel for level-up messages."),
+        ]
+        pages.extend(build_section_pages("📈 XP System", discord.Color.green(), xp_fields))
 
         # Misc
-        misc_embed = Embed(title="😂 Miscellaneous", color=discord.Color.purple())
-        misc_embed.add_field(name="/snipe", value="Retrieves the last deleted message in the current channel.", inline=False)
-        misc_embed.add_field(name="/bot_say", value="Admin: Make the bot send a message (with embed options).", inline=False)
-        pages.append(misc_embed)
+        misc_fields: list[tuple[str, str]] = [
+            ("/snipe", "Retrieves the last deleted message in the current channel."),
+            ("/bot_say", "Admin: Make the bot send a message (with embed options)."),
+        ]
+        pages.extend(build_section_pages("😂 Miscellaneous", discord.Color.purple(), misc_fields))
 
         # Community
-        community_embed = Embed(title="📊 Community Tools", color=discord.Color.orange())
-        community_embed.add_field(name="/poll", value="Create a custom emoji poll with 2–6 options and a closing timer.", inline=False)
-        community_embed.add_field(name="/event", value="Create an interactive RSVP event.", inline=False)
-        community_embed.add_field(name="/welcomeconfig", value="Show current welcome message configuration.", inline=False)
-        community_embed.add_field(name="/setwelcome", value="Configure the welcome message settings.", inline=False)
-        community_embed.add_field(name="/follow <platform> <identifier> <post_channel>", value="Follow a YouTube or Twitch channel and post new content to a channel.", inline=False)
-        community_embed.add_field(name="/removefollow <sub_id>", value="Remove a follow subscription by ID (from /followlist).", inline=False)
-        community_embed.add_field(name="/followlist", value="List follow subscriptions for this server.", inline=False)
-        community_embed.add_field(name="/ticket <subject>", value="Open a private ticket channel for support.", inline=False)
-        community_embed.add_field(name="/ticketlocation <category>", value="Set the default category for new tickets.", inline=False)
-        community_embed.add_field(name="/reactionroles_create <count> <interactive> [base_name]", value="Create reaction roles (max 50).", inline=False)
-        community_embed.add_field(name="/reactionroles_post <config_id> <channel> <message>", value="Post a reaction-roles message.", inline=False)
-        community_embed.add_field(name="/reactionroles_remove <config_id>", value="Remove a color role set.", inline=False)
-        community_embed.add_field(name="/reaction_list", value="List reaction configurations.", inline=False)
-        community_embed.add_field(name="/custom_reactionroles <role> <emoji> [config_id]", value="Add your own role+emoji to a reaction-role config. If no config_id is provided, a personal default is created and reused.", inline=False)
-        community_embed.add_field(name="/counting <name> [chances]", value="Create a counting channel.", inline=False)
-        community_embed.add_field(name="/delete_counting <channel>", value="Delete a counting channel.", inline=False)
-        pages.append(community_embed)
+        community_fields: list[tuple[str, str]] = [
+            ("/poll", "Create a custom emoji poll with 2–6 options and a closing timer."),
+            ("/event", "Create an interactive RSVP event."),
+            ("/welcomeconfig", "Show current welcome message configuration."),
+            ("/setwelcome", "Configure the welcome message settings."),
+            ("/follow <platform> <identifier> <post_channel>", "Follow a YouTube or Twitch channel and post new content to a channel."),
+            ("/removefollow <sub_id>", "Remove a follow subscription by ID (from /followlist)."),
+            ("/followlist", "List follow subscriptions for this server."),
+            ("/ticket <subject>", "Open a private ticket channel for support."),
+            ("/ticketlocation <category>", "Set the default category for new tickets."),
+            ("/reactionroles_create <count> <interactive> [base_name]", "Create reaction roles (max 50)."),
+            ("/reactionroles_post <config_id> <channel> <message>", "Post a reaction-roles message."),
+            ("/reactionroles_remove <config_id>", "Remove a color role set."),
+            ("/reaction_list", "List reaction configurations."),
+            ("/custom_reactionroles <role> <emoji> [config_id]", "Add your own role+emoji to a reaction-role config. If no config_id is provided, a personal default is created and reused."),
+            ("/counting <name> [chances]", "Create a counting channel."),
+            ("/delete_counting <channel>", "Delete a counting channel."),
+        ]
+        pages.extend(build_section_pages("📊 Community Tools", discord.Color.orange(), community_fields))
 
         # Moderating
-        moderating_embed = Embed(title="🛡️ Moderating", color=discord.Color.red())
-        moderating_embed.add_field(name="/mute <member> [duration] [reason]", value="Mute a member (e.g. 10m, 1h, 1d).", inline=False)
-        moderating_embed.add_field(name="/mutestatus [member]", value="Show remaining mute time.", inline=False)
-        moderating_embed.add_field(name="/unmute <member>", value="Unmute immediately.", inline=False)
-        moderating_embed.add_field(name="/kick <member> [reason]", value="Kick a member.", inline=False)
-        moderating_embed.add_field(name="/ban <member> [reason]", value="Ban a member.", inline=False)
-        moderating_embed.add_field(name="/banlist_add <phrase> [reason]", value="Add auto-ban phrase.", inline=False)
-        moderating_embed.add_field(name="/banlist_remove <phrase>", value="Remove auto-ban phrase.", inline=False)
-        moderating_embed.add_field(name="/banlist_list", value="List auto-ban phrases.", inline=False)
-        moderating_embed.add_field(name="/mutelist_add <phrase> <duration> [reason]", value="Add auto-mute phrase.", inline=False)
-        moderating_embed.add_field(name="/mutelist_remove <phrase>", value="Remove auto-mute phrase.", inline=False)
-        moderating_embed.add_field(name="/mutelist_list", value="List auto-mute phrases.", inline=False)
-        moderating_embed.add_field(name="/kicklist_add <phrase> [reason]", value="Add auto-kick phrase.", inline=False)
-        moderating_embed.add_field(name="/kicklist_remove <phrase>", value="Remove auto-kick phrase.", inline=False)
-        moderating_embed.add_field(name="/kicklist_list", value="List auto-kick phrases.", inline=False)
-        moderating_embed.add_field(name="/help_message <message>", value="DM the bot owner feedback.", inline=False)
-        pages.append(moderating_embed)
-
-        # Quotes
-        quotes_embed = Embed(title="💬 Quotes", color=discord.Color.teal())
-        quotes_embed.add_field(name="/quote_add", value="Add a new quote.", inline=False)
-        quotes_embed.add_field(name="/quote_get", value="Get a random quote.", inline=False)
-        quotes_embed.add_field(name="/quote_list", value="View all quotes.", inline=False)
-        quotes_embed.add_field(name="/quote_edit <index> <new_text>", value="Edit a quote.", inline=False)
-        quotes_embed.add_field(name="/quote_delete <index>", value="Delete a quote.", inline=False)
-        pages.append(quotes_embed)
+        moderating_fields: list[tuple[str, str]] = [
+            ("/mute <member> [duration] [reason]", "Mute a member (e.g. 10m, 1h, 1d)."),
+            ("/mutestatus [member]", "Show remaining mute time."),
+            ("/unmute <member>", "Unmute immediately."),
+            ("/kick <member> [reason]", "Kick a member."),
+            ("/ban <member> [reason]", "Ban a member."),
+            ("/mutelist_add <phrase> <duration> [reason]", "Add auto-mute phrase."),
+            ("/mutelist_remove <phrase>", "Remove auto-mute phrase."),
+            ("/mutelist_list", "List auto-mute phrases."),
+        ]
+        pages.extend(build_section_pages("🛡️ Moderating", discord.Color.red(), moderating_fields))
 
         # Dynamic page numbering
         total = len(pages)
@@ -302,57 +282,9 @@ class Misc(commands.Cog):
             )
             await interaction.response.send_message(embed=error, ephemeral=True)
 
-    @app_commands.command(name="help_message", description="Send a help message to the bot owner (DM)")
-    @app_commands.describe(message='Message to send to the bot owner, reccomendations are welcome!')
-    async def help_message(self, interaction: Interaction, message: str):
-        debug_command('help_message', interaction.user, interaction.guild, message=message)
-
-        # Try to read an owner_id from xp_config.json under top-level 'owner_id'
-        owner_id = None
-        try:
-            cfg_path = Path('xp_config.json')
-            if cfg_path.exists():
-                cfg = json.loads(cfg_path.read_text(encoding='utf-8') or '{}')
-                owner_id = cfg.get('owner_id')
-        except Exception:
-            owner_id = None
-
-        owner = None
-        try:
-            if owner_id:
-                owner = await self.bot.fetch_user(int(owner_id))
-            else:
-                app_info = await self.bot.application_info()
-                owner = app_info.owner
-        except Exception:
-            owner = None
-
-        # build embed to DM the owner: only include user (no ID), server name, and message
-        owner_emb = Embed(title=f'Help message from {interaction.user.display_name}', color=discord.Color.blue())
-        owner_emb.add_field(name='User', value=f'{interaction.user}', inline=False)
-        owner_emb.add_field(name='Server', value=f'{interaction.guild.name}', inline=False)
-        owner_emb.add_field(name='Message', value=message, inline=False)
-        owner_emb.set_footer(text=f'Sent via /help_message')
-
-        sent = False
-        if owner:
-            try:
-                await owner.send(embed=owner_emb)
-                sent = True
-            except Exception:
-                sent = False
-
-        if sent:
-            emb = Embed(title='Message sent', description='Your message was delivered to the bot owner.', color=discord.Color.green())
-            await interaction.response.send_message(embed=emb, ephemeral=True)
-        else:
-            emb = Embed(title='Delivery failed', description='Could not deliver your message to the bot owner. They may have DMs closed or an error occurred.', color=discord.Color.red())
-            await interaction.response.send_message(embed=emb, ephemeral=True)
-
     # Admin: Send a message as the bot with optional embed formatting
     @app_commands.command(name="bot_say", description="Admin: Make the bot send a message, with optional embed formatting.")
-    @app_commands.checks.has_permissions(administrator=True)
-    @commands.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(
         channel="Channel to post in (defaults to current)",
         message="Plain text content (required if not using embed)",

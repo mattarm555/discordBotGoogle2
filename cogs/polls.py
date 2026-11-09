@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 import os
 import json
+from utils.botadmin import is_bot_admin
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -52,25 +53,11 @@ class Polls(commands.Cog):
         option5_text: str = None, option5_emoji: str = None,
         option6_text: str = None, option6_emoji: str = None
     ):
-        # Permission check: allow server administrators, app owner, or any role listed in xp_config.json permissions_roles
+        # Permission check: bot-admin roles (configured via /setpermissions) or app owner
         app_owner = await self.bot.application_info()
-        if not (interaction.user.guild_permissions.administrator or interaction.user.id == app_owner.owner.id):
-            try:
-                CONFIG_FILE = "xp_config.json"
-                perms = []
-                if os.path.exists(CONFIG_FILE):
-                    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                        cfg = json.load(f)
-                        perms = cfg.get(str(interaction.guild.id), {}).get("permissions_roles", [])
-                # perms is expected to be a list of role id strings
-                user_role_ids = {str(r.id) for r in interaction.user.roles}
-                if not (set(perms) & user_role_ids):
-                    await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
-                    return
-            except Exception:
-                # on any failure, fall back to strict permission (deny)
-                await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
-                return
+        if not is_bot_admin(interaction.user, allow_owner_id=app_owner.owner.id):
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
 
         await interaction.response.defer()
 

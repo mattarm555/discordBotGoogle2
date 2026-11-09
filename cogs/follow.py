@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from utils.debug import debug_command
 import logging
+from utils.botadmin import is_bot_admin
 
 logger = logging.getLogger("jeng.follow")
 # Default to INFO for this cog so routine checks (debug-level) don't spam the console.
@@ -154,12 +155,11 @@ class Follow(commands.Cog):
     ])
     @app_commands.describe(platform="Platform (choose YouTube or Twitch)", identifier="Channel id, username, or URL", post_channel="Text channel to post into", ping_target="Who to ping when posting updates", ping_role="Optional role to ping (required if you choose 'Choose a role')", message="Message template (use {url}, {title}, {channel})")
     async def follow(self, interaction: Interaction, platform: str, identifier: str, post_channel: discord.TextChannel, ping_target: app_commands.Choice[str], ping_role: discord.Role = None, message: str = "New content: {url}"):
-        # Restrict this command to guild administrators or the bot owner
+        # Restrict this command to bot-admin roles (configured via /setpermissions) or owner
         # Defer early so the user sees a response promptly when unauthorized
         await interaction.response.defer(thinking=True)
-        is_admin = interaction.user.guild_permissions.administrator
         app_owner = await self.bot.application_info()
-        if not (is_admin or interaction.user.id == app_owner.owner.id):
+        if not is_bot_admin(interaction.user, allow_owner_id=app_owner.owner.id):
             await interaction.followup.send("❌ You do not have permission to use this command.", ephemeral=True)
             return
 
@@ -349,9 +349,9 @@ class Follow(commands.Cog):
     async def follow_remove(self, interaction: Interaction, sub_id: str):
         # Restrict this command to guild administrators or the bot owner
         await interaction.response.defer(thinking=True, ephemeral=True)
-        is_admin = interaction.user.guild_permissions.administrator
+        # Restrict this command to bot-admin roles (configured via /setpermissions) or owner
         app_owner = await self.bot.application_info()
-        if not (is_admin or interaction.user.id == app_owner.owner.id):
+        if not is_bot_admin(interaction.user, allow_owner_id=app_owner.owner.id):
             await interaction.followup.send("❌ You do not have permission to use this command.", ephemeral=True)
             return
 
@@ -440,11 +440,10 @@ class Follow(commands.Cog):
         """
         import hashlib
 
-        # Restrict this command to guild administrators or the bot owner
+        # Restrict this command to bot-admin roles (configured via /setpermissions) or owner
         await interaction.response.defer(thinking=True)
-        is_admin = interaction.user.guild_permissions.administrator
         app_owner = await self.bot.application_info()
-        if not (is_admin or interaction.user.id == app_owner.owner.id):
+        if not is_bot_admin(interaction.user, allow_owner_id=app_owner.owner.id):
             await interaction.followup.send("❌ You do not have permission to use this command.", ephemeral=True)
             return
 

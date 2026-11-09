@@ -20,8 +20,12 @@ from utils.economy import (
 from datetime import datetime
 import json
 from datetime import timedelta
-from utils.botadmin import is_bot_admin
+from utils.botadmin import is_bot_admin, app_check_bot_admin
 import re
+from utils.casino_cooldown import cooldown_remaining_seconds, set_last_casino_play
+
+PAYBLOCK_FILE = "payblock.json"
+PAYLIMITS_FILE = "paylimits.json"
 
 # --- Color Codes ---
 RESET = "\033[0m"
@@ -240,7 +244,7 @@ class BlackjackView(View):
                 if player_file:
                     files.append(player_file)
         
-        embed.set_footer(text=f"Wager: {self.wager}")
+        embed.set_footer(text=f"Wager: {self.wager:,}")
         
         # Update button states
         self.update_buttons()
@@ -310,7 +314,7 @@ class BlackjackView(View):
         add_currency(uid, self.wager, guild_id=guild_id)
         # Attempt to notify user if possible
         try:
-            embed = discord.Embed(title="Blackjack Closed", description=f"Game closed due to {reason}. Wager refunded ({self.wager}).", color=discord.Color.orange())
+            embed = discord.Embed(title="Blackjack Closed", description=f"Game closed due to {reason}. Wager refunded ({self.wager:,}).", color=discord.Color.orange())
             if self.ctx.channel:
                 await self.ctx.channel.send(content=self.ctx.user.mention, embed=embed)
         except Exception:
@@ -368,12 +372,25 @@ class BlackjackView(View):
         
         uid = str(self.ctx.user.id)
         guild_id = str(interaction.guild.id) if interaction.guild else None
+
+        # Enforce server max bet on double-down
+        try:
+            _mn, mx = self.cog.get_casino_bet_limits(guild_id)
+            if (self.wager * 2) > mx:
+                await interaction.response.send_message(
+                    f"❌ Doubling would exceed the max bet ({mx:,}).",
+                    ephemeral=True,
+                )
+                return
+        except Exception:
+            pass
+
         current_balance = get_balance(uid, guild_id=guild_id)
         if current_balance < self.wager:
             try:
-                await interaction.response.send_message(f"❌ Insufficient funds to double down! You need {self.wager} coins but only have {current_balance} coins.", ephemeral=True)
+                await interaction.response.send_message(f"❌ Insufficient funds to double down! You need {self.wager:,} coins but only have {current_balance:,} coins.", ephemeral=True)
             except:
-                await interaction.followup.send(f"❌ Insufficient funds to double down! You need {self.wager} coins but only have {current_balance} coins.", ephemeral=True)
+                await interaction.followup.send(f"❌ Insufficient funds to double down! You need {self.wager:,} coins but only have {current_balance:,} coins.", ephemeral=True)
             return
         
         # Double the wager and remove from balance
@@ -406,42 +423,45 @@ class BlackjackView(View):
         # Handle main game
         if p_value > 21:
             # Player busted
-            message += f"You busted! Lost {self.wager} coins."
+            message += f"You busted! Lost {self.wager:,} coins."
         elif d_value > 21:
             # Dealer busted, player wins
             if p_blackjack and not self.doubled:
                 # Natural blackjack pays 3:2
                 payout = int(self.wager * 2.5)
-                message += f"Blackjack! You win {payout} coins!"
+                message += f"Blackjack! You win {payout:,} coins!"
             else:
                 # Regular win pays 1:1
                 payout = self.wager * 2
-                message += f"Dealer busts! You win {payout} coins!"
+                message += f"Dealer busts! You win {payout:,} coins!"
         elif p_blackjack and d_blackjack:
             # Both blackjack = push
             payout = self.wager
-            message += f"Both have blackjack! Push. {payout} coins returned."
+            message += f"Both have blackjack! Push. {payout:,} coins returned."
         elif p_blackjack and not d_blackjack:
             # Player blackjack wins 3:2
             payout = int(self.wager * 2.5)
-            message += f"Blackjack! You win {payout} coins!"
+            message += f"Blackjack! You win {payout:,} coins!"
         elif d_blackjack and not p_blackjack:
             # Dealer blackjack wins
-            message += f"Dealer blackjack! You lose {self.wager} coins."
+            message += f"Dealer blackjack! You lose {self.wager:,} coins."
         elif p_value > d_value:
             # Player wins
             payout = self.wager * 2
-            message += f"You win! +{payout} coins!"
+            message += f"You win! +{payout:,} coins!"
         elif p_value == d_value:
             # Push
             payout = self.wager
-            message += f"Push! {payout} coins returned."
+            message += f"Push! {payout:,} coins returned."
         else:
             # Dealer wins
-            message += f"Dealer wins! You lose {self.wager} coins."
+            message += f"Dealer wins! You lose {self.wager:,} coins."
         
         if payout > 0:
             add_currency(uid, payout, guild_id=guild_id)
+
+        # Post-hand balance (after wager already removed + payout applied)
+        balance_after = get_balance(uid, guild_id=guild_id)
         
         # Send the result message as embed
         if ("you win" in message.lower() or "blackjack!" in message.lower() or 
@@ -456,6 +476,7 @@ class BlackjackView(View):
             title = "💸 You Lose"
         
         result_embed = discord.Embed(title=title, description=message, color=embed_color)
+        result_embed.add_field(name="💰 Balance", value=f"{balance_after:,} coins", inline=False)
         try:
             await interaction.followup.send(embed=result_embed)
         except:
@@ -509,6 +530,95 @@ class Blackjack(commands.Cog):
         self.SESSION_TIMEOUT = timedelta(minutes=30)
         # Shared casino config file (used by slots too)
         self._cfg_file = "casino_config.json"
+        # Per-guild locks for /pay updates (prevents races on limits)
+        self._pay_locks: dict[str, asyncio.Lock] = {}
+
+    # ---- /pay limits + blocks ----
+    def _get_pay_lock(self, guild_id: str) -> asyncio.Lock:
+        lock = self._pay_locks.get(str(guild_id))
+        if lock is None:
+            lock = asyncio.Lock()
+            self._pay_locks[str(guild_id)] = lock
+        return lock
+
+    def _load_json_file(self, path: str, default: dict) -> dict:
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return default
+
+    def _save_json_file(self, path: str, data: dict) -> None:
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+        except Exception:
+            pass
+
+    def _is_pay_blocked(self, guild_id: str, sender_id: str, receiver_id: str) -> bool:
+        """Return True if sender and receiver are configured to be blocked from paying each other."""
+        cfg = self._load_json_file(PAYBLOCK_FILE, {"guilds": {}})
+        g = cfg.get("guilds", {}).get(str(guild_id), {}) if isinstance(cfg, dict) else {}
+        blocked_pairs = g.get("blocked_pairs", {}) if isinstance(g, dict) else {}
+        if not isinstance(blocked_pairs, dict):
+            return False
+
+        s = str(sender_id)
+        r = str(receiver_id)
+        try:
+            s_list = blocked_pairs.get(s, [])
+            if isinstance(s_list, list) and r in [str(x) for x in s_list]:
+                return True
+            r_list = blocked_pairs.get(r, [])
+            if isinstance(r_list, list) and s in [str(x) for x in r_list]:
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _check_and_increment_pay_pair_limit(self, guild_id: str, sender_id: str, receiver_id: str) -> tuple[bool, int]:
+        """Enforce max 2 payments per sender->receiver per UTC day.
+
+        Returns (allowed, remaining_after).
+        """
+        today = datetime.utcnow().date().isoformat()
+        data = self._load_json_file(PAYLIMITS_FILE, {"guilds": {}})
+        guild_bucket = data.setdefault("guilds", {}).setdefault(str(guild_id), {})
+        pairs = guild_bucket.setdefault("pairs", {})
+
+        s = str(sender_id)
+        r = str(receiver_id)
+
+        sender_pairs = pairs.setdefault(s, {})
+        rec = sender_pairs.get(r)
+        if not isinstance(rec, dict):
+            rec = {"date": today, "count": 0}
+            sender_pairs[r] = rec
+
+        if str(rec.get("date")) != today:
+            rec["date"] = today
+            rec["count"] = 0
+
+        try:
+            count = int(rec.get("count", 0))
+        except Exception:
+            count = 0
+
+        if count >= 2:
+            return False, 0
+
+        count += 1
+        rec["count"] = count
+        sender_pairs[r] = rec
+        pairs[s] = sender_pairs
+        guild_bucket["pairs"] = pairs
+        data["guilds"][str(guild_id)] = guild_bucket
+
+        self._save_json_file(PAYLIMITS_FILE, data)
+        remaining = max(0, 2 - count)
+        return True, remaining
 
     # ---- Blackjack Stats Persistence ----
     def _load_stats(self):
@@ -581,18 +691,28 @@ class Blackjack(commands.Cog):
         except Exception:
             return 15
 
-    def _bj_cooldown_remaining(self, uid: str, cooldown_sec: int) -> int:
-        last = self._last_hand_at.get(uid)
-        if not last:
-            return 0
+    def get_casino_bet_limits(self, guild_id: str | None) -> tuple[int, int]:
+        """Return (min_bet, max_bet) for casino games in this guild (blackjack/roulette)."""
+        default_min = 1
+        default_max = 100000
+        if not guild_id:
+            return default_min, default_max
         try:
-            elapsed = (datetime.utcnow() - last).total_seconds()
-            rem = cooldown_sec - elapsed
-            if rem <= 0:
-                return 0
-            return int(rem) if float(rem).is_integer() else int(rem) + 1
+            cfg = self._get_guild_cfg(str(guild_id))
+            if "casino_min_bet" in cfg or "casino_max_bet" in cfg:
+                mn = int(cfg.get("casino_min_bet", default_min))
+                mx = int(cfg.get("casino_max_bet", default_max))
+                mn = max(1, mn)
+                mx = max(mn, mx)
+                return mn, mx
         except Exception:
+            pass
+        return default_min, default_max
+
+    def _bj_cooldown_remaining(self, guild_id: str | None, uid: str, cooldown_sec: int) -> int:
+        if not guild_id:
             return 0
+        return cooldown_remaining_seconds(str(guild_id), str(uid), int(cooldown_sec))
 
     def _ensure_user(self, guild_id: str, user_id: str):
         g = self.stats.setdefault("guilds", {}).setdefault(str(guild_id), {})
@@ -695,7 +815,7 @@ class Blackjack(commands.Cog):
         uid = str(target.id)
         guild_id = str(interaction.guild.id) if interaction.guild else None
         bal = get_balance(uid, guild_id=guild_id)
-        embed = discord.Embed(title="💰 Balance", description=f"{target.mention} has **{bal}** coins.", color=discord.Color.gold())
+        embed = discord.Embed(title="💰 Balance", description=f"{target.mention} has **{bal:,}** coins.", color=discord.Color.gold())
         embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
         await interaction.response.send_message(embed=embed)
 
@@ -720,23 +840,59 @@ class Blackjack(commands.Cog):
         guild_id = str(guild.id)
         sender_id = str(interaction.user.id)
         receiver_id = str(user.id)
-        sender_balance = get_balance(sender_id, guild_id=guild_id)
-        if amount > sender_balance:
-            await interaction.response.send_message(embed=discord.Embed(title="❌ Insufficient Funds", description=f"You tried to pay {amount} but only have {sender_balance} coins.", color=discord.Color.red()), ephemeral=True)
-            return
-        # Perform transfer atomically (read -> validate -> write both)
-        remove_currency(sender_id, amount, guild_id=guild_id)
-        add_currency(receiver_id, amount, guild_id=guild_id)
-        sender_after = get_balance(sender_id, guild_id=guild_id)
-        receiver_after = get_balance(receiver_id, guild_id=guild_id)
-        embed = discord.Embed(
-            title="💸 Payment Sent",
-            description=f"{interaction.user.mention} paid {user.mention} **{amount}** coins.",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Your New Balance", value=f"{sender_after} coins", inline=True)
-        embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after} coins", inline=True)
-        await interaction.response.send_message(embed=embed)
+
+        async with self._get_pay_lock(guild_id):
+            # Blocklist check (per server)
+            if self._is_pay_blocked(guild_id, sender_id, receiver_id):
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="❌ Payment Blocked",
+                        description="You cannot pay this user (blocked pair configured for this server).",
+                        color=discord.Color.red(),
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            # Per-pair daily limit (2 per day per sender->receiver)
+            allowed, remaining = self._check_and_increment_pay_pair_limit(guild_id, sender_id, receiver_id)
+            if not allowed:
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="⏳ Daily Pay Limit Reached",
+                        description=f"You can only pay {user.mention} **twice per day**. Try again tomorrow (UTC).",
+                        color=discord.Color.orange(),
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            sender_balance = get_balance(sender_id, guild_id=guild_id)
+            if amount > sender_balance:
+                await interaction.response.send_message(
+                    embed=discord.Embed(
+                        title="❌ Insufficient Funds",
+                        description=f"You tried to pay {amount:,} but only have {sender_balance:,} coins.",
+                        color=discord.Color.red(),
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            # Perform transfer (economy is guild-scoped here)
+            remove_currency(sender_id, amount, guild_id=guild_id)
+            add_currency(receiver_id, amount, guild_id=guild_id)
+            sender_after = get_balance(sender_id, guild_id=guild_id)
+            receiver_after = get_balance(receiver_id, guild_id=guild_id)
+            embed = discord.Embed(
+                title="💸 Payment Sent",
+                description=f"{interaction.user.mention} paid {user.mention} **{amount:,}** coins.",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Your New Balance", value=f"{sender_after:,} coins", inline=True)
+            embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after:,} coins", inline=True)
+            embed.add_field(name="Daily Pair Limit", value=f"You have **{remaining}** pay(s) left today to this user (UTC).", inline=False)
+            await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="add", description="Add coins to a user's server balance (bot-admin only)")
     @app_commands.describe(user="User to receive coins", amount="Amount of coins to add (1-1,000,000)")
@@ -756,12 +912,12 @@ class Blackjack(commands.Cog):
         receiver_id = str(user.id)
         add_currency(receiver_id, int(amount), guild_id=guild_id)
         receiver_after = get_balance(receiver_id, guild_id=guild_id)
-        embed = discord.Embed(title="✅ Coins Added", description=f"{user.mention} received **{amount}** coins.", color=discord.Color.green())
-        embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after} coins", inline=True)
+        embed = discord.Embed(title="✅ Coins Added", description=f"{user.mention} received **{int(amount):,}** coins.", color=discord.Color.green())
+        embed.add_field(name=f"{user.display_name}'s New Balance", value=f"{receiver_after:,} coins", inline=True)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="blackjack", description="Play a hand of blackjack. Wager between 1 and 50000.")
-    @app_commands.describe(wager="Amount to wager (1-50000)")
+    @app_commands.command(name="blackjack", description="Play a hand of blackjack. Bet limits are server-configurable.")
+    @app_commands.describe(wager="Amount to wager")
     async def blackjack(self, interaction: Interaction, wager: int):
         debug_command('blackjack', interaction.user, interaction.guild, wager=wager)
         uid = str(interaction.user.id)
@@ -774,7 +930,7 @@ class Blackjack(commands.Cog):
         try:
             guild_id = str(interaction.guild.id) if interaction.guild else None
             cd = self.get_blackjack_cooldown_seconds(guild_id)
-            remaining = self._bj_cooldown_remaining(uid, cd)
+            remaining = self._bj_cooldown_remaining(guild_id, uid, cd)
             if remaining > 0:
                 await interaction.response.send_message(
                     embed=discord.Embed(
@@ -788,14 +944,19 @@ class Blackjack(commands.Cog):
         except Exception:
             # Fail-open on any unexpected error to avoid blocking users
             pass
-        if wager < 1 or wager > 50000:
-            embed = discord.Embed(title="❌ Invalid Wager", description="Wager must be between 1 and 50000.", color=discord.Color.red())
+        guild_id = str(interaction.guild.id) if interaction.guild else None
+        min_bet, max_bet = self.get_casino_bet_limits(guild_id)
+        if wager < min_bet or wager > max_bet:
+            embed = discord.Embed(
+                title="❌ Invalid Wager",
+                description=f"Wager must be between {min_bet:,} and {max_bet:,}.",
+                color=discord.Color.red(),
+            )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        guild_id = str(interaction.guild.id) if interaction.guild else None
         bal = get_balance(uid, guild_id=guild_id)
         if bal < wager:
-            embed = discord.Embed(title="❌ Insufficient Funds", description=f"You need {wager} coins but only have {bal} coins.", color=discord.Color.red())
+            embed = discord.Embed(title="❌ Insufficient Funds", description=f"You need {wager:,} coins but only have {bal:,} coins.", color=discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         # remove wager upfront
@@ -805,6 +966,11 @@ class Blackjack(commands.Cog):
             return
         # Record cooldown start only after a wager is successfully placed
         self._last_hand_at[uid] = datetime.utcnow()
+        try:
+            if guild_id:
+                set_last_casino_play(str(guild_id), str(uid), when=self._last_hand_at[uid])
+        except Exception:
+            pass
         
         view = BlackjackView(self, interaction, wager)
 
@@ -815,7 +981,7 @@ class Blackjack(commands.Cog):
         embed = discord.Embed(title="🂠 Blackjack", color=discord.Color.blurple())
         embed.add_field(name="👤 Your Hand", value=format_hand_with_total(view.player_hand), inline=False)
         embed.add_field(name="🤖 Dealer's Hand", value=format_hand(view.dealer_hand, hide_second=True), inline=False)
-        embed.set_footer(text=f"Wager: {wager}")
+        embed.set_footer(text=f"Wager: {wager:,}")
 
         # Add combined image if available
         files = []
@@ -893,11 +1059,11 @@ class Blackjack(commands.Cog):
         view = BalanceLeaderboardView(guild, items, page_size=page_size, page=page)
         await interaction.response.send_message(embed=view.make_embed(), view=view)
 
-    # ---- Admin: set blackjack cooldown ----
-    @app_commands.command(name="blackjack_set_cooldown", description="Admin: Set per-user cooldown between blackjack hands (min 10s). Accepts 10, 10s, 2m, 1h.")
-    @app_commands.checks.has_permissions(administrator=True)
+    # ---- Admin: set casino interval (shared cooldown for blackjack/roulette) ----
+    @app_commands.command(name="casino_set_interval", description="Admin: Set casino game cooldown (blackjack/roulette). Min 10s.")
+    @app_check_bot_admin()
     @app_commands.describe(duration="Cooldown duration (e.g., 10s, 15s, 1m)")
-    async def blackjack_set_cooldown(self, interaction: Interaction, duration: str):
+    async def casino_set_interval(self, interaction: Interaction, duration: str):
         guild = interaction.guild
         if not guild:
             await interaction.response.send_message("❌ Use this in a server.", ephemeral=True)
@@ -909,7 +1075,41 @@ class Blackjack(commands.Cog):
         cfg = self._get_guild_cfg(str(guild.id))
         cfg["blackjack_cooldown"] = int(seconds)
         self._set_guild_cfg(str(guild.id), cfg)
-        await interaction.response.send_message(embed=discord.Embed(title="✅ Blackjack Cooldown Set", description=f"Blackjack hand cooldown set to {seconds}s.", color=discord.Color.green()), ephemeral=True)
+        await interaction.response.send_message(embed=discord.Embed(title="✅ Casino Interval Set", description=f"Casino cooldown set to {seconds}s (blackjack/roulette).", color=discord.Color.green()), ephemeral=True)
+
+    @app_commands.command(name="casino_bet_limit", description="Admin: Set this server's casino bet limits (blackjack/roulette).")
+    @app_check_bot_admin()
+    @app_commands.describe(min_bet="Minimum bet (>= 1)", max_bet="Maximum bet (>= min_bet)")
+    async def casino_bet_limit(self, interaction: Interaction, min_bet: int, max_bet: int):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Use this in a server.", ephemeral=True)
+            return
+
+        try:
+            mn = int(min_bet)
+            mx = int(max_bet)
+        except Exception:
+            await interaction.response.send_message("❌ Invalid numbers.", ephemeral=True)
+            return
+
+        if mn < 1 or mx < mn:
+            await interaction.response.send_message("❌ Invalid range.", ephemeral=True)
+            return
+
+        cfg = self._get_guild_cfg(str(guild.id))
+        cfg["casino_min_bet"] = int(mn)
+        cfg["casino_max_bet"] = int(mx)
+        self._set_guild_cfg(str(guild.id), cfg)
+
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="✅ Casino Bet Limits Set",
+                description=f"Casino bet limits are now **{mn:,}–{mx:,}** (blackjack + roulette).",
+                color=discord.Color.green(),
+            ),
+            ephemeral=True,
+        )
 
 
 class BalanceLeaderboardView(View):
@@ -937,7 +1137,7 @@ class BalanceLeaderboardView(View):
             display_name = member.display_name if member else f"<@{uid}>"
             if member and first_member is None:
                 first_member = member
-            embed.add_field(name=f"#{idx} {display_name}", value=f"{bal} coins", inline=False)
+            embed.add_field(name=f"#{idx} {display_name}", value=f"{bal:,} coins", inline=False)
         if first_member:
             embed.set_thumbnail(url=first_member.avatar.url if first_member.avatar else first_member.default_avatar.url)
         return embed

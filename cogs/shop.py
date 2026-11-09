@@ -9,6 +9,7 @@ from utils.economy import (
     add_currency,
     remove_currency,
     reset_guild_balances,
+    reset_guild_rebirths,
     can_claim_daily,
     set_daily_claim,
     daily_time_until_next,
@@ -16,11 +17,23 @@ from utils.economy import (
 import random
 import re
 from utils.debug import debug_command
+from utils.rebirth import (
+    get_rebirth_multiplier,
+    get_rebirth_cost,
+    get_required_rebirth_cost,
+    get_rebirth_count,
+    get_max_rebirths,
+)
+from utils.botadmin import app_check_bot_admin
 
 SHOP_FILE = "shop.json"
 INV_FILE = "shop_inventory.json"
 GUILD_ITEMS_FILE = "shop_guild_items.json"  # per-guild custom items
 SHOP_CONFIG_FILE = "shop_config.json"       # per-guild payout interval and last payout
+DAILY_CONFIG_FILE = "daily_config.json"     # per-guild daily min/max rewards
+
+DEFAULT_DAILY_MIN = 1_000
+DEFAULT_DAILY_MAX = 10_000
 
 # Category ordering and name mapping for known default/extra items
 CATEGORY_ORDER = [
@@ -131,6 +144,8 @@ class Shop(commands.Cog):
         self.bot = bot
         # Ensure default shop exists
         self._ensure_shop()
+        # Migrate any old/bad item names in stored inventories/items
+        self._migrate_shop_item_names()
         # Start passive loop
         self.passive_timer.start()
         # Category choices for guild-specific items
@@ -172,12 +187,87 @@ class Shop(commands.Cog):
         except Exception:
             pass
 
+    def _migrate_shop_item_names(self):
+        """Normalize stored shop item names so updates don't break existing inventories.
+
+        Fixes:
+        - trailing/leading whitespace in item names
+        - known broken emoji placeholders ("�") to their intended emojis
+        """
+        name_map = {
+            "Gaming Café �️": "Gaming Café 🖥️",
+            "Clothing Store �": "Clothing Store 👕",
+            "Luxury Hotel �": "Luxury Hotel 🏰",
+            "Record Label �": "Record Label 🎵",
+            "Space Mining Operation �": "Space Mining Operation 🚀",
+        }
+
+        def normalize(name: str) -> str:
+            if not isinstance(name, str):
+                return name
+            s = name.strip()
+            return name_map.get(s, s)
+
+        changed_any = False
+
+        # Inventory: { guild_id: { user_id: { item_name: count } } }
+        try:
+            inv = _load_json(INV_FILE)
+            if isinstance(inv, dict):
+                for gid, users in list(inv.items()):
+                    if not isinstance(users, dict):
+                        continue
+                    for uid, owned in list(users.items()):
+                        if not isinstance(owned, dict):
+                            continue
+                        new_owned = {}
+                        changed_local = False
+                        for item_name, count in owned.items():
+                            new_name = normalize(item_name)
+                            try:
+                                c = int(count)
+                            except Exception:
+                                c = 0
+                            new_owned[new_name] = int(new_owned.get(new_name, 0)) + c
+                            if new_name != item_name:
+                                changed_local = True
+                        if changed_local:
+                            users[uid] = new_owned
+                            changed_any = True
+                if changed_any:
+                    _save_json(INV_FILE, inv)
+        except Exception:
+            pass
+
+        # Guild items: { guild_id: { item_name: {cost,income,...} } }
+        try:
+            gdata = _load_json(GUILD_ITEMS_FILE)
+            if isinstance(gdata, dict):
+                changed = False
+                for gid, items in list(gdata.items()):
+                    if not isinstance(items, dict):
+                        continue
+                    new_items = {}
+                    changed_local = False
+                    for item_name, info in items.items():
+                        new_name = normalize(item_name)
+                        new_items[new_name] = info
+                        if new_name != item_name:
+                            changed_local = True
+                    if changed_local:
+                        gdata[gid] = new_items
+                        changed = True
+                if changed:
+                    _save_json(GUILD_ITEMS_FILE, gdata)
+        except Exception:
+            pass
+
     # -------- Config and Guild Items Helpers --------
     def _get_shop_config(self, guild_id: str) -> dict:
         cfg = _load_json(SHOP_CONFIG_FILE)
         g = cfg.setdefault(str(guild_id), {})
-        # default: 30 minutes interval, no last_payout yet
-        g.setdefault("interval_seconds", 1800)
+        # default: 2 hours interval, no last_payout yet
+        g.setdefault("interval_seconds", 7200)
         # last_payout is stored as integer epoch seconds
         g.setdefault("last_payout", 0)
         return g
@@ -186,6 +276,28 @@ class Shop(commands.Cog):
         cfg = _load_json(SHOP_CONFIG_FILE)
         cfg[str(guild_id)] = gcfg
         _save_json(SHOP_CONFIG_FILE, cfg)
+
+    # -------- Daily Reward Config (per guild) --------
+    def _get_daily_range(self, guild_id: str) -> tuple[int, int]:
+        cfg = _load_json(DAILY_CONFIG_FILE)
+        if not isinstance(cfg, dict):
+            return (DEFAULT_DAILY_MIN, DEFAULT_DAILY_MAX)
+        g = cfg.get(str(guild_id), {})
+        try:
+            mn = int(g.get('min', DEFAULT_DAILY_MIN))
+            mx = int(g.get('max', DEFAULT_DAILY_MAX))
+        except Exception:
+            return (DEFAULT_DAILY_MIN, DEFAULT_DAILY_MAX)
+        if mn < 0 or mx < 0 or mn > mx:
+            return (DEFAULT_DAILY_MIN, DEFAULT_DAILY_MAX)
+        return (mn, mx)
+
+    def _set_daily_range(self, guild_id: str, mn: int, mx: int):
+        cfg = _load_json(DAILY_CONFIG_FILE)
+        if not isinstance(cfg, dict):
+            cfg = {}
+        cfg[str(guild_id)] = {'min': int(mn), 'max': int(mx)}
+        _save_json(DAILY_CONFIG_FILE, cfg)
 
     def _get_guild_items(self, guild_id: str) -> dict:
         data = _load_json(GUILD_ITEMS_FILE)
@@ -352,15 +464,237 @@ class Shop(commands.Cog):
             embed = discord.Embed(title="⏳ Daily Already Claimed", description=desc, color=discord.Color.orange())
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        reward = random.randint(10000, 100000)
+
+        # Per-guild configurable daily range
+        if interaction.guild:
+            mn, mx = self._get_daily_range(str(interaction.guild.id))
+        else:
+            mn, mx = (DEFAULT_DAILY_MIN, DEFAULT_DAILY_MAX)
+        reward = random.randint(int(mn), int(mx))
+
+        # Apply rebirth multiplier (does not affect blackjack/slots, only economy payouts)
+        if guild_id is not None:
+            try:
+                mult = int(get_rebirth_multiplier(guild_id, uid))
+            except Exception:
+                mult = 1
+        else:
+            mult = 1
+        if mult > 1:
+            reward *= mult
         add_currency(uid, reward, guild_id=guild_id)
         set_daily_claim(uid, guild_id=guild_id)
         embed = discord.Embed(
             title="🎁 Daily Reward",
-            description=f"You received **{reward}** coins today! Come back after the next reset (midnight UTC).",
+            description=(
+                f"You received **{reward}** coins today!"
+                + (f" (rebirth multiplier **x{mult}**)" if mult > 1 else "")
+                + "\nCome back after the next reset (midnight UTC)."
+            ),
             color=discord.Color.green()
         )
         await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="econinfo", description="Show this server's /daily, /work, /shop, and rebirth settings.")
+    async def econinfo(self, interaction: Interaction):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        gid = str(guild.id)
+        uid = str(interaction.user.id)
+
+        # Rebirth multiplier (affects /daily, /work positives, and shop passive income)
+        try:
+            mult = int(get_rebirth_multiplier(gid, uid))
+        except Exception:
+            mult = 1
+
+        # --- Rebirth ---
+        try:
+            rebirth_count = int(get_rebirth_count(gid, uid))
+        except Exception:
+            rebirth_count = 0
+        try:
+            max_rebirths = int(get_max_rebirths(gid))
+        except Exception:
+            max_rebirths = 0
+        try:
+            base_cost = int(get_rebirth_cost(gid))
+        except Exception:
+            base_cost = 0
+        try:
+            next_cost = int(get_required_rebirth_cost(gid, uid))
+        except Exception:
+            next_cost = base_cost
+
+        try:
+            bal = int(get_balance(uid, guild_id=gid))
+        except Exception:
+            bal = 0
+        remaining_for_rebirth = max(0, int(next_cost) - int(bal))
+        rebirth_status = "Status: **Ready now**" if bal >= next_cost else f"Status: **Need {remaining_for_rebirth:,} more coins**"
+        if max_rebirths == 0:
+            rebirth_limit_line = "Limit: **Disabled (max rebirths = 0)**"
+        else:
+            rebirth_limit_line = f"Limit: **{rebirth_count}/{max_rebirths}**"
+        rebirth_lines = [
+            rebirth_limit_line,
+            f"Multiplier: **x{mult}**",
+            f"Rebirth cost (next): **{next_cost:,}** coins",
+            f"Base cost: **{base_cost:,}** (doubles each rebirth)",
+            f"Your balance: **{bal:,}** coins",
+            rebirth_status,
+            "To rebirth: `/rebirth confirm:true`",
+        ]
+
+        # --- Daily ---
+        mn, mx = self._get_daily_range(gid)
+        daily_status = "Status: **Ready now**" if can_claim_daily(uid, guild_id=gid) else None
+        if daily_status is None:
+            remaining = daily_time_until_next(uid, guild_id=gid)
+            daily_status = f"Status: **Available in {self._fmt_interval(int(remaining.total_seconds()))}**"
+        daily_lines = [
+            f"Range: **{mn:,}–{mx:,}** coins",
+            (f"Effective (you): **{mn*mult:,}–{mx*mult:,}**" if mult > 1 else "Effective (you): **same**"),
+            daily_status,
+            "Reset: **midnight UTC**",
+        ]
+
+        # --- Work ---
+        WORK_CONFIG_FILE = "work_config.json"
+        WORK_COOLDOWN_FILE = "work_cooldowns.json"
+        DEFAULT_WORK_COOLDOWN_SECONDS = 3600
+
+        wcfg = _load_json(WORK_CONFIG_FILE)
+        g = wcfg.get(gid, {}) if isinstance(wcfg, dict) else {}
+        try:
+            cooldown_seconds = int(g.get("cooldown_seconds", 0))
+        except Exception:
+            cooldown_seconds = 0
+        if cooldown_seconds <= 0:
+            cooldown_seconds = DEFAULT_WORK_COOLDOWN_SECONDS
+        cooldown_seconds = max(60, cooldown_seconds)
+
+        try:
+            wmn_raw = g.get("reward_min")
+            wmx_raw = g.get("reward_max")
+            wmn = int(wmn_raw) if wmn_raw is not None else None
+            wmx = int(wmx_raw) if wmx_raw is not None else None
+            if wmn is None or wmx is None or wmn > wmx:
+                wmn, wmx = None, None
+        except Exception:
+            wmn, wmx = None, None
+
+        if wmn is not None and wmx is not None:
+            work_range_line = f"Range: **{wmn:,}–{wmx:,}** coins"
+            if mult > 1:
+                work_eff_line = f"Effective (you): **{wmn*mult:,}–{wmx*mult:,}** (positive rewards only)"
+            else:
+                work_eff_line = "Effective (you): **same**"
+        else:
+            work_range_line = "Range: **Not configured** (uses default job payouts)"
+            work_eff_line = "Effective (you): **varies** (multiplier applies to positive rewards)"
+
+        work_status = "Status: **Ready now**"
+        try:
+            cooldowns = _load_json(WORK_COOLDOWN_FILE)
+            iso = None
+            if isinstance(cooldowns, dict):
+                iso = cooldowns.get(gid, {}).get(uid)
+            if iso:
+                next_allowed = datetime.fromisoformat(iso)
+                now = datetime.utcnow()
+                if now < next_allowed:
+                    remaining = next_allowed - now
+                    work_status = f"Status: **Available in {self._fmt_interval(int(remaining.total_seconds()))}**"
+        except Exception:
+            pass
+
+        work_lines = [
+            work_range_line,
+            work_eff_line,
+            f"Cooldown: **{self._fmt_interval(cooldown_seconds)}**",
+            work_status,
+        ]
+
+        # --- Shop passive income ---
+        try:
+            gcfg = self._get_shop_config(gid)
+            shop_interval = int(gcfg.get("interval_seconds", 1800))
+            shop_last = int(gcfg.get("last_payout", 0))
+        except Exception:
+            shop_interval = 1800
+            shop_last = 0
+        shop_interval = max(60, shop_interval)
+
+        now_ts = int(datetime.utcnow().timestamp())
+        if shop_last > 0 and (now_ts - shop_last) < shop_interval:
+            remaining = shop_interval - (now_ts - shop_last)
+            shop_next_line = f"Next payout: **~{self._fmt_interval(int(remaining))}**"
+        else:
+            shop_next_line = "Next payout: **Soon**"
+
+        shop_lines = [
+            f"Interval: **{self._fmt_interval(shop_interval)}**",
+            shop_next_line,
+            "Note: Payout requires owning shop items.",
+        ]
+
+        embed = Embed(title="📊 Economy Settings", color=discord.Color.blurple())
+        embed.add_field(name="🎁 Daily", value="\n".join(daily_lines), inline=False)
+        embed.add_field(name="💼 Work", value="\n".join(work_lines), inline=False)
+        embed.add_field(name="🛒 Shop Passive Income", value="\n".join(shop_lines), inline=False)
+        embed.add_field(name="🔁 Rebirth", value="\n".join(rebirth_lines), inline=False)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="setdailyreward", description="Admin: Set this server's /daily reward range (min/max coins).")
+    @app_check_bot_admin()
+    @app_commands.describe(min_amount="Minimum coins for /daily", max_amount="Maximum coins for /daily")
+    async def set_daily_reward(self, interaction: Interaction, min_amount: int, max_amount: int):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            mn = int(min_amount)
+            mx = int(max_amount)
+        except Exception:
+            await interaction.response.send_message(
+                embed=Embed(title="❌ Invalid Values", description="Min and max must be integers.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        if mn < 0 or mx < 0 or mn > mx:
+            await interaction.response.send_message(
+                embed=Embed(title="❌ Invalid Range", description="Please provide a valid range where 0 ≤ min ≤ max.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        # sanity cap to avoid absurd payouts
+        if mx > 1_000_000_000:
+            await interaction.response.send_message(
+                embed=Embed(title="❌ Too Large", description="Max must be ≤ 1,000,000,000 coins.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        self._set_daily_range(str(guild.id), mn, mx)
+        await interaction.response.send_message(
+            embed=Embed(title="✅ Daily Reward Updated", description=f"Set /daily reward range to **{mn:,}–{mx:,}** coins for this server.", color=discord.Color.green()),
+            ephemeral=True,
+        )
 
     @app_commands.command(name="inventory", description="See your owned items.")
     async def inventory(self, interaction: Interaction):
@@ -386,7 +720,7 @@ class Shop(commands.Cog):
 
     # -------- Admin: Set payout interval --------
     @app_commands.command(name="shop_set_interval", description="Admin: Set how often items pay out (e.g., 15m, 1h, 2h30m). Minimum 1 minute.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(duration="Interval between payouts, e.g., 15m, 1h, 2h30m")
     async def shop_set_interval(self, interaction: Interaction, duration: str):
         guild = interaction.guild
@@ -405,7 +739,7 @@ class Shop(commands.Cog):
 
     # -------- Admin: Guild-specific items --------
     @app_commands.command(name="item_add", description="Admin: Add a guild-specific shop item.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(name="Item name (exact)", cost="Purchase cost (coins)", income="Income paid each interval", description="Short description", category="Category for grouping in /shop")
     @app_commands.choices(category=[
         app_commands.Choice(name="🌱 Starter", value="Starter"),
@@ -439,7 +773,7 @@ class Shop(commands.Cog):
         await interaction.response.send_message(embed=Embed(title="✅ Item Added", description=f"Added item {name} (cost {cost}, income {income}, category {cat_label}).", color=discord.Color.green()))
 
     @app_commands.command(name="item_delete", description="Admin: Delete a guild-specific shop item by name.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(name="Item name to delete (exact)")
     async def item_delete(self, interaction: Interaction, name: str):
         guild = interaction.guild
@@ -474,7 +808,7 @@ class Shop(commands.Cog):
 
     # -------- Admin: Wipe coins and owned items (inventory) --------
     @app_commands.command(name="econ_wipe", description="Admin: Wipe all users' coins and their owned items for this server.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     async def econ_wipe(self, interaction: Interaction):
         guild = interaction.guild
         if guild is None:
@@ -486,6 +820,12 @@ class Shop(commands.Cog):
             reset_guild_balances(gid)
         except Exception:
             pass
+
+        # Reset rebirths for this guild
+        try:
+            reset_guild_rebirths(gid)
+        except Exception:
+            pass
         # Wipe owned items by clearing this guild's inventory bucket
         try:
             inv = _load_json(INV_FILE)
@@ -494,7 +834,7 @@ class Shop(commands.Cog):
                 _save_json(INV_FILE, inv)
         except Exception:
             pass
-        embed = Embed(title="✅ Economy Wiped", description="All coin balances and owned items for this server have been wiped.", color=discord.Color.green())
+        embed = Embed(title="✅ Economy Wiped", description="All coin balances, rebirths, and owned items for this server have been wiped.", color=discord.Color.green())
         await interaction.response.send_message(embed=embed)
 
     # Switch to 1-minute cadence and check per-guild interval
@@ -524,6 +864,12 @@ class Shop(commands.Cog):
                         continue
                     total_income += int(info.get('income', 0)) * int(count)
                 if total_income > 0:
+                    try:
+                        mult = int(get_rebirth_multiplier(gid, uid))
+                    except Exception:
+                        mult = 1
+                    if mult > 1:
+                        total_income *= mult
                     try:
                         add_currency(uid, total_income, guild_id=gid)
                         any_changes = True

@@ -6,6 +6,8 @@ import json
 import os
 from datetime import datetime, timedelta
 from utils.economy import add_currency, get_balance
+from utils.rebirth import get_rebirth_multiplier
+from utils.botadmin import is_bot_admin
 
 COOLDOWN_FILE = "work_cooldowns.json"
 CONFIG_FILE = "work_config.json"  # per-guild config, e.g., cooldown seconds
@@ -89,6 +91,25 @@ class Work(commands.Cog):
         secs = max(60, int(td.total_seconds()))  # enforce minimum 60s at storage level
         self.config.setdefault(gid, {})["cooldown_seconds"] = secs
         save_config(self.config)
+
+    def _get_guild_reward_range(self, guild_id: int) -> tuple[int | None, int | None]:
+        """Return (min,max) reward range for /work if configured; otherwise (None,None)."""
+        gid = str(guild_id)
+        g = self.config.get(gid, {})
+        if not isinstance(g, dict):
+            return (None, None)
+        mn_raw = g.get("reward_min")
+        mx_raw = g.get("reward_max")
+        if mn_raw is None or mx_raw is None:
+            return (None, None)
+        try:
+            mn = int(mn_raw)
+            mx = int(mx_raw)
+        except Exception:
+            return (None, None)
+        if mn > mx:
+            return (None, None)
+        return (mn, mx)
 
     # Parse strings like "15m", "2h", "1d"; support compound like "1h30m" and space-separated
     def _parse_duration(self, s: str) -> timedelta | None:
@@ -209,15 +230,30 @@ class Work(commands.Cog):
             return
 
         job, reward = self._pick_job()
-        # Optional tweak: random multiplier 0.8–1.2
-        multiplier = random.uniform(0.8, 1.2)
-        reward = int(reward * multiplier)
-        # Ensure rewards end with a 0 by scaling by 10
-        reward *= 10
+
+        # If this server configured a /work reward range, use it.
+        mn, mx = self._get_guild_reward_range(guild.id)
+        if mn is not None and mx is not None:
+            reward = random.randint(mn, mx)
+        else:
+            # Optional tweak: random multiplier 0.8–1.2
+            multiplier = random.uniform(0.8, 1.2)
+            reward = int(reward * multiplier)
+            # Ensure rewards end with a 0 by scaling by 10
+            reward *= 10
 
         # Apply reward via guild-scoped balance
         uid = str(interaction.user.id)
         gid = str(guild.id)
+
+        # Apply rebirth multiplier to positive payouts only
+        if reward > 0:
+            try:
+                mult = int(get_rebirth_multiplier(gid, uid))
+            except Exception:
+                mult = 1
+            if mult > 1:
+                reward *= mult
         add_currency(uid, reward, guild_id=gid)
         balance = get_balance(uid, guild_id=gid)
 
@@ -242,6 +278,33 @@ class Work(commands.Cog):
         embed.set_footer(text=f"Balance: {balance} coins")
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(name="workinfo", description="Show this server's /work reward settings.")
+    async def workinfo(self, interaction: Interaction):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                embed=Embed(title="Guild Only", description="Use this in a server.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        mn, mx = self._get_guild_reward_range(guild.id)
+        cooldown_td = self._get_guild_cooldown(guild.id)
+
+        if mn is not None and mx is not None:
+            range_line = f"Reward range: **{mn:,}–{mx:,}** coins"
+        else:
+            range_line = "Reward range: **Not configured** (uses default job payouts)"
+
+        cd_line = f"Cooldown: **{self._format_timedelta_mm_ss(cooldown_td)}**"
+        note_line = "Positive rewards are affected by your rebirth multiplier."
+
+        desc = "\n".join([range_line, cd_line, note_line])
+        await interaction.response.send_message(
+            embed=Embed(title="📌 Work Settings", description=desc, color=discord.Color.blurple()),
+            ephemeral=True,
+        )
+
     # Admin command to set work cooldown per guild
     @app_commands.command(name="setworkcooldown", description="Admin: Set /work cooldown (e.g., 15m, 2h, 1d, 1h30m). Minimum 1m.")
     @app_commands.describe(duration="Duration like 15m, 2h, 1d, or combined like 1h30m")
@@ -253,11 +316,10 @@ class Work(commands.Cog):
                 ephemeral=True,
             )
             return
-        # Require admin role/permission
-        perms = interaction.user.guild_permissions
-        if not (perms.administrator or perms.manage_guild):
+        # Bot-admin role check (configured via /setpermissions)
+        if not is_bot_admin(interaction.user):
             await interaction.response.send_message(
-                embed=Embed(title="❌ Missing Permission", description="You need Administrator or Manage Server to change the cooldown.", color=discord.Color.red()),
+                embed=Embed(title="❌ Missing Permission", description="You do not have permission to change the cooldown.", color=discord.Color.red()),
                 ephemeral=True,
             )
             return
@@ -274,6 +336,59 @@ class Work(commands.Cog):
         pretty = self._format_timedelta_mm_ss(td)
         await interaction.response.send_message(
             embed=Embed(title="✅ Work Cooldown Updated", description=f"Set /work cooldown to {pretty}.", color=discord.Color.green()),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="setworkreward", description="Admin: Set this server's /work reward range (min/max coins).")
+    @app_commands.describe(min_amount="Minimum coins for /work", max_amount="Maximum coins for /work")
+    async def set_work_reward(self, interaction: Interaction, min_amount: int, max_amount: int):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                embed=Embed(title="Guild Only", description="This command can only be used in a server.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        # Bot-admin role check (configured via /setpermissions)
+        if not is_bot_admin(interaction.user):
+            await interaction.response.send_message(
+                embed=Embed(title="❌ Missing Permission", description="You do not have permission to change the work reward.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            mn = int(min_amount)
+            mx = int(max_amount)
+        except Exception:
+            await interaction.response.send_message(
+                embed=Embed(title="❌ Invalid Values", description="Min and max must be integers.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        if mn > mx:
+            await interaction.response.send_message(
+                embed=Embed(title="❌ Invalid Range", description="Please provide a valid range where min ≤ max.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        if mx > 1_000_000_000:
+            await interaction.response.send_message(
+                embed=Embed(title="❌ Too Large", description="Max must be ≤ 1,000,000,000 coins.", color=discord.Color.red()),
+                ephemeral=True,
+            )
+            return
+
+        gid = str(guild.id)
+        self.config.setdefault(gid, {})["reward_min"] = mn
+        self.config.setdefault(gid, {})["reward_max"] = mx
+        save_config(self.config)
+
+        await interaction.response.send_message(
+            embed=Embed(title="✅ Work Reward Updated", description=f"Set /work reward range to **{mn:,}–{mx:,}** coins for this server.", color=discord.Color.green()),
             ephemeral=True,
         )
 

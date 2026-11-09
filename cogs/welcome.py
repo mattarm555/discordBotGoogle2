@@ -3,6 +3,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands, Interaction, Embed
 from typing import Optional
+from utils.botadmin import is_bot_admin
 import json
 import os
 
@@ -139,8 +140,8 @@ class Welcome(commands.Cog):
         dm_title: Optional[str] = "",
         dm_message: Optional[str] = ""
     ):
-        # Permission check
-        if not interaction.user.guild_permissions.administrator and not (role and role in interaction.user.roles):
+        # Permission check (configured via /setpermissions)
+        if not is_bot_admin(interaction.user):
             await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="You do not have permission to use this command.", color=discord.Color.red()), ephemeral=True)
             return
 
@@ -175,8 +176,8 @@ class Welcome(commands.Cog):
 
     @app_commands.command(name="welcomeconfig", description="Show current welcome message configuration.")
     async def welcome_config_show(self, interaction: Interaction):
-        # Permission check
-        if not interaction.user.guild_permissions.administrator:
+        # Permission check (configured via /setpermissions)
+        if not is_bot_admin(interaction.user):
             await interaction.response.send_message(embed=Embed(title="❌ Permission Denied", description="You do not have permission to use this command.", color=discord.Color.red()), ephemeral=True)
             return
         debug_command("welcomeconfig", interaction.user, interaction.guild)

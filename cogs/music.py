@@ -1,63 +1,70 @@
-import discord
-from discord.ext import commands
-from discord import app_commands, Interaction, Embed, ui
 import asyncio
-import yt_dlp
-from utils.youtube_api import yt_api_search, yt_api_videos, yt_api_playlist_items
-from urllib.parse import urlparse, parse_qs
-
-
-def parse_iso8601_duration(iso: str) -> int:
-    """Parse a simple ISO8601 duration (e.g. PT1H2M3S) into seconds. Returns 0 on failure."""
-    if not iso or not isinstance(iso, str):
-        return 0
-    try:
-        import re
-        total = 0
-        d = re.search(r"(\d+)D", iso)
-        h = re.search(r"(\d+)H", iso)
-        m = re.search(r"(\d+)M", iso)
-        s = re.search(r"(\d+)S", iso)
-        if d:
-            total += int(d.group(1)) * 86400
-        if h:
-            total += int(h.group(1)) * 3600
-        if m:
-            total += int(m.group(1)) * 60
-        if s:
-            total += int(s.group(1))
-        return total
-    except Exception:
-        return 0
-import math
 import json
+import math
 import os
 import random
-import sys
-import shutil
+import re
+from typing import Awaitable, Callable, Optional
+from urllib.parse import parse_qs, urlparse
+
+import discord
+import yt_dlp
+from discord import Embed, Interaction, app_commands, ui
+from discord.ext import commands
+
+from utils.botadmin import is_bot_admin
+from utils.youtube_api import yt_api_search, yt_api_videos
 
 
-# --- Persistent Queue File ---
+# --- Files / limits ---
 QUEUE_FILE = "saved_queues.json"
-# Prefer runtime cookies path if available; fallback to cogs/cookies.txt
-COGS_DIR = os.path.dirname(__file__)
-ROOT_DIR = os.path.dirname(COGS_DIR)
-RUNTIME_DIR = os.path.join(ROOT_DIR, "runtime")
-RUNTIME_COOKIE_FILE = os.path.join(RUNTIME_DIR, "cookies.txt")
-DEFAULT_COGS_COOKIE_FILE = os.path.join(COGS_DIR, "cookies.txt")
-COOKIE_FILE = RUNTIME_COOKIE_FILE if os.path.isdir(RUNTIME_DIR) else DEFAULT_COGS_COOKIE_FILE
+PLAYLIST_FILE = "saved_playlists.json"
+DJ_CONFIG_FILE = "dj_config.json"
+MAX_VIDEO_DURATION = 8 * 60 * 60  # 8 hours
+IDLE_DISCONNECT_SECONDS = 60
+NOW_PLAYING_DELETE_AFTER = 30
 
-# Maximum allowed duration for a single video (8 hours)
-MAX_VIDEO_DURATION = 8 * 60 * 60
+# Optional: path to a Netscape-format cookies file exported from a (throwaway) logged-in
+# YouTube account. Only needed if YouTube blocks the host IP even with a PO token provider.
+YT_COOKIES = os.getenv("YT_COOKIES")
 
-queues = {}  # guild_id: [song dicts]
-last_channels = {}  # guild_id: last Interaction.channel
+FFMPEG_OPTS = {
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -reconnect_on_network_error 1",
+    "options": "-vn",
+}
+
+queues: dict[str, list[dict]] = {}       # guild_id -> [song dicts]
+last_channels: dict[str, discord.abc.Messageable] = {}  # guild_id -> text channel for announcements
 
 # --- Color Codes ---
 RESET = "\033[0m"
 RED = "\033[31m"
 YELLOW = "\033[33m"
 BLUE = "\033[34m"
+
+
+def _log(msg: str):
+    """print() that can never raise (e.g. emoji on a non-UTF-8 Windows console)."""
+    try:
+        print(msg, flush=True)
+    except Exception:
+        try:
+            print(msg.encode("ascii", "replace").decode("ascii"), flush=True)
+        except Exception:
+            pass
+
+
+def parse_iso8601_duration(iso: str) -> int:
+    """Parse a simple ISO8601 duration (e.g. PT1H2M3S) into seconds. Returns 0 on failure."""
+    if not iso or not isinstance(iso, str):
+        return 0
+    total = 0
+    for pattern, mult in ((r"(\d+)D", 86400), (r"(\d+)H", 3600), (r"(\d+)M", 60), (r"(\d+)S", 1)):
+        m = re.search(pattern, iso)
+        if m:
+            total += int(m.group(1)) * mult
+    return total
+
 
 def save_queues(queues):
     if any(queues.values()):
@@ -66,12 +73,30 @@ def save_queues(queues):
     elif os.path.exists(QUEUE_FILE):
         os.remove(QUEUE_FILE)
 
+
 def debug_command(command_name, user, guild, **kwargs):
-    print(f"{RED}[COMMAND] /{command_name}{RESET} triggered by {YELLOW}{user.display_name}{RESET} in {BLUE}{guild.name}{RESET}")
-    if kwargs:
-        print(f"{BLUE}Input:{RESET}")
-        for key, value in kwargs.items():
-            print(f"{RED}  {key.capitalize()}: {value}{RESET}")
+    _log(f"{RED}[COMMAND] /{command_name}{RESET} triggered by {YELLOW}{user.display_name}{RESET} in {BLUE}{guild.name}{RESET}")
+    for key, value in kwargs.items():
+        _log(f"{RED}  {key.capitalize()}: {value}{RESET}")
+
+
+def _is_soundcloud(target: str) -> bool:
+    t = (target or "").lower()
+    return "soundcloud.com" in t or t.startswith("scsearch")
+
+
+def _ydl_opts(**extra) -> dict:
+    """Shared yt-dlp options. Let yt-dlp pick its own clients/user agent (needed for
+    PO tokens / JS challenge solving to work)."""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+    }
+    if YT_COOKIES and os.path.exists(YT_COOKIES):
+        opts["cookiefile"] = YT_COOKIES
+    opts.update(extra)
+    return opts
+
 
 class QueueView(ui.View):
     def __init__(self, queue, per_page=5):
@@ -91,7 +116,7 @@ class QueueView(ui.View):
         songs_on_page = self.queue[start:end]
         for i, song in enumerate(songs_on_page, start=start + 1):
             embed.add_field(name=f"{i}. {song['title']}", value=" ", inline=False)
-        if songs_on_page:
+        if songs_on_page and songs_on_page[0].get('thumbnail'):
             embed.set_thumbnail(url=songs_on_page[0]['thumbnail'])
         return embed
 
@@ -111,32 +136,97 @@ class QueueView(ui.View):
         else:
             await interaction.response.defer()
 
+
 class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.currently_playing = {}  # guild_id: {start_time, duration, song}
-        self.force_stopped = {}  # guild_id: True if /leave was called
-        # Consecutive failure tracking (per guild) to prevent spam loops
-        self.fail_counts = {}  # guild_id -> consecutive failure count
-        # Per-user cooldown for /play (seconds)
-        self.play_last_used = {}  # user_id -> last monotonic timestamp
+        self.force_stopped = {}      # guild_id: True if /leave was called (or we aborted)
+        self.fail_counts = {}        # guild_id -> consecutive failure count
+        self.play_last_used = {}     # user_id -> last monotonic timestamp
+        self.locks: dict[str, asyncio.Lock] = {}  # guild_id -> lock around start_next
         self.PLAY_COOLDOWN = 10
         # Allow up to 2 failures; on the 3rd ("> 2"), abort and leave
         self.FAILURE_THRESHOLD = 2
         global queues
         queues = {}
         save_queues(queues)
-        print(f"{YELLOW}[INFO]{RESET} Cleared all queues at startup.")
-        # DJ role configuration cache: guild_id -> role_id
+        _log(f"{YELLOW}[INFO]{RESET} Cleared all queues at startup.")
         self.dj_roles = self._load_dj_config()
 
-    DJ_CONFIG_FILE = "dj_config.json"
+    def _lock(self, guild_id: str) -> asyncio.Lock:
+        lock = self.locks.get(guild_id)
+        if lock is None:
+            lock = self.locks[guild_id] = asyncio.Lock()
+        return lock
+
+    # ---- Voice helpers ----
+    def _looks_like_voice_e2ee_dave_4017(self, exc: Exception) -> bool:
+        """Best-effort detection for Discord voice close code 4017 (DAVE/E2EE required)."""
+        text = f"{exc}".lower()
+        return any(k in text for k in ("4017", "dave", "e2ee", "end-to-end", "requires a client supporting"))
+
+    async def _report_voice_connect_failure(self, interaction: Interaction, exc: Exception):
+        if self._looks_like_voice_e2ee_dave_4017(exc):
+            title = "❌ Can't Join Voice (4017)"
+            desc = (
+                "Discord rejected the voice connection because it requires E2EE/DAVE voice.\n\n"
+                "The bot host needs discord.py 2.7+ with the `davey` package installed "
+                "(`pip install -U \"discord.py[voice]\" davey`)."
+            )
+        else:
+            title = "❌ Couldn't Join Voice"
+            desc = (
+                "I couldn't join your voice channel.\n\n"
+                "Common causes: missing Connect/Speak permissions, a full channel, or a temporary voice gateway issue."
+            )
+        embed = Embed(title=title, description=desc, color=discord.Color.red())
+        embed.add_field(name="Error", value=str(exc)[:900] or "(no details)", inline=False)
+        try:
+            if interaction.response.is_done():
+                await interaction.edit_original_response(embed=embed)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception:
+            channel = last_channels.get(str(interaction.guild.id), interaction.channel)
+            try:
+                await channel.send(embed=embed)
+            except Exception:
+                pass
+
+    async def safe_connect(self, interaction: Interaction) -> discord.VoiceClient:
+        """Connect to (or move to) the user's voice channel, reusing a healthy connection."""
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            raise RuntimeError("You need to be in a voice channel first.")
+        target = interaction.user.voice.channel
+        vc = interaction.guild.voice_client
+
+        if vc and vc.is_connected():
+            if vc.channel != target:
+                await vc.move_to(target)
+            return vc
+        if vc:
+            # Zombie session (exists but not connected) -> kill it before reconnecting
+            await vc.disconnect(force=True)
+
+        try:
+            vc = await target.connect(timeout=20, reconnect=True, self_deaf=True)
+        except Exception as e:
+            _log(f"{RED}❌ Voice connect failed: {e}{RESET}")
+            raise
+
+        # Some failures (e.g. 4017) disconnect right after the handshake without raising.
+        await asyncio.sleep(1.25)
+        current = interaction.guild.voice_client
+        if current is None or not current.is_connected():
+            raise RuntimeError("Voice handshake failed (disconnected immediately)")
+        return current
 
     # ---- DJ Role Persistence ----
     def _load_dj_config(self):
-        if os.path.exists(self.DJ_CONFIG_FILE):
+        if os.path.exists(DJ_CONFIG_FILE):
             try:
-                with open(self.DJ_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                with open(DJ_CONFIG_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 if isinstance(data, dict):
                     return data
@@ -146,7 +236,7 @@ class Music(commands.Cog):
 
     def _save_dj_config(self):
         try:
-            with open(self.DJ_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            with open(DJ_CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.dj_roles, f, indent=4)
         except Exception:
             pass
@@ -155,937 +245,604 @@ class Music(commands.Cog):
         """Return True if the user can control music.
 
         Rules:
-          - If no DJ role set for guild -> everyone can use music commands (backwards compatible)
+          - If no DJ role set for guild -> everyone can use music commands
           - Guild owner OR user with manage_guild or manage_channels perms always allowed
           - If DJ role set -> user must have that role
         """
         guild = interaction.guild
         if guild is None:
-            return True  # DM fallback (shouldn't happen for music control)
-        # Elevated perms
+            return True
         if interaction.user == guild.owner:
             return True
         perms = interaction.user.guild_permissions
         if perms.manage_guild or perms.manage_channels:
             return True
         role_id = self.dj_roles.get(str(guild.id))
-        if not role_id:  # no role configured
+        if not role_id:
             return True
         role = guild.get_role(int(role_id)) if str(role_id).isdigit() else None
-        if role and role in interaction.user.roles:
-            return True
-        return False
+        return bool(role and role in interaction.user.roles)
 
-    async def _enforce_dj(self, interaction: Interaction) -> bool:
-        """Ensure the user has DJ permission. Returns True if allowed, False if blocked."""
-        if self._user_is_dj(interaction):
-            return True
+    async def _deny_dj(self, interaction: Interaction, action: str):
         await interaction.response.send_message(embed=Embed(
             title="🎧 DJ Only",
-            description="You need the configured DJ role (or Manage Server) to use this music command.",
+            description=f"A DJ role is set. You cannot {action}.",
             color=discord.Color.red()
         ), ephemeral=True)
-        return False
-
-    async def safe_connect(self, interaction):
-        """Force a clean disconnect before joining to kill zombie sessions."""
-        vc = interaction.guild.voice_client
-        if vc:
-            await vc.disconnect(force=True)  # Kill zombie session
-
-        try:
-            return await interaction.user.voice.channel.connect()
-        except Exception as e:
-            print(f"{RED}❌ Voice connect failed: {e}{RESET}")
-            raise
 
     # ---- /play cooldown helpers ----
     def _play_cooldown_remaining(self, user_id: int) -> float:
-        """Return remaining seconds of /play cooldown for a user (0 if ready)."""
-        now = asyncio.get_event_loop().time()
-        last = self.play_last_used.get(user_id, 0)
-        remaining = (last + self.PLAY_COOLDOWN) - now
-        return remaining if remaining > 0 else 0.0
+        now = asyncio.get_running_loop().time()
+        remaining = (self.play_last_used.get(user_id, 0) + self.PLAY_COOLDOWN) - now
+        return max(0.0, remaining)
 
     def _mark_play_used(self, user_id: int):
-        self.play_last_used[user_id] = asyncio.get_event_loop().time()
+        self.play_last_used[user_id] = asyncio.get_running_loop().time()
 
     # ---- Failure guard ----
-    async def _record_failure_and_maybe_abort(self, interaction: Interaction, reason: str) -> bool:
+    async def _record_failure_and_maybe_abort(self, guild: discord.Guild, channel, reason: str) -> bool:
         """Increment failure counter; if above threshold, clear queue, notify, and leave.
 
         Returns True if we aborted (disconnected and cleared), False otherwise.
         """
-        guild_id = str(interaction.guild.id)
+        guild_id = str(guild.id)
         cnt = self.fail_counts.get(guild_id, 0) + 1
         self.fail_counts[guild_id] = cnt
-        if cnt > self.FAILURE_THRESHOLD:
-            # Reset counters and state
-            self.fail_counts[guild_id] = 0
-            self.force_stopped[guild_id] = True
-            queues[guild_id] = []
-            save_queues(queues)
+        if cnt <= self.FAILURE_THRESHOLD:
+            return False
 
-            channel = last_channels.get(guild_id, interaction.channel)
-            embed = Embed(
-                title="🚫 Too Many Playback Errors",
-                description=(
-                    "I've encountered errors playing multiple songs in a row (> 2).\n"
-                    "To avoid spamming the channel, I'm clearing the queue and leaving the voice channel.\n"
-                    "Please try again later or with different links."
-                ),
-                color=discord.Color.red()
-            )
-            # Include last reason for quick visibility
-            if reason:
-                embed.add_field(name="Last error", value=reason, inline=False)
-            try:
-                await channel.send(embed=embed)
-            except Exception:
-                pass
+        self.fail_counts[guild_id] = 0
+        self.force_stopped[guild_id] = True
+        queues[guild_id] = []
+        save_queues(queues)
 
-            try:
-                vc = interaction.guild.voice_client
-                if vc:
-                    await vc.disconnect()
-            except Exception:
-                pass
-            return True
-        return False
-
-    def _is_youtube_mix(self, url: str) -> bool:
-        """Return True if the URL appears to be a YouTube mix (auto-playlist) we want to reject.
-
-        A mix typically has a 'list' parameter that starts with 'RD' or contains 'mix'.
-        """
+        embed = Embed(
+            title="🚫 Too Many Playback Errors",
+            description=(
+                "I've hit errors on several songs in a row.\n"
+                "To avoid spamming the channel, I'm clearing the queue and leaving the voice channel.\n"
+                "Please try again later or with different links."
+            ),
+            color=discord.Color.red()
+        )
+        if reason:
+            embed.add_field(name="Last error", value=reason[:1000], inline=False)
         try:
-            from urllib.parse import urlparse, parse_qs
+            await channel.send(embed=embed)
+        except Exception:
+            pass
+        vc = guild.voice_client
+        if vc:
+            try:
+                await vc.disconnect()
+            except Exception:
+                pass
+        return True
+
+    # ---- URL checks ----
+    def _is_youtube_mix(self, url: str) -> bool:
+        """True if the URL is a YouTube Mix (auto-playlist): list= starting with RD or containing 'mix'."""
+        try:
             p = urlparse(url)
             if 'youtube' not in p.netloc and 'youtu.be' not in p.netloc:
                 return False
-            qs = parse_qs(p.query)
-            list_val = qs.get('list', [''])[0]
-            if not list_val:
-                return False
-            lv = list_val.lower()
-            if lv.startswith('rd') or 'mix' in lv:
-                return True
-            return False
+            lv = parse_qs(p.query).get('list', [''])[0].lower()
+            return bool(lv) and (lv.startswith('rd') or 'mix' in lv)
         except Exception:
             return False
 
     def _is_watch_with_list(self, url: str) -> bool:
-        """Detect YouTube watch URLs that include both a video id and a playlist param.
-
-        Example to reject: https://www.youtube.com/watch?v=...&list=...
-        """
+        """Detect YouTube watch URLs that include both a video id and a playlist param."""
         try:
-            from urllib.parse import urlparse, parse_qs
             p = urlparse(url)
             if 'youtube' not in p.netloc and 'youtu.be' not in p.netloc:
                 return False
             qs = parse_qs(p.query)
-            if 'v' in qs and 'list' in qs:
-                return True
-            return False
+            return 'v' in qs and 'list' in qs
         except Exception:
             return False
 
+    def _url_rejection_embed(self, url: str) -> Optional[Embed]:
+        if not url.startswith("http"):
+            return None
+        if self._is_youtube_mix(url):
+            return Embed(title="❌ Cannot Accept YouTube Mixes", description="Sorry — I can't accept YouTube Mix/Auto-playlist links. Please provide a single video or an explicit playlist URL.", color=discord.Color.red())
+        if self._is_watch_with_list(url):
+            return Embed(title="❌ Provide the Playlist Link Instead", description=("It looks like you provided a video link that includes a playlist parameter. Please provide the playlist URL instead, for example:\nhttps://www.youtube.com/playlist?list=PLFCHGavqRG-q_2ZhmgU2XB2--ZY6irT1c"), color=discord.Color.red())
+        return None
 
-    def get_yt_info(self, query):
+    # ---- yt-dlp (blocking; always call via asyncio.to_thread) ----
+    def get_yt_info(self, query: str):
         is_playlist = "playlist" in query.lower() or "list=" in query.lower()
-        print(f"[DEBUG] Using cookie file: {COOKIE_FILE}")
-
-        ydl_opts = {
+        extra = {
             'format': 'bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
             'extract_flat': 'in_playlist' if is_playlist else False,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
         }
-        # Only pass cookiefile if it exists to avoid yt-dlp errors
-        try:
-            if os.path.exists(COOKIE_FILE):
-                ydl_opts['cookiefile'] = COOKIE_FILE
-        except Exception:
-            pass
-
-        # Only set default_search to ytsearch for non-SoundCloud queries. SoundCloud
-        # search prefixes (scsearch/scsearch1) should be passed through directly.
-        qlow = query.lower()
-        if not (qlow.startswith('scsearch') or qlow.startswith('scsearch1')):
-            ydl_opts['default_search'] = 'ytsearch'
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        if not query.lower().startswith('scsearch'):
+            extra['default_search'] = 'ytsearch'
+        with yt_dlp.YoutubeDL(_ydl_opts(**extra)) as ydl:
             return ydl.extract_info(query, download=False)
 
-    def get_stream_url(self, url: str, format_pref: str = None):
-        # Prefer progressive (non-HLS) formats by default to avoid m3u8 segment URLs
-        default_format = 'bestaudio[ext=mp4]/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best'
-        # Prefer MP3 for SoundCloud targets to avoid HLS/unsupported streams
-        ydl_opts = {
-            'format': format_pref or default_format,
-            'quiet': True,
-            'no_warnings': True,
-            'noplaylist': True,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
-        }
-        try:
-            if os.path.exists(COOKIE_FILE):
-                ydl_opts['cookiefile'] = COOKIE_FILE
-        except Exception:
-            pass
-
-        qlow = (url or '').lower()
-        if 'soundcloud.com' in qlow or qlow.startswith('scsearch'):
-            # prefer mp3 containers for SoundCloud to avoid HLS streams
-            ydl_opts['format'] = 'bestaudio[ext=mp3]/bestaudio/best'
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    def get_stream_url(self, url: str) -> str:
+        if url.lower().startswith('scsearch'):
+            return self._soundcloud_search_stream(url.split(':', 1)[1])
+        fmt = 'bestaudio[ext=mp3]/bestaudio/best' if _is_soundcloud(url) else 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best'
+        with yt_dlp.YoutubeDL(_ydl_opts(format=fmt, noplaylist=True)) as ydl:
             info = ydl.extract_info(url, download=False)
-            # Debug: show what URL/format we resolved to for easier troubleshooting
+        if not info or not isinstance(info, dict):
+            raise RuntimeError("yt-dlp returned no info")
+        if info.get('entries'):
+            info = info['entries'][0]
+        resolved = info.get('url')
+        if not resolved:
+            raise RuntimeError("yt-dlp info missing stream url")
+        _log(f"[DEBUG] Resolved stream for {url} -> {info.get('title')} ({info.get('format')})")
+        return resolved
+
+    def _soundcloud_search_stream(self, terms: str, candidates: int = 5) -> str:
+        """Search SoundCloud and return the first result that actually resolves
+        (many top results are DRM-protected Go+ tracks that can't be played)."""
+        with yt_dlp.YoutubeDL(_ydl_opts(extract_flat='in_playlist')) as ydl:
+            results = ydl.extract_info(f"scsearch{candidates}:{terms}", download=False) or {}
+        last_err: Exception = RuntimeError("No SoundCloud results")
+        for entry in results.get('entries') or []:
+            page = entry.get('webpage_url') or entry.get('url')
+            if not page:
+                continue
             try:
-                fmt = info.get('format') or info.get('requested_formats')
-            except Exception:
-                fmt = None
-            print(f"[DEBUG] Resolved stream for target={url} title={info.get('title')} format={fmt} url={info.get('url')}")
-            return info['url']
+                return self.get_stream_url(page)
+            except Exception as e:
+                last_err = e
+        raise last_err
 
+    async def _resolve_stream(self, song: dict) -> tuple[str, Optional[str]]:
+        """Resolve a fresh playable URL for a song. Falls back to a SoundCloud search by
+        title when YouTube fails. Returns (stream_url, fallback_label_or_None)."""
+        target = song.get('search_query') or song.get('webpage_url') or song.get('url')
+        if not target:
+            raise RuntimeError("No URL or search query to resolve stream")
+        try:
+            return await asyncio.to_thread(self.get_stream_url, target), None
+        except Exception as primary_err:
+            if _is_soundcloud(target) or not song.get('title'):
+                raise
+            _log(f"{YELLOW}⚠️ YouTube resolve failed for {song.get('title')}: {primary_err} — trying SoundCloud{RESET}")
+            try:
+                return await asyncio.to_thread(self.get_stream_url, f"scsearch1:{song['title']}"), "SoundCloud"
+            except Exception as sc_err:
+                raise RuntimeError(f"YouTube: {primary_err} | SoundCloud fallback: {sc_err}") from primary_err
 
-    async def auto_disconnect(self, interaction: Interaction):
-        await asyncio.sleep(60)  # Wait 60 seconds (or however long you want)
-        vc = interaction.guild.voice_client
-        if vc and not vc.is_playing():
-            await vc.disconnect()
-            queues[str(interaction.guild.id)] = []
-            save_queues(queues)
-
-            embed = Embed(
-                title="Jeng has ran away.",
-                description="No music playing — disconnected automatically.",
-                color=discord.Color.purple()
-            )
-            channel = last_channels.get(str(interaction.guild.id), interaction.channel)
-            await channel.send(embed=embed)
-
-
-    def get_audio_source(self, url):
-        ffmpeg_opts = {
-            # Ensure ffmpeg seeks to the start to avoid HLS/segment URLs starting mid-stream
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss 0',
-            'options': '-vn'
+    # ---- Metadata lookup ----
+    def _api_entry(self, vid: str, page_url: str) -> Optional[dict]:
+        """Build a yt-dlp-like entry from the YouTube Data API (blocking)."""
+        items = yt_api_videos(vid).get('items', [])
+        if not items:
+            return None
+        it = items[0]
+        snip = it.get('snippet', {})
+        thumbs = snip.get('thumbnails', {})
+        return {
+            'id': vid,
+            'webpage_url': page_url,
+            'title': snip.get('title'),
+            'thumbnail': thumbs.get('high', {}).get('url') or thumbs.get('default', {}).get('url'),
+            'duration': parse_iso8601_duration(it.get('contentDetails', {}).get('duration')),
         }
-        return discord.FFmpegPCMAudio(url, **ffmpeg_opts)
 
-    @app_commands.command(name="play", description="Plays a song or playlist from YouTube or SoundCloud.")
-    @app_commands.rename(url="search")
-    @app_commands.describe(url="YouTube/SoundCloud URL or search term (accepts both links, searches only YouTube)")
-    async def play(self, interaction: Interaction, url: str):
-        if not self._user_is_dj(interaction):
-            # Need to defer only if not responded; use private ephemeral
-            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot use /play.", color=discord.Color.red()), ephemeral=True)
-            return
-        # Per-user 10s cooldown for /play
-        rem = self._play_cooldown_remaining(interaction.user.id)
-        if rem > 0:
-            await interaction.response.send_message(
-                embed=Embed(
-                    title="⏳ Slow down",
-                    description=f"Please wait {int(math.ceil(rem))}s before using /play again.",
-                    color=discord.Color.orange()
-                ),
-                ephemeral=True
-            )
-            return
-        # Mark usage before any heavy operations
-        self._mark_play_used(interaction.user.id)
-        debug_command("play", interaction.user, interaction.guild, url=url)
-        await interaction.response.defer(thinking=True)
+    def _lookup_via_api(self, url: str) -> Optional[dict]:
+        """Try the YouTube Data API for single videos and plain searches (blocking).
+        Cheaper and less likely to be rate-limited than a yt-dlp metadata run."""
+        if url.startswith('http'):
+            p = urlparse(url)
+            host = p.netloc.lower()
+            if 'youtube' not in host and 'youtu.be' not in host:
+                return None
+            if 'list' in parse_qs(p.query) or '/playlist' in p.path:
+                return None  # playlists go through yt-dlp
+            vid = parse_qs(p.query).get('v', [None])[0] or p.path.strip('/') or None
+            if not vid:
+                return None
+            entry = self._api_entry(vid, url)
+        else:
+            items = yt_api_search(url.strip(), max_results=1).get('items', [])
+            if not items:
+                return None
+            vid = items[0]['id']['videoId']
+            entry = self._api_entry(vid, f"https://www.youtube.com/watch?v={vid}")
+        return {'entries': [entry]} if entry else None
 
-        guild_id = str(interaction.guild.id)
-        self.force_stopped[guild_id] = False
-        voice_client = interaction.guild.voice_client
+    def _entry_to_song(self, info: dict, query: str) -> dict:
+        vid_id = info.get('id')
+        webpage = info.get('webpage_url') or None
+        raw_url = info.get('url')
+        if not webpage and isinstance(raw_url, str) and raw_url.startswith('http') and 'api.soundcloud.com' not in raw_url:
+            webpage = raw_url
+        if not webpage and isinstance(vid_id, str) and not vid_id.startswith('soundcloud:'):
+            webpage = f"https://www.youtube.com/watch?v={vid_id}"
+        return {
+            'id': vid_id,
+            'webpage_url': webpage,
+            # For SoundCloud searches keep the search token so we can re-resolve at play time.
+            'search_query': query if query.lower().startswith('scsearch') else None,
+            'title': info.get('title') or 'Unknown',
+            'thumbnail': info.get('thumbnail') or '',
+            'duration': info.get('duration') or 0,
+        }
+
+    # ---- Enqueue (shared by /play and /playplaylist) ----
+    async def _enqueue(self, interaction: Interaction, url: str,
+                       respond: Callable[..., Awaitable[Optional[discord.Message]]]):
+        """Look up `url`, add the results to the queue, join voice and start playback if idle.
+
+        `respond(embed, ephemeral=False)` sends/edits the user-facing reply and returns the message.
+        """
+        guild = interaction.guild
+        guild_id = str(guild.id)
         last_channels[guild_id] = interaction.channel
+        queues.setdefault(guild_id, [])
 
-        if guild_id not in queues:
-            queues[guild_id] = []
-
-        # reject mixes and watch-with-list links up-front
-        if url.startswith("http") and (self._is_youtube_mix(url) or self._is_watch_with_list(url)):
-            if self._is_youtube_mix(url):
-                embed = Embed(title="❌ Cannot Accept YouTube Mixes", description="Sorry — I can't accept YouTube Mix/Auto-playlist links. Please provide a single video or an explicit playlist URL.", color=discord.Color.red())
-            else:
-                embed = Embed(title="❌ Provide the Playlist Link Instead", description=("It looks like you provided a video link that includes a playlist parameter. Please provide the playlist URL instead, for example:\nhttps://www.youtube.com/playlist?list=PLFCHGavqRG-q_2ZhmgU2XB2--ZY6irT1c"), color=discord.Color.red())
-            await interaction.edit_original_response(embed=embed)
+        rejection = self._url_rejection_embed(url)
+        if rejection:
+            await respond(rejection, ephemeral=True)
             return
 
         if url.startswith("sc:"):
-            # SoundCloud search prefix
             query = f"scsearch1:{url[3:].strip()}"
         elif url.startswith("http"):
-            # Direct link (YouTube, SoundCloud, etc.)
             query = url
         else:
-            # Default to YouTube search for plain text
             query = f"ytsearch1:{url.strip()}"
 
-        # run blocking extraction in a thread to avoid blocking the event loop
-        # Prefer YouTube Data API for plain searches or YouTube URLs to avoid heavy yt_dlp metadata runs
         data = None
-        try:
-            if url.startswith('http'):
-                # If YouTube URL, try to parse video id and fetch via API
-                p = urlparse(url)
-                host = p.netloc.lower()
-                if 'youtube' in host or 'youtu.be' in host:
-                    # get v= query or path short id
-                    qs = parse_qs(p.query)
-                    vid = None
-                    if 'v' in qs:
-                        vid = qs.get('v')[0]
-                    else:
-                        # youtu.be short link -> path component
-                        path = p.path.strip('/')
-                        if path:
-                            vid = path
-                    if vid:
-                        api_res = yt_api_videos(vid)
-                        items = api_res.get('items', [])
-                        if items:
-                            it = items[0]
-                            snip = it.get('snippet', {})
-                            # Try to parse ISO 8601 duration
-                            dur = 0
-                            try:
-                                cd = it.get('contentDetails', {})
-                                iso = cd.get('duration')
-                                if iso:
-                                    dur = parse_iso8601_duration(iso)
-                            except Exception:
-                                dur = 0
-                            # construct a dict similar to yt_dlp output for downstream code
-                            data = {'entries': [{'id': vid, 'webpage_url': url, 'title': snip.get('title'), 'thumbnail': snip.get('thumbnails', {}).get('high', {}).get('url') or snip.get('thumbnails', {}).get('default', {}).get('url'), 'duration': dur}]}
-            else:
-                # Plain text search: use YouTube Data API search (may cost quota)
-                q = url.strip()
-                api_res = yt_api_search(q, max_results=1)
-                items = api_res.get('items', [])
-                if items:
-                    vid = items[0]['id']['videoId']
-                    vres = yt_api_videos(vid)
-                    vitems = vres.get('items', [])
-                    if vitems:
-                        it = vitems[0]
-                        snip = it.get('snippet', {})
-                        dur = 0
-                        try:
-                            cd = it.get('contentDetails', {})
-                            iso = cd.get('duration')
-                            if iso:
-                                dur = parse_iso8601_duration(iso)
-                        except Exception:
-                            dur = 0
-                        url_v = f"https://www.youtube.com/watch?v={vid}"
-                        data = {'entries': [{'id': vid, 'webpage_url': url_v, 'title': snip.get('title'), 'thumbnail': snip.get('thumbnails', {}).get('high', {}).get('url') or snip.get('thumbnails', {}).get('default', {}).get('url'), 'duration': dur}]}
-        except Exception:
-            data = None
-
-        # fallback to yt_dlp metadata extraction when API didn't return usable data
+        if not query.startswith("scsearch"):
+            try:
+                data = await asyncio.to_thread(self._lookup_via_api, url)
+            except Exception as e:
+                _log(f"[DEBUG] YouTube API lookup failed, falling back to yt-dlp: {e}")
         if not data:
             try:
                 data = await asyncio.to_thread(self.get_yt_info, query)
             except Exception as e:
-                embed = Embed(title="⚠️ Extraction Failed", description=f"Failed to retrieve info: {e}", color=discord.Color.red())
-                await interaction.edit_original_response(embed=embed)
+                await respond(Embed(title="⚠️ Extraction Failed", description=f"Failed to retrieve info: {str(e)[:1500]}", color=discord.Color.red()))
                 return
+        if not data:
+            await respond(Embed(title="🔍 Nothing Found", description="No results for that search.", color=discord.Color.orange()))
+            return
 
-        entries = data['entries'] if isinstance(data, dict) and 'entries' in data else [data]
-        songs_added = []
-        skipped = []
-        is_sc_search = query.lower().startswith('scsearch')
-
+        entries = [e for e in (data['entries'] if isinstance(data, dict) and 'entries' in data else [data]) if e]
+        songs_added, skipped = [], []
         for info in entries:
-            dur = info.get('duration', 0) or 0
-            title = info.get('title', info.get('url', 'Unknown'))
-            if dur and dur > MAX_VIDEO_DURATION:
-                skipped.append(title)
+            dur = info.get('duration') or 0
+            if dur > MAX_VIDEO_DURATION:
+                skipped.append(info.get('title') or 'Unknown')
                 continue
-
-            # Defer resolving the playable stream URL until playback time to avoid
-            # performing many expensive webpage/js extractions up-front.
-            # Ensure we always have a webpage_url even when extract_flat returns only an id
-            vid_id = info.get('id')
-            # Prefer the canonical webpage_url. If that's missing, prefer a raw http url
-            # that's not an api.soundcloud.com link. If we only have a SoundCloud
-            # internal id (soundcloud:tracks:...), try to construct a best-effort
-            # permalink using uploader/title (not perfect but often works).
-            webpage = info.get('webpage_url') or None
-            raw_url = info.get('url')
-            if not webpage and isinstance(raw_url, str):
-                if raw_url.startswith('http') and 'api.soundcloud.com' not in raw_url:
-                    webpage = raw_url
-
-            if not webpage and isinstance(vid_id, str):
-                if vid_id.startswith('soundcloud:tracks:'):
-                    sc_id = vid_id.split(':')[-1]
-                    uploader = info.get('uploader') or info.get('uploader_id') or info.get('creator') or 'unknown'
-                    title = info.get('title') or sc_id
-                    # minimal slugify for title
-                    title_slug = ''.join(ch if ch.isalnum() or ch == '-' else '-' for ch in title.replace(' ', '-')).strip('-').lower()
-                    webpage = f"https://soundcloud.com/{uploader}/{title_slug}"
-                else:
-                    webpage = (f"https://www.youtube.com/watch?v={vid_id}" if vid_id else None)
-            song = {
-                'id': vid_id,
-                'webpage_url': webpage,
-                'stream_url': None,
-                # Keep the original search token so we can re-resolve if the
-                # stored webpage_url is an API URL (api.soundcloud.com) which
-                # yt-dlp can't extract directly.
-                'search_query': query if is_sc_search else None,
-                'title': info.get('title', 'Unknown'),
-                'thumbnail': info.get('thumbnail', ''),
-                'duration': dur
-            }
+            song = self._entry_to_song(info, query)
             queues[guild_id].append(song)
             songs_added.append(song)
 
-        # Notify about skipped too-long videos
-        if len(entries) == 1 and skipped:
-            embed = Embed(title="❌ Video Too Long", description="Sorry — I can't handle videos longer than 8 hours. Please provide a shorter video.", color=discord.Color.red())
-            await interaction.edit_original_response(embed=embed)
+        if not songs_added:
+            if skipped:
+                await respond(Embed(title="❌ Video Too Long", description="Sorry — I can't handle videos longer than 8 hours. Please provide a shorter video.", color=discord.Color.red()))
+            else:
+                await respond(Embed(title="🔍 Nothing Found", description="No playable results for that search.", color=discord.Color.orange()))
             return
         if skipped:
             short_list = '\n'.join(f'- {t}' for t in skipped[:5])
-            more = f"\n...and {len(skipped)-5} more" if len(skipped) > 5 else ''
-            embed = Embed(title="⚠️ Some videos skipped", description=f"The following videos were longer than 8 hours and were skipped:\n{short_list}{more}", color=discord.Color.orange())
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
+            more = f"\n...and {len(skipped) - 5} more" if len(skipped) > 5 else ''
+            try:
+                await interaction.followup.send(embed=Embed(title="⚠️ Some videos skipped", description=f"These were longer than 8 hours and were skipped:\n{short_list}{more}", color=discord.Color.orange()), ephemeral=True)
+            except Exception:
+                pass
         save_queues(queues)
 
-        was_playing = voice_client.is_playing() if voice_client else False
-        if not voice_client:
-            voice_client = await self.safe_connect(interaction)
+        try:
+            vc = await self.safe_connect(interaction)
+        except Exception as e:
+            # Undo the enqueue so a later /play doesn't replay stale songs
+            for s in songs_added:
+                if s in queues[guild_id]:
+                    queues[guild_id].remove(s)
+            save_queues(queues)
+            await self._report_voice_connect_failure(interaction, e)
+            return
 
-        if not was_playing and len(queues[guild_id]) == len(songs_added):
-            msg = await interaction.edit_original_response(embed=Embed(title="Now Playing...", color=discord.Color.blurple()))
-            await self.start_next(interaction, msg)
-        else:
+        self.force_stopped[guild_id] = False
+        if vc.is_playing() or vc.is_paused():
             if len(songs_added) == 1:
                 embed = Embed(title='Added to Queue', description=songs_added[0]['title'], color=discord.Color.blue())
-                embed.set_thumbnail(url=songs_added[0]['thumbnail'])
+                if songs_added[0]['thumbnail']:
+                    embed.set_thumbnail(url=songs_added[0]['thumbnail'])
             else:
                 embed = Embed(title='Playlist Queued', description=f"Added {len(songs_added)} songs.", color=discord.Color.green())
-            await interaction.edit_original_response(embed=embed)
-
-    async def start_next(self, interaction: Interaction, msg: discord.Message = None):
-        guild_id = str(interaction.guild.id)
-        # ⛔ If force_stopped, do nothing
-        if self.force_stopped.get(guild_id):
+            await respond(embed)
             return
-            
-        voice_client = interaction.guild.voice_client
-        channel = last_channels.get(guild_id, interaction.channel)
 
-        while queues[guild_id]:  # keep going until a song works or queue is empty
-            next_song = queues[guild_id].pop(0)
+        if len(songs_added) > 1:
+            await respond(Embed(title='Playlist Queued', description=f"Added {len(songs_added)} songs. Starting playback…", color=discord.Color.green()))
+            await self.start_next(guild)
+        else:
+            msg = await respond(Embed(title="Now Playing...", color=discord.Color.blurple()))
+            await self.start_next(guild, msg)
 
-            # 🟨 Fallback metadata if missing (e.g., from extract_flat)
-            if not next_song.get("thumbnail") or not next_song.get("duration"):
-                webpage = next_song.get('webpage_url') or next_song.get('url')
-                if not webpage:
-                    print(f"{RED}⚠️ No webpage URL for {next_song.get('title')}, skipping{RESET}")
-                    await channel.send(embed=Embed(
-                        title="⚠️ Metadata Error",
-                        description=f"No URL available for **{next_song.get('title')}**, skipping...",
-                        color=discord.Color.orange()
-                    ))
-                    # Count failure and abort if threshold exceeded
-                    if await self._record_failure_and_maybe_abort(interaction, "Missing webpage URL"):
-                        return
-                    continue
-                try:
-                    full_info = self.get_yt_info(webpage)
-                    next_song["title"] = full_info.get("title", next_song["title"])
-                    next_song["thumbnail"] = full_info.get("thumbnail", "")
-                    next_song["duration"] = full_info.get("duration", 0)
-                except Exception as e:
-                    print(f"{RED}⚠️ Failed to fetch full info for {next_song.get('title')}: {e}{RESET}")
-                    await channel.send(embed=Embed(
-                        title="⚠️ Metadata Error",
-                        description=f"Could not fetch full info for **{next_song.get('title')}**, skipping...",
-                        color=discord.Color.orange()
-                    ))
-                    if await self._record_failure_and_maybe_abort(interaction, "Failed to fetch full metadata"):
-                        return
-                    continue
+    # ---- Playback loop ----
+    async def start_next(self, guild: discord.Guild, msg: Optional[discord.Message] = None):
+        """Pop songs off the queue until one starts playing (or the queue runs out)."""
+        guild_id = str(guild.id)
+        async with self._lock(guild_id):
+            if self.force_stopped.get(guild_id):
+                return
+            channel = last_channels.get(guild_id)
+            vc = guild.voice_client
+            if vc is None or not vc.is_connected():
+                self.force_stopped[guild_id] = True
+                return
+            if vc.is_playing() or vc.is_paused():
+                return  # someone else already started a song
 
-            self.currently_playing[guild_id] = {
-                "start_time": asyncio.get_event_loop().time(),
-                "duration": next_song.get("duration", 0),
-                "song": next_song
-            }
-
-            try:
-                # Resolve stream URL on-demand (once) if it wasn't resolved at enqueue time.
-                try:
-                    # Always re-resolve the stream URL immediately before playback to avoid
-                    # reusing an expired HLS/segment URL that might start mid-stream.
-                    resolve_target = next_song.get('search_query') or next_song.get('webpage_url') or next_song.get('url')
-                    if not resolve_target:
-                        raise ValueError("No URL or search query to resolve stream")
-
-                    # If this is a SoundCloud search token, run the search now and pick the first real page URL
-                    if isinstance(resolve_target, str) and resolve_target.lower().startswith('scsearch'):
-                        try:
-                            search_info = await asyncio.to_thread(self.get_yt_info, resolve_target)
-                            entries2 = search_info.get('entries') if isinstance(search_info, dict) and 'entries' in search_info else [search_info]
-                            if entries2:
-                                first = entries2[0]
-                                candidate = first.get('webpage_url') or first.get('url')
-                                if candidate:
-                                    resolve_target = candidate
-                                    next_song['webpage_url'] = candidate
-                        except Exception as e:
-                            print(f"{RED}⚠️ Failed to re-resolve SoundCloud search for {next_song.get('title')}: {e}{RESET}")
-
-                    # blocking extraction in thread; prefer progressive formats to avoid HLS
-                    stream = await asyncio.to_thread(self.get_stream_url, resolve_target)
-                    # If yt-dlp still returned an HLS (.m3u8) playlist URL, retry once with explicit non-HLS preference
-                    try:
-                        if isinstance(stream, str) and stream.lower().endswith('.m3u8'):
-                            print(f"[DEBUG] Got HLS stream (.m3u8) for {next_song.get('title')}, retrying with non-HLS preference")
-                            retry_pref = 'bestaudio[ext=mp4]/bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best'
-                            try:
-                                stream_retry = await asyncio.to_thread(self.get_stream_url, resolve_target, retry_pref)
-                                if isinstance(stream_retry, str) and not stream_retry.lower().endswith('.m3u8'):
-                                    stream = stream_retry
-                                    print(f"[DEBUG] Retry returned non-HLS stream for {next_song.get('title')}")
-                                else:
-                                    print(f"[DEBUG] Retry still returned HLS (or non-progressive) for {next_song.get('title')}, proceeding with original stream")
-                            except Exception as e:
-                                print(f"[DEBUG] Retry to avoid HLS failed: {e}")
-                    except Exception:
-                        # Defensive: if stream isn't a string or something unexpected, ignore and proceed
-                        pass
-
-                    # overwrite stream_url so we always use a fresh playable URL
-                    next_song['stream_url'] = stream
-                except Exception as e:
-                    print(f"{RED}⚠️ Failed to resolve stream for {next_song.get('title')}: {e}{RESET}")
-                    await channel.send(embed=Embed(
-                        title="❌ Failed to Resolve Stream",
-                        description=f"Could not resolve a playable stream for **{next_song.get('title')}**, skipping...",
-                        color=discord.Color.red()
-                    ))
-                    if await self._record_failure_and_maybe_abort(interaction, "Failed to resolve stream"):
-                        return
-                    continue
-
-                stream_url = next_song.get('stream_url')
-                source = self.get_audio_source(stream_url)
-                voice_client.play(source, after=lambda e: self._after_song(interaction))
-
-                embed = Embed(title="Now Playing", description=next_song['title'], color=discord.Color.green())
-                embed.set_thumbnail(url=next_song['thumbnail'])
-
-                if msg:
-                    await msg.edit(embed=embed)
-                    await asyncio.sleep(30)
-                    try:
-                        await msg.delete()
-                    except discord.NotFound:
-                        pass
-                else:
-                    temp = await channel.send(embed=embed)
-                    await asyncio.sleep(30)
-                    try:
-                        await temp.delete()
-                    except discord.NotFound:
-                        pass
-
-                # Successful start: reset failure counter for this guild
-                self.fail_counts[guild_id] = 0
+            while queues.get(guild_id):
+                song = queues[guild_id].pop(0)
                 save_queues(queues)
-                return  # song successfully started
 
-            except Exception as e:
-                print(f"{RED}⚠️ Failed to play: {next_song['title']} — {e}{RESET}")
-                await channel.send(embed=Embed(
-                    title="❌ Failed to Play",
-                    description=f"Sorry, **{next_song['title']}** could not be downloaded properly.",
-                    color=discord.Color.red()
-                ))
-                if await self._record_failure_and_maybe_abort(interaction, "FFmpeg/Playback failure"):
+                try:
+                    stream_url, via = await self._resolve_stream(song)
+                except Exception as e:
+                    _log(f"{RED}⚠️ Failed to resolve stream for {song.get('title')}: {e}{RESET}")
+                    extra = ""
+                    if "403" in str(e) or "sign in" in str(e).lower() or "bot" in str(e).lower():
+                        extra = "\n\nYouTube blocked the request from this server. See the hosting notes in `deploy/README.md`."
+                    if channel:
+                        await channel.send(embed=Embed(
+                            title="❌ Failed to Resolve Stream",
+                            description=f"Could not get a playable stream for **{song.get('title')}**, skipping...{extra}",
+                            color=discord.Color.red()
+                        ))
+                    if await self._record_failure_and_maybe_abort(guild, channel, str(e)[:500]):
+                        return
+                    continue
+
+                # Voice may have dropped while we were resolving.
+                vc = guild.voice_client
+                if vc is None or not vc.is_connected() or self.force_stopped.get(guild_id):
                     return
-                continue  # try the next song in the queue
 
-        # If we reached here, queue is empty or all songs failed
-        self.currently_playing.pop(guild_id, None)
-        await self.auto_disconnect(interaction)
+                try:
+                    source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTS)
+                    vc.play(source, after=lambda err, gid=guild_id: self._after_song(gid, err))
+                except Exception as e:
+                    _log(f"{RED}⚠️ Failed to play: {song.get('title')} — {e}{RESET}")
+                    if channel:
+                        await channel.send(embed=Embed(
+                            title="❌ Failed to Play",
+                            description=f"Sorry, **{song.get('title')}** couldn't be played.",
+                            color=discord.Color.red()
+                        ))
+                    if await self._record_failure_and_maybe_abort(guild, channel, f"Playback failure: {e}"):
+                        return
+                    continue
 
+                self.fail_counts[guild_id] = 0
+                self.currently_playing[guild_id] = {
+                    "start_time": asyncio.get_running_loop().time(),
+                    "duration": song.get("duration") or 0,
+                    "song": song,
+                }
+                embed = Embed(title="Now Playing", description=song['title'], color=discord.Color.green())
+                if song.get('thumbnail'):
+                    embed.set_thumbnail(url=song['thumbnail'])
+                if via:
+                    embed.set_footer(text=f"YouTube was unavailable — playing via {via}")
+                try:
+                    if msg:
+                        await msg.edit(embed=embed)
+                        asyncio.create_task(self._delete_later(msg, NOW_PLAYING_DELETE_AFTER))
+                    elif channel:
+                        await channel.send(embed=embed, delete_after=NOW_PLAYING_DELETE_AFTER)
+                except Exception:
+                    pass
+                return
 
+            # Queue empty (or everything failed)
+            self.currently_playing.pop(guild_id, None)
+        asyncio.create_task(self.auto_disconnect(guild))
 
+    async def _delete_later(self, msg: discord.Message, delay: float):
+        await asyncio.sleep(delay)
+        try:
+            await msg.delete()
+        except Exception:
+            pass
 
-    def _after_song(self, interaction: Interaction):
-        # small delay to avoid racing with FFmpeg process shutdown when skipping
-        async def wrapper():
-            await asyncio.sleep(0.3)
-            await self.start_next(interaction)
+    def _after_song(self, guild_id: str, error: Optional[Exception]):
+        """Runs in the audio thread when a song finishes/is stopped."""
+        if error:
+            _log(f"{RED}⚠️ Player error in guild {guild_id}: {error}{RESET}")
 
-        asyncio.run_coroutine_threadsafe(wrapper(), self.bot.loop)
+        async def advance():
+            await asyncio.sleep(0.3)  # let FFmpeg shut down cleanly
+            guild = self.bot.get_guild(int(guild_id))
+            if guild:
+                await self.start_next(guild)
+
+        asyncio.run_coroutine_threadsafe(advance(), self.bot.loop)
+
+    async def auto_disconnect(self, guild: discord.Guild):
+        await asyncio.sleep(IDLE_DISCONNECT_SECONDS)
+        guild_id = str(guild.id)
+        vc = guild.voice_client
+        if not vc or vc.is_playing() or vc.is_paused() or queues.get(guild_id):
+            return
+        await vc.disconnect()
+        queues[guild_id] = []
+        save_queues(queues)
+        channel = last_channels.get(guild_id)
+        if channel:
+            try:
+                await channel.send(embed=Embed(
+                    title="Jeng has ran away.",
+                    description="No music playing — disconnected automatically.",
+                    color=discord.Color.purple()
+                ))
+            except Exception:
+                pass
+
+    # ---- Commands ----
+    @app_commands.command(name="play", description="Plays a song or playlist from YouTube or SoundCloud.")
+    @app_commands.rename(url="search")
+    @app_commands.describe(url="YouTube/SoundCloud URL or search term (prefix with sc: to search SoundCloud)")
+    async def play(self, interaction: Interaction, url: str):
+        if not self._user_is_dj(interaction):
+            await self._deny_dj(interaction, "use /play")
+            return
+        rem = self._play_cooldown_remaining(interaction.user.id)
+        if rem > 0:
+            await interaction.response.send_message(embed=Embed(
+                title="⏳ Slow down",
+                description=f"Please wait {int(math.ceil(rem))}s before using /play again.",
+                color=discord.Color.orange()
+            ), ephemeral=True)
+            return
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            await interaction.response.send_message(embed=Embed(
+                title="🔇 Join a Voice Channel",
+                description="You need to be in a voice channel to use /play.",
+                color=discord.Color.red()
+            ), ephemeral=True)
+            return
+        self._mark_play_used(interaction.user.id)
+        debug_command("play", interaction.user, interaction.guild, url=url)
+        await interaction.response.defer(thinking=True)
+
+        async def respond(embed: Embed, ephemeral: bool = False):
+            return await interaction.edit_original_response(embed=embed)
+
+        await self._enqueue(interaction, url, respond)
 
     @app_commands.command(name="np", description="Shows the currently playing song.")
     async def now_playing(self, interaction: Interaction):
-        await interaction.response.defer()
         guild_id = str(interaction.guild.id)
-        now = asyncio.get_event_loop().time()
         playing = self.currently_playing.get(guild_id)
-
-        if not playing:
-            embed = Embed(title="No Song Playing", description="Nothing is currently playing.", color=discord.Color.red())
-            await interaction.followup.send(embed=embed)
+        vc = interaction.guild.voice_client
+        if not playing or not vc or not (vc.is_playing() or vc.is_paused()):
+            await interaction.response.send_message(embed=Embed(title="No Song Playing", description="Nothing is currently playing.", color=discord.Color.red()))
             return
 
-        start = playing["start_time"]
-        duration = playing["duration"]
-        elapsed = int(now - start)
-        total = duration or 1
-
+        elapsed = int(asyncio.get_running_loop().time() - playing["start_time"])
+        total = playing["duration"] or 1
+        elapsed = min(elapsed, total)
         bar_len = 20
         filled_len = int(bar_len * elapsed / total)
         bar = "▬" * min(filled_len, bar_len - 1) + "🔘" + "▬" * max(0, bar_len - filled_len - 1)
-        elapsed_fmt = f"{elapsed // 60}:{elapsed % 60:02}"
-        total_fmt = f"{total // 60}:{total % 60:02}"
-
         embed = Embed(
             title="🎵 Now Playing",
             description=f"**{playing['song']['title']}**\n{bar}",
             color=discord.Color.orange()
         )
-        embed.set_thumbnail(url=playing["song"]["thumbnail"])
-        embed.set_footer(text=f"{elapsed_fmt} / {total_fmt}")
-        await interaction.followup.send(embed=embed)
+        if playing["song"].get("thumbnail"):
+            embed.set_thumbnail(url=playing["song"]["thumbnail"])
+        embed.set_footer(text=f"{elapsed // 60}:{elapsed % 60:02} / {total // 60}:{total % 60:02}")
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="queue", description="Shows the current music queue.")
     async def queue(self, interaction: Interaction):
-        await interaction.response.defer()
         debug_command("queue", interaction.user, interaction.guild)
         last_channels[str(interaction.guild.id)] = interaction.channel
         song_queue = queues.get(str(interaction.guild.id), [])
         if not song_queue:
-            embed = Embed(title="Queue Empty", description="No songs in queue.", color=discord.Color.red())
-            await interaction.followup.send(embed=embed)
+            await interaction.response.send_message(embed=Embed(title="Queue Empty", description="No songs in queue.", color=discord.Color.red()))
             return
         view = QueueView(song_queue)
-        embed = view.format_embed()
-        await interaction.followup.send(embed=embed, view=view)
-
-    @app_commands.command(name="refresh_cookies", description="Owner-only: Run refresh_cookies.py and sync cookies.txt")
-    async def refresh_cookies(self, interaction: Interaction):
-        # Owner-only guard
-        try:
-            app_info = await self.bot.application_info()
-            if interaction.user.id != app_info.owner.id:
-                await interaction.response.send_message(embed=Embed(
-                    title="❌ Owner Only",
-                    description="This command can only be used by the bot owner.\nIf you need access, run the script on the host machine.",
-                    color=discord.Color.red()
-                ), ephemeral=True)
-                return
-        except Exception:
-            # Fallback: if we cannot resolve application owner, block for safety
-            await interaction.response.send_message(embed=Embed(
-                title="❌ Owner Only",
-                description="Could not verify application owner. Command blocked for safety.",
-                color=discord.Color.red()
-            ), ephemeral=True)
-            return
-
-        await interaction.response.defer(thinking=True, ephemeral=True)
-
-        # Determine script path (project root) and cookie files
-        cogs_dir = os.path.dirname(__file__)
-        root_dir = os.path.dirname(cogs_dir)
-        script_path = os.path.join(root_dir, 'refresh_cookies.py')
-        root_cookie = os.path.join(root_dir, 'cookies.txt')
-        # Target cookie destination: prefer runtime path
-        target_cookie = RUNTIME_COOKIE_FILE
-
-        if not os.path.exists(script_path):
-            await interaction.followup.send(embed=Embed(
-                title="❌ Script Not Found",
-                description=f"Could not find refresh_cookies.py at:\n{script_path}",
-                color=discord.Color.red()
-            ), ephemeral=True)
-            return
-
-        # Run the script using the same Python executable
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable,
-                script_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=root_dir
-            )
-            stdout, stderr = await proc.communicate()
-            out = (stdout or b'').decode(errors='replace').strip()
-            err = (stderr or b'').decode(errors='replace').strip()
-            rc = proc.returncode
-        except Exception as e:
-            await interaction.followup.send(embed=Embed(
-                title="❌ Execution Failed",
-                description=f"Failed to run refresh_cookies.py: {e}",
-                color=discord.Color.red()
-            ), ephemeral=True)
-            return
-
-        # Attempt to sync cookies.txt into runtime directory if a root cookie file exists
-        sync_note = ""
-        try:
-            if os.path.exists(root_cookie):
-                os.makedirs(os.path.dirname(target_cookie), exist_ok=True)
-                if os.path.abspath(root_cookie) != os.path.abspath(target_cookie):
-                    shutil.copyfile(root_cookie, target_cookie)
-                    sync_note = "\nSynced cookies.txt to runtime directory."
-        except Exception as e:
-            sync_note = f"\n⚠️ Cookie sync failed: {e}"
-
-        # Prepare response
-        max_len = 1500
-        out_snip = (out[:max_len] + '…') if len(out) > max_len else out
-        err_snip = (err[:max_len] + '…') if len(err) > max_len else err
-
-        if rc == 0:
-            desc = "✅ refresh_cookies.py completed successfully." + (f"\n\nOutput:\n```\n{out_snip}\n```" if out_snip else "") + sync_note
-            await interaction.followup.send(embed=Embed(title="Cookies Refreshed", description=desc, color=discord.Color.green()), ephemeral=True)
-        else:
-            desc = "⚠️ refresh_cookies.py returned a non-zero exit code." + (f"\n\nStdout:\n```\n{out_snip}\n```" if out_snip else "") + (f"\n\nStderr:\n```\n{err_snip}\n```" if err_snip else "") + sync_note
-            await interaction.followup.send(embed=Embed(title="Cookie Refresh Error", description=desc, color=discord.Color.orange()), ephemeral=True)
+        await interaction.response.send_message(embed=view.format_embed(), view=view)
 
     @app_commands.command(name="skip", description="Skips the current song.")
     async def skip(self, interaction: Interaction):
         if not self._user_is_dj(interaction):
-            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot skip songs.", color=discord.Color.red()), ephemeral=True)
+            await self._deny_dj(interaction, "skip songs")
             return
-        await interaction.response.defer()
         debug_command("skip", interaction.user, interaction.guild)
         last_channels[str(interaction.guild.id)] = interaction.channel
-        if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
-            interaction.guild.voice_client.stop()
-            embed = Embed(title="Skipped", description="Skipped to the next song.", color=discord.Color.orange())
-            await interaction.followup.send(embed=embed)
-            save_queues(queues)
+        vc = interaction.guild.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()  # triggers _after_song -> start_next
+            await interaction.response.send_message(embed=Embed(title="Skipped", description="Skipped to the next song.", color=discord.Color.orange()))
         else:
-            embed = Embed(title="No Song Playing", description="Nothing to skip.", color=discord.Color.red())
-            await interaction.followup.send(embed=embed)
+            await interaction.response.send_message(embed=Embed(title="No Song Playing", description="Nothing to skip.", color=discord.Color.red()))
 
     @app_commands.command(name="stop", description="Pauses the music.")
     async def stop(self, interaction: Interaction):
         if not self._user_is_dj(interaction):
-            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot pause music.", color=discord.Color.red()), ephemeral=True)
+            await self._deny_dj(interaction, "pause music")
             return
-        await interaction.response.defer()
         debug_command("stop", interaction.user, interaction.guild)
         last_channels[str(interaction.guild.id)] = interaction.channel
         vc = interaction.guild.voice_client
         if vc and vc.is_playing():
             vc.pause()
-            embed = Embed(title="Paused", description="Music paused.", color=discord.Color.orange())
-            await interaction.followup.send(embed=embed)
+            await interaction.response.send_message(embed=Embed(title="Paused", description="Music paused. Use /start to resume.", color=discord.Color.orange()))
         else:
-            embed = Embed(title="No Music Playing", description="Nothing to pause.", color=discord.Color.red())
-            await interaction.followup.send(embed=embed)
+            await interaction.response.send_message(embed=Embed(title="No Music Playing", description="Nothing to pause.", color=discord.Color.red()))
 
     @app_commands.command(name="start", description="Resumes paused music.")
     async def start(self, interaction: Interaction):
         if not self._user_is_dj(interaction):
-            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot resume music.", color=discord.Color.red()), ephemeral=True)
+            await self._deny_dj(interaction, "resume music")
             return
-        await interaction.response.defer()
         debug_command("start", interaction.user, interaction.guild)
         last_channels[str(interaction.guild.id)] = interaction.channel
         vc = interaction.guild.voice_client
         if vc and vc.is_paused():
             vc.resume()
-            embed = Embed(title="Resumed", description="Music resumed.", color=discord.Color.green())
-            await interaction.followup.send(embed=embed)
+            await interaction.response.send_message(embed=Embed(title="Resumed", description="Music resumed.", color=discord.Color.green()))
         else:
-            embed = Embed(title="Not Paused", description="Nothing is paused.", color=discord.Color.red())
-            await interaction.followup.send(embed=embed)
+            await interaction.response.send_message(embed=Embed(title="Not Paused", description="Nothing is paused.", color=discord.Color.red()))
 
     @app_commands.command(name="leave", description="Disconnects from voice and clears queue.")
     async def leave(self, interaction: Interaction):
         if not self._user_is_dj(interaction):
-            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot disconnect the bot.", color=discord.Color.red()), ephemeral=True)
+            await self._deny_dj(interaction, "disconnect the bot")
             return
-        await interaction.response.defer()  # ✅ Defer response
         debug_command("leave", interaction.user, interaction.guild)
-
         guild_id = str(interaction.guild.id)
         last_channels[guild_id] = interaction.channel
-        vc = interaction.guild.voice_client
-
-        # ✅ Mark this server as force-stopped
         self.force_stopped[guild_id] = True
-
-        # ✅ Clear queue and save
         queues[guild_id] = []
         save_queues(queues)
+        self.currently_playing.pop(guild_id, None)
 
+        vc = interaction.guild.voice_client
         if vc:
             await vc.disconnect()
-            embed = Embed(
-                title="Jeng has ran away.",
-                description="Left the voice channel.",
-                color=discord.Color.purple()
-            )
-            await interaction.followup.send(embed=embed)
+            await interaction.response.send_message(embed=Embed(title="Jeng has ran away.", description="Left the voice channel.", color=discord.Color.purple()))
         else:
-            embed = Embed(
-                title="Not Connected",
-                description="I'm not in a voice channel.",
-                color=discord.Color.red()
-            )
-            await interaction.followup.send(embed=embed)
-
-
-    
+            await interaction.response.send_message(embed=Embed(title="Not Connected", description="I'm not in a voice channel.", color=discord.Color.red()))
 
     @app_commands.command(name="queueshuffle", description="Shuffle the current song queue.")
     async def queueshuffle(self, interaction: Interaction):
         if not self._user_is_dj(interaction):
-            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot shuffle the queue.", color=discord.Color.red()), ephemeral=True)
+            await self._deny_dj(interaction, "shuffle the queue")
             return
-        await interaction.response.defer()
         guild_id = str(interaction.guild.id)
-        if guild_id in queues and queues[guild_id]:
-            
+        if queues.get(guild_id):
             random.shuffle(queues[guild_id])
-            await interaction.followup.send(embed=Embed(title="🔀 Queue Shuffled", description="The queue has been shuffled.", color=discord.Color.green()))
+            save_queues(queues)
+            await interaction.response.send_message(embed=Embed(title="🔀 Queue Shuffled", description="The queue has been shuffled.", color=discord.Color.green()))
         else:
-            await interaction.followup.send(embed=Embed(title="📭 Empty Queue", description="There is nothing to shuffle.", color=discord.Color.red()))
+            await interaction.response.send_message(embed=Embed(title="📭 Empty Queue", description="There is nothing to shuffle.", color=discord.Color.red()))
 
+    # ---- Saved playlists ----
     def load_playlists(self):
-        if os.path.exists("saved_playlists.json"):
-            with open("saved_playlists.json", "r") as f:
+        if os.path.exists(PLAYLIST_FILE):
+            with open(PLAYLIST_FILE, "r") as f:
                 return json.load(f)
         return {}
 
     def save_playlists(self, playlists):
-        with open("saved_playlists.json", "w") as f:
+        with open(PLAYLIST_FILE, "w") as f:
             json.dump(playlists, f, indent=4)
-
-    async def play_song(self, interaction: Interaction, url: str):
-        debug_command("play_song", interaction.user, interaction.guild, url=url)
-        guild_id = str(interaction.guild.id)
-        self.force_stopped[guild_id] = False
-        voice_client = interaction.guild.voice_client
-        last_channels[guild_id] = interaction.channel
-
-        if guild_id not in queues:
-            queues[guild_id] = []
-
-        # reject mixes and watch-with-list links up-front
-        if url.startswith("http") and (self._is_youtube_mix(url) or self._is_watch_with_list(url)):
-            if self._is_youtube_mix(url):
-                embed = Embed(title="❌ Cannot Accept YouTube Mixes", description="Sorry — I can't accept YouTube Mix/Auto-playlist links. Please provide a single video or an explicit playlist URL.", color=discord.Color.red())
-            else:
-                embed = Embed(title="❌ Provide the Playlist Link Instead", description=("It looks like you provided a video link that includes a playlist parameter. Please provide the playlist URL instead, for example:\nhttps://www.youtube.com/playlist?list=PLFCHGavqRG-q_2ZhmgU2XB2--ZY6irT1c"), color=discord.Color.red())
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-
-        if url.startswith("sc:"):
-            # SoundCloud search prefix
-            query = f"scsearch1:{url[3:].strip()}"
-        elif url.startswith("http"):
-            # Direct link (YouTube, SoundCloud, etc.)
-            query = url
-        else:
-            # Default to YouTube search for plain text
-            query = f"ytsearch1:{url.strip()}"
-        # run blocking extraction in a thread
-        try:
-            data = await asyncio.to_thread(self.get_yt_info, query)
-        except Exception as e:
-            await interaction.followup.send(embed=Embed(title="⚠️ Extraction Failed", description=f"Failed to retrieve info: {e}", color=discord.Color.red()), ephemeral=True)
-            return
-
-        entries = data["entries"] if isinstance(data, dict) and "entries" in data else [data]
-        songs_added = []
-        skipped = []
-        is_sc_search = query.lower().startswith('scsearch')
-
-        for info in entries:
-            dur = info.get('duration', 0) or 0
-            title = info.get('title', info.get('url', 'Unknown'))
-            if dur and dur > MAX_VIDEO_DURATION:
-                skipped.append(title)
-                continue
-
-            vid_id = info.get('id')
-            webpage = info.get('webpage_url') or None
-            raw_url = info.get('url')
-            if not webpage and isinstance(raw_url, str):
-                if raw_url.startswith('http') and 'api.soundcloud.com' not in raw_url:
-                    webpage = raw_url
-
-            if not webpage and isinstance(vid_id, str):
-                if vid_id.startswith('soundcloud:tracks:'):
-                    sc_id = vid_id.split(':')[-1]
-                    uploader = info.get('uploader') or info.get('uploader_id') or info.get('creator') or 'unknown'
-                    title = info.get('title') or sc_id
-                    title_slug = ''.join(ch if ch.isalnum() or ch == '-' else '-' for ch in title.replace(' ', '-')).strip('-').lower()
-                    webpage = f"https://soundcloud.com/{uploader}/{title_slug}"
-                else:
-                    webpage = (f"https://www.youtube.com/watch?v={vid_id}" if vid_id else None)
-            song = {
-                'id': vid_id,
-                'webpage_url': webpage,
-                'stream_url': None,
-                'search_query': query if is_sc_search else None,
-                'title': info.get('title', 'Unknown'),
-                'thumbnail': info.get('thumbnail', ''),
-                'duration': dur
-            }
-            queues[guild_id].append(song)
-            songs_added.append(song)
-
-        # notify user about skipped too-long videos
-        if len(entries) == 1 and skipped:
-            embed = Embed(title="❌ Video Too Long", description="Sorry — I can't handle videos longer than 8 hours. Please provide a shorter video.", color=discord.Color.red())
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-        if skipped:
-            short_list = '\n'.join(f'- {t}' for t in skipped[:5])
-            more = f"\n...and {len(skipped)-5} more" if len(skipped) > 5 else ''
-            embed = Embed(title="⚠️ Some videos skipped", description=f"The following videos were longer than 8 hours and were skipped:\n{short_list}{more}", color=discord.Color.orange())
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-        await asyncio.sleep(0.5)  # you can increase this to 0.5 if needed
-
-        save_queues(queues)
-
-        was_playing = voice_client.is_playing() if voice_client else False
-        if not voice_client:
-            voice_client = await self.safe_connect(interaction)
-
-        if not was_playing and len(queues[guild_id]) == len(songs_added):
-            msg = await interaction.followup.send(embed=Embed(title="Now Playing...", color=discord.Color.blurple()), wait=True)
-            await self.start_next(interaction, msg)
-        else:
-            if len(songs_added) == 1:
-                embed = Embed(title="Added to Queue", description=songs_added[0]["title"], color=discord.Color.blue())
-                embed.set_thumbnail(url=songs_added[0]["thumbnail"])
-            else:
-                embed = Embed(title="Playlist Queued", description=f"Added {len(songs_added)} songs.", color=discord.Color.green())
-            await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="removeplaylist", description="Delete a saved playlist.")
     async def remove_playlist(self, interaction: Interaction, name: str):
         if not self._user_is_dj(interaction):
-            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot modify playlists.", color=discord.Color.red()), ephemeral=True)
+            await self._deny_dj(interaction, "modify playlists")
             return
         debug_command("removeplaylist", interaction.user, interaction.guild, name=name)
         guild_id = str(interaction.guild.id)
@@ -1093,131 +850,80 @@ class Music(commands.Cog):
         if guild_id in playlists and name in playlists[guild_id]:
             del playlists[guild_id][name]
             self.save_playlists(playlists)
-            await interaction.response.send_message(embed=Embed(
-                title="🗑️ Playlist Removed",
-                description=f"`{name}` has been deleted.",
-                color=discord.Color.red()
-            ))
+            await interaction.response.send_message(embed=Embed(title="🗑️ Playlist Removed", description=f"`{name}` has been deleted.", color=discord.Color.red()))
         else:
-            await interaction.response.send_message(embed=Embed(
-                title="⚠️ Not Found",
-                description=f"No playlist found under `{name}`.",
-                color=discord.Color.orange()
-            ))
-
-
+            await interaction.response.send_message(embed=Embed(title="⚠️ Not Found", description=f"No playlist found under `{name}`.", color=discord.Color.orange()))
 
     @app_commands.command(name="playplaylist", description="Play a previously saved playlist.")
     async def play_playlist(self, interaction: Interaction, name: str):
         if not self._user_is_dj(interaction):
-            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot start playlists.", color=discord.Color.red()), ephemeral=True)
+            await self._deny_dj(interaction, "start playlists")
             return
         debug_command("playplaylist", interaction.user, interaction.guild, name=name)
         guild_id = str(interaction.guild.id)
         playlists = self.load_playlists()
-        if guild_id in playlists and name in playlists[guild_id]:
-            link = playlists[guild_id][name]
-            await interaction.response.send_message(embed=Embed(
-                title="📼 Loading Playlist",
-                description=f"Now playing: `{name}`",
-                color=discord.Color.blue()
-            ))
-            await self.play_song(interaction, link)
-        else:
-            await interaction.response.send_message(embed=Embed(
-                title="⚠️ Not Found",
-                description=f"No playlist saved under `{name}`.",
-                color=discord.Color.red()
-            ))
+        if guild_id not in playlists or name not in playlists[guild_id]:
+            await interaction.response.send_message(embed=Embed(title="⚠️ Not Found", description=f"No playlist saved under `{name}`.", color=discord.Color.red()))
+            return
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            await interaction.response.send_message(embed=Embed(title="🔇 Join a Voice Channel", description="You need to be in a voice channel first.", color=discord.Color.red()), ephemeral=True)
+            return
 
+        await interaction.response.send_message(embed=Embed(title="📼 Loading Playlist", description=f"Now loading: `{name}`", color=discord.Color.blue()))
+
+        async def respond(embed: Embed, ephemeral: bool = False):
+            return await interaction.followup.send(embed=embed, ephemeral=ephemeral, wait=True)
+
+        await self._enqueue(interaction, playlists[guild_id][name], respond)
 
     @app_commands.command(name="listplaylists", description="List saved playlists for this server.")
     async def list_playlists(self, interaction: Interaction):
         debug_command("listplaylists", interaction.user, interaction.guild)
-        guild_id = str(interaction.guild.id)
-        playlists = self.load_playlists().get(guild_id, {})
+        playlists = self.load_playlists().get(str(interaction.guild.id), {})
         if not playlists:
-            await interaction.response.send_message(embed=Embed(
-                title="📂 No Playlists",
-                description="No playlists saved yet.",
-                color=discord.Color.orange()
-            ))
+            await interaction.response.send_message(embed=Embed(title="📂 No Playlists", description="No playlists saved yet.", color=discord.Color.orange()))
             return
-
         embed = Embed(title="📚 Saved Playlists", color=discord.Color.blurple())
         for name, link in playlists.items():
             embed.add_field(name=name, value=link, inline=False)
         await interaction.response.send_message(embed=embed)
 
-
     @app_commands.command(name="saveplaylist", description="Save a playlist link under a custom name.")
     async def save_playlist(self, interaction: Interaction, name: str, link: str):
         if not self._user_is_dj(interaction):
-            await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot save playlists.", color=discord.Color.red()), ephemeral=True)
+            await self._deny_dj(interaction, "save playlists")
             return
         debug_command("saveplaylist", interaction.user, interaction.guild, name=name, link=link)
-        guild_id = str(interaction.guild.id)
-        # Reject YouTube mixes
-        if link.startswith('http') and self._is_youtube_mix(link):
-            embed = Embed(title="❌ Cannot Save YouTube Mixes", description="Sorry — I can't save YouTube Mix/Auto-playlist links as playlists. Please provide an explicit playlist URL (https://www.youtube.com/playlist?list=PL...).", color=discord.Color.red())
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+        rejection = self._url_rejection_embed(link)
+        if rejection:
+            await interaction.response.send_message(embed=rejection, ephemeral=True)
             return
-
-        # Reject watch URLs that include a playlist parameter; ask for the canonical playlist link
-        if link.startswith('http') and self._is_watch_with_list(link):
-            embed = Embed(title="❌ Provide the Playlist Link Instead", description=("It looks like you provided a video link that includes a playlist parameter. "
-                                 "Please provide the playlist URL instead, for example:\n"
-                                 "https://www.youtube.com/playlist?list=PLFCHGavqRG-q_2ZhmgU2XB2--ZY6irT1c"), color=discord.Color.red())
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Require the link to be a playlist URL
         if not (link.startswith('http') and ("list=" in link.lower() or "playlist" in link.lower())):
-            embed = Embed(title="❌ Not a Playlist URL", description="Please provide a playlist URL, for example: https://www.youtube.com/playlist?list=PL...", color=discord.Color.orange())
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.response.send_message(embed=Embed(title="❌ Not a Playlist URL", description="Please provide a playlist URL, for example: https://www.youtube.com/playlist?list=PL...", color=discord.Color.orange()), ephemeral=True)
             return
 
-        playlists = self.load_playlists()
-
-        # Validate the playlist lightly (cap handled in get_yt_info)
+        await interaction.response.defer(thinking=True)
         try:
-            info = self.get_yt_info(link)
-            if not info:
-                await interaction.response.send_message(embed=Embed(
-                    title="⚠️ Invalid Playlist",
-                    description="Could not validate the provided playlist link.",
-                    color=discord.Color.orange()
-                ), ephemeral=True)
-                return
+            info = await asyncio.to_thread(self.get_yt_info, link)
         except Exception as e:
-            await interaction.response.send_message(embed=Embed(
-                title="⚠️ Playlist Validation Failed",
-                description=f"Could not validate playlist: {e}",
-                color=discord.Color.orange()
-            ), ephemeral=True)
+            await interaction.edit_original_response(embed=Embed(title="⚠️ Playlist Validation Failed", description=f"Could not validate playlist: {str(e)[:1500]}", color=discord.Color.orange()))
+            return
+        if not info:
+            await interaction.edit_original_response(embed=Embed(title="⚠️ Invalid Playlist", description="Could not validate the provided playlist link.", color=discord.Color.orange()))
             return
 
-        if guild_id not in playlists:
-            playlists[guild_id] = {}
-        playlists[guild_id][name] = link
+        guild_id = str(interaction.guild.id)
+        playlists = self.load_playlists()
+        playlists.setdefault(guild_id, {})[name] = link
         self.save_playlists(playlists)
-        await interaction.response.send_message(embed=Embed(
-            title="✅ Playlist Saved",
-            description=f"Saved `{name}`.",
-            color=discord.Color.green()
-        ))
+        await interaction.edit_original_response(embed=Embed(title="✅ Playlist Saved", description=f"Saved `{name}`.", color=discord.Color.green()))
 
     # ---- DJ Role Commands ----
     @app_commands.command(name="setdj", description="Assign or update the DJ role for this server.")
     @app_commands.describe(role="Role that will have permission to control music features")
     async def set_dj(self, interaction: Interaction, role: discord.Role):
-        # Require manage_guild to set
-        if not interaction.user.guild_permissions.manage_guild and interaction.user != interaction.guild.owner:
-            await interaction.response.send_message(embed=Embed(
-                title="❌ Missing Permission",
-                description="You need Manage Server to set the DJ role.",
-                color=discord.Color.red()
-            ), ephemeral=True)
+        if not is_bot_admin(interaction.user):
+            await interaction.response.send_message(embed=Embed(title="❌ Missing Permission", description="You do not have permission to set the DJ role.", color=discord.Color.red()), ephemeral=True)
             return
         self.dj_roles[str(interaction.guild.id)] = role.id
         self._save_dj_config()
@@ -1229,24 +935,13 @@ class Music(commands.Cog):
 
     @app_commands.command(name="cleardj", description="Remove the configured DJ role (revert to everyone allowed).")
     async def clear_dj(self, interaction: Interaction):
-        if not interaction.user.guild_permissions.manage_guild and interaction.user != interaction.guild.owner:
-            await interaction.response.send_message(embed=Embed(
-                title="❌ Missing Permission",
-                description="You need Manage Server to clear the DJ role.",
-                color=discord.Color.red()
-            ), ephemeral=True)
+        if not is_bot_admin(interaction.user):
+            await interaction.response.send_message(embed=Embed(title="❌ Missing Permission", description="You do not have permission to clear the DJ role.", color=discord.Color.red()), ephemeral=True)
             return
         removed = self.dj_roles.pop(str(interaction.guild.id), None)
         self._save_dj_config()
-        if removed:
-            msg = "DJ role cleared. All users may use music commands now."
-        else:
-            msg = "No DJ role was set. Nothing changed."
-        await interaction.response.send_message(embed=Embed(
-            title="🎧 DJ Role Cleared",
-            description=msg,
-            color=discord.Color.orange()
-        ))
+        msg = "DJ role cleared. All users may use music commands now." if removed else "No DJ role was set. Nothing changed."
+        await interaction.response.send_message(embed=Embed(title="🎧 DJ Role Cleared", description=msg, color=discord.Color.orange()))
 
     @app_commands.command(name="djinfo", description="Show the current DJ role configuration.")
     async def dj_info(self, interaction: Interaction):
@@ -1259,17 +954,19 @@ class Music(commands.Cog):
                 desc = "A DJ role ID is stored, but the role no longer exists. Use /setdj to assign a new one or /cleardj to remove it."
         else:
             desc = "No DJ role is set. Everyone can use music commands. Use /setdj to restrict access."
-        await interaction.response.send_message(embed=Embed(
-            title="🎧 DJ Info",
-            description=desc,
-            color=discord.Color.blurple()
-        ), ephemeral=True)
+        await interaction.response.send_message(embed=Embed(title="🎧 DJ Info", description=desc, color=discord.Color.blurple()), ephemeral=True)
 
-
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        """If the bot is kicked/disconnected from voice, reset that guild's state."""
+        if member.id != self.bot.user.id or before.channel is None or after.channel is not None:
+            return
+        guild_id = str(member.guild.id)
+        self.force_stopped[guild_id] = True
+        queues[guild_id] = []
+        save_queues(queues)
+        self.currently_playing.pop(guild_id, None)
 
 
 async def setup(bot):
     await bot.add_cog(Music(bot))
-
-
-

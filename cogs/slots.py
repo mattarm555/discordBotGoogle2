@@ -7,6 +7,7 @@ from discord.ext import commands
 from discord import app_commands, Interaction
 from discord.ui import View, button
 from utils.economy import get_balance, add_currency, remove_currency
+from utils.botadmin import app_check_bot_admin
 import re
 
 # Owner ID (allow overriding via env YOUR_USER_ID)
@@ -213,6 +214,9 @@ class SlotsView(View):
         if total_win:
             add_currency(str(self.user_id), total_win, guild_id=guild_id)
 
+        # Post-spin balance (after bet + payout)
+        balance_after = get_balance(str(self.user_id), guild_id=guild_id)
+
         grid = render_window_highlight(window, PAYLINES[self.lines])
         active_names = ", ".join(LINE_LABELS[:self.lines])
         desc = (
@@ -239,6 +243,9 @@ class SlotsView(View):
             color = discord.Color.red()
         footer = f"Net: {'+' if net>0 else ''}{net} (Win {total_win})"
         embed = discord.Embed(title="🎰 Slots", description=desc, color=color)
+        embed.add_field(name="🎁 Payout", value=f"{total_win:,}", inline=True)
+        embed.add_field(name="🧾 Net", value=f"{'+' if net > 0 else ''}{net:,}", inline=True)
+        embed.add_field(name="💰 Balance", value=f"{balance_after:,}", inline=True)
         embed.set_footer(text=footer)
         # Record stats
         self.cog.record_spin(user_id=str(self.user_id), guild_id=guild_id, bet=total_bet, win=total_win, lines=self.lines, net=net)
@@ -325,6 +332,24 @@ class Slots(commands.Cog):
             return max(1, sec)
         except Exception:
             return 5
+
+    def get_slots_bet_limits(self, guild_id: str | None) -> tuple[int, int]:
+        """Return (min_bet, max_bet) for slots in this guild."""
+        default_min = 1
+        default_max = 50000
+        if not guild_id:
+            return default_min, default_max
+        try:
+            cfg = self._get_guild_cfg(str(guild_id))
+            if "slots_min_bet" in cfg or "slots_max_bet" in cfg:
+                mn = int(cfg.get("slots_min_bet", default_min))
+                mx = int(cfg.get("slots_max_bet", default_max))
+                mn = max(1, mn)
+                mx = max(mn, mx)
+                return mn, mx
+        except Exception:
+            pass
+        return default_min, default_max
 
     #  stats structure:
     #  {
@@ -430,7 +455,7 @@ class Slots(commands.Cog):
 
     # ---- Admin: set slots cooldown ----
     @app_commands.command(name="slots_set_cooldown", description="Admin: Set per-user cooldown between slot spins (min 1s). Accepts 10, 10s, 2m, 1h.")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_check_bot_admin()
     @app_commands.describe(duration="Cooldown duration (e.g., 3s, 5s, 10s, 1m)")
     async def slots_set_cooldown(self, interaction: Interaction, duration: str):
         guild = interaction.guild
@@ -446,10 +471,44 @@ class Slots(commands.Cog):
         self._set_guild_cfg(str(guild.id), cfg)
         await interaction.response.send_message(embed=discord.Embed(title="✅ Slots Cooldown Set", description=f"Slots spin cooldown set to {seconds}s.", color=discord.Color.green()), ephemeral=True)
 
-    @app_commands.command(name="slots", description="Spin the slots! Bet between 1 and 50000. Choose 1–5 lines.")
-    @app_commands.describe(wager="Total bet for this spin (1–50000)", lines="Number of paylines (1–5)")
+    @app_commands.command(name="slots_bet_limit", description="Admin: Set this server's slots bet limits.")
+    @app_check_bot_admin()
+    @app_commands.describe(min_bet="Minimum bet (>= 1)", max_bet="Maximum bet (>= min_bet)")
+    async def slots_bet_limit(self, interaction: Interaction, min_bet: int, max_bet: int):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Use this in a server.", ephemeral=True)
+            return
+
+        try:
+            mn = int(min_bet)
+            mx = int(max_bet)
+        except Exception:
+            await interaction.response.send_message("❌ Invalid numbers.", ephemeral=True)
+            return
+
+        if mn < 1 or mx < mn:
+            await interaction.response.send_message("❌ Invalid range.", ephemeral=True)
+            return
+
+        cfg = self._get_guild_cfg(str(guild.id))
+        cfg["slots_min_bet"] = int(mn)
+        cfg["slots_max_bet"] = int(mx)
+        self._set_guild_cfg(str(guild.id), cfg)
+
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="✅ Slots Bet Limits Set",
+                description=f"Slots bet limits are now **{mn:,}–{mx:,}**.",
+                color=discord.Color.green(),
+            ),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="slots", description="Spin the slots! Bet limits are server-configurable. Choose 1–5 lines.")
+    @app_commands.describe(wager="Total bet for this spin", lines="Number of paylines (1–5)")
     async def slots(self, interaction: Interaction,
-                    wager: app_commands.Range[int, 1, 50000],
+                    wager: int,
                     lines: app_commands.Range[int, 1, 5] = 1):
         uid = str(interaction.user.id)
         guild_id = str(interaction.guild.id) if interaction.guild else None
@@ -470,6 +529,13 @@ class Slots(commands.Cog):
 
         # Whole-spin wager limit (total)
         total_bet = int(wager)
+        min_bet, max_bet = self.get_slots_bet_limits(guild_id)
+        if total_bet < min_bet or total_bet > max_bet:
+            await interaction.response.send_message(
+                f"❌ Bet must be between {min_bet:,} and {max_bet:,}.",
+                ephemeral=True
+            )
+            return
         if total_bet < lines:
             await interaction.response.send_message(
                 "❌ Your total bet must be at least the number of lines (min 1 coin per line).",
@@ -480,7 +546,7 @@ class Slots(commands.Cog):
         bal = get_balance(uid, guild_id=guild_id)
         if bal < total_bet:
             await interaction.response.send_message(
-                f"❌ You need {total_bet} coins but only have {bal} coins.",
+                f"❌ You need {total_bet:,} coins but only have {bal:,} coins.",
                 ephemeral=True
             )
             return
@@ -499,10 +565,13 @@ class Slots(commands.Cog):
         if total_win:
             add_currency(uid, total_win, guild_id=guild_id)
 
+        # Post-spin balance (after bet + payout)
+        balance_after = get_balance(uid, guild_id=guild_id)
+
         grid = render_window_highlight(window, PAYLINES[lines])
         active_names = ", ".join(LINE_LABELS[:lines])
         desc = (
-            f"**Bet:** {total_bet}  |  **Lines:** {lines}\n"
+            f"**Bet:** {total_bet:,}  |  **Lines:** {lines}\n"
             f"Active Lines: {active_names}\n\n"
             f"```\n{grid}\n```\n"
         )
@@ -522,8 +591,11 @@ class Slots(commands.Cog):
             color = discord.Color.yellow()
         else:
             color = discord.Color.red()
-        footer = f"Net: {'+' if net>0 else ''}{net} (Win {total_win})"
+        footer = f"Net: {'+' if net>0 else ''}{net:,} (Win {total_win:,})"
         embed = discord.Embed(title="🎰 Slots", description=desc, color=color)
+        embed.add_field(name="🎁 Payout", value=f"{total_win:,}", inline=True)
+        embed.add_field(name="🧾 Net", value=f"{'+' if net > 0 else ''}{net:,}", inline=True)
+        embed.add_field(name="💰 Balance", value=f"{balance_after:,}", inline=True)
         embed.set_footer(text=footer)
 
         # Record stats

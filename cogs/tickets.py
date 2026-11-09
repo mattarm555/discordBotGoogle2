@@ -7,6 +7,7 @@ import json
 import logging
 import asyncio
 from typing import Optional
+from utils.botadmin import is_bot_admin
 
 logger = logging.getLogger('jeng.tickets')
 logger.setLevel(logging.INFO)
@@ -48,12 +49,14 @@ class CloseTicketButton(ui.View):
             await interaction.response.send_message(embed=err, ephemeral=True)
             return
 
-        # load configured admin roles
-        cfg = load_json(XP_CONFIG).get(str(guild.id), {})
-        admin_role_ids = {int(r) for r in cfg.get('permissions_roles', [])}
-
         is_owner = interaction.user.id == self.owner_id
-        is_admin = interaction.user.guild_permissions.administrator or any(r.id in admin_role_ids for r in interaction.user.roles)
+        # "Admins" here means either a configured bot-admin role (/setpermissions)
+        # or Discord's built-in Administrator permission.
+        try:
+            discord_admin = bool(getattr(interaction.user, 'guild_permissions', None) and interaction.user.guild_permissions.administrator)
+        except Exception:
+            discord_admin = False
+        is_admin = is_bot_admin(interaction.user) or discord_admin
 
         if not (is_owner or is_admin):
             err = Embed(title='❌ Permission Denied', description='You do not have permission to close this ticket.', color=discord.Color.red())
@@ -151,10 +154,12 @@ class CloseTicketButton(ui.View):
             return
 
         # load configured admin roles and validate perms before opening modal
-        cfg = load_json(XP_CONFIG).get(str(guild.id), {})
-        admin_role_ids = {int(r) for r in cfg.get('permissions_roles', [])}
         is_owner = interaction.user.id == self.owner_id
-        is_admin = interaction.user.guild_permissions.administrator or any(r.id in admin_role_ids for r in interaction.user.roles)
+        try:
+            discord_admin = bool(getattr(interaction.user, 'guild_permissions', None) and interaction.user.guild_permissions.administrator)
+        except Exception:
+            discord_admin = False
+        is_admin = is_bot_admin(interaction.user) or discord_admin
         if not (is_owner or is_admin):
             err = Embed(title='❌ Permission Denied', description='You do not have permission to close this ticket.', color=discord.Color.red())
             await interaction.response.send_message(embed=err, ephemeral=True)
@@ -337,9 +342,9 @@ class Tickets(commands.Cog):
     @app_commands.command(name='ticketlocation', description='(Admin) Set the default category for new tickets in this server.')
     @app_commands.describe(category='Category to use by default for new tickets (leave empty to clear)')
     async def ticketlocation(self, interaction: Interaction, category: Optional[discord.CategoryChannel] = None):
-        # permission check: only admins
-        if not interaction.user.guild_permissions.administrator:
-            err = Embed(title='❌ Permission Denied', description='You must be a server administrator to run this command.', color=discord.Color.red())
+        # permission check: bot-admin roles (configured via /setpermissions)
+        if not is_bot_admin(interaction.user):
+            err = Embed(title='❌ Permission Denied', description='You do not have permission to run this command.', color=discord.Color.red())
             await interaction.response.send_message(embed=err, ephemeral=True)
             return
 

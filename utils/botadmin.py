@@ -1,15 +1,19 @@
 import os
 import json
 from typing import Iterable, Optional
+from pathlib import Path
 import discord
 from discord import app_commands
 
-CONFIG_FILE = "xp_config.json"
+# Always resolve xp_config.json at the repository root (parent of utils/).
+# This avoids "it worked yesterday" issues when the bot is started with a different CWD.
+CONFIG_FILE = Path(__file__).resolve().parents[1] / "xp_config.json"
 
 
-def _load_json(file: str):
-    if os.path.exists(file):
-        with open(file, "r", encoding="utf-8") as f:
+def _load_json(file: str | Path):
+    path = Path(file)
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
             try:
                 return json.load(f)
             except Exception:
@@ -17,8 +21,9 @@ def _load_json(file: str):
     return {}
 
 
-def _save_json(file: str, data: dict):
-    with open(file, "w", encoding="utf-8") as f:
+def _save_json(file: str | Path, data: dict):
+    path = Path(file)
+    with path.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
 
@@ -88,11 +93,97 @@ def is_bot_admin(member: discord.Member, *, allow_guild_owner: bool = True, allo
 
 # Slash-command check decorator for easy reuse
 async def _ensure_bot_admin(interaction: discord.Interaction) -> bool:
-    member = interaction.user
-    if isinstance(member, discord.Member) and is_bot_admin(member):
+    # Only meaningful in guilds
+    if not interaction.guild:
+        raise app_commands.CheckFailure("❌ This command can only be used in a server.")
+
+    # In some edge cases, interaction.user can be a discord.User (no roles).
+    # Try to resolve a Member so we can read roles reliably.
+    member: Optional[discord.Member]
+    if isinstance(interaction.user, discord.Member):
+        member = interaction.user
+    else:
+        member = interaction.guild.get_member(interaction.user.id)
+        if member is None:
+            try:
+                member = await interaction.guild.fetch_member(interaction.user.id)
+            except Exception:
+                member = None
+
+    if member is not None and is_bot_admin(member):
         return True
+
+    # Optional debug to diagnose mismatches without spamming normal operation.
+    if os.getenv("BOTADMIN_DEBUG"):
+        try:
+            gid = str(interaction.guild.id)
+            allowed = get_bot_admin_role_ids(gid)
+            role_ids = [str(r.id) for r in (member.roles if member else [])]
+            print(f"[BOTADMIN_DEBUG] guild={gid} user={interaction.user.id} allowed={allowed} user_roles={role_ids}")
+        except Exception:
+            pass
+
     raise app_commands.CheckFailure("❌ You do not have permission to use this command.")
 
 
 def app_check_bot_admin():
     return app_commands.check(_ensure_bot_admin)
+
+
+def _has_discord_manage_guild(member: discord.Member) -> bool:
+    try:
+        perms = member.guild_permissions
+        return bool(perms.administrator or perms.manage_guild)
+    except Exception:
+        return False
+
+
+async def _ensure_can_manage_bot_permissions(interaction: discord.Interaction) -> bool:
+    """Bootstrap-safe check for managing bot-admin roles.
+
+    Allows:
+      - Guild owner
+      - Global owner_id (xp_config.json top-level owner_id)
+      - Discord admin/manage_guild (so you can bootstrap before roles exist)
+      - Existing bot-admin roles (/setpermissions)
+    """
+    if not interaction.guild:
+        raise app_commands.CheckFailure("❌ This command can only be used in a server.")
+
+    # Resolve a Member (roles and guild_permissions live here)
+    member: Optional[discord.Member]
+    if isinstance(interaction.user, discord.Member):
+        member = interaction.user
+    else:
+        member = interaction.guild.get_member(interaction.user.id)
+        if member is None:
+            try:
+                member = await interaction.guild.fetch_member(interaction.user.id)
+            except Exception:
+                member = None
+
+    if member is None:
+        raise app_commands.CheckFailure("❌ Could not resolve your server member profile.")
+
+    # Always allow guild owner
+    if interaction.guild.owner_id == member.id:
+        return True
+
+    # Allow configured global owner id
+    owner_id = get_owner_id()
+    if owner_id and member.id == owner_id:
+        return True
+
+    # Allow Discord Manage Server/Admin so a server can bootstrap roles
+    if _has_discord_manage_guild(member):
+        return True
+
+    # Finally, allow already-configured bot-admin roles
+    if is_bot_admin(member, allow_guild_owner=False, allow_owner_id=owner_id):
+        return True
+
+    raise app_commands.CheckFailure("❌ You do not have permission to manage bot permissions.")
+
+
+def app_check_can_manage_bot_permissions():
+    return app_commands.check(_ensure_can_manage_bot_permissions)

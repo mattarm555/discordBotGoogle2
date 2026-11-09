@@ -1,0 +1,18 @@
+[Unit]
+Description=JengBot Discord bot
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__BOT_DIR__
+ExecStart=__BOT_DIR__/venv/bin/python -u main.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+# deno must be on PATH for yt-dlp's YouTube JS challenge solving
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target

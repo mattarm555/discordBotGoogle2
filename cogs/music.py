@@ -7,6 +7,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from typing import Awaitable, Callable, Optional
 from urllib.parse import parse_qs, urlparse
@@ -31,11 +33,6 @@ NOW_PLAYING_DELETE_AFTER = 30
 # Optional: path to a Netscape-format cookies file exported from a (throwaway) logged-in
 # YouTube account. Only needed if YouTube blocks the host IP even with a PO token provider.
 YT_COOKIES = os.getenv("YT_COOKIES")
-
-FFMPEG_OPTS = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -reconnect_on_network_error 1",
-    "options": "-vn",
-}
 
 queues: dict[str, list[dict]] = {}       # guild_id -> [song dicts]
 last_channels: dict[str, discord.abc.Messageable] = {}  # guild_id -> text channel for announcements
@@ -77,6 +74,79 @@ class _StderrTail:
 
     def text(self) -> str:
         return self._buf.decode(errors="replace").strip()
+
+
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+_orig_thread_excepthook = threading.excepthook
+
+
+def _quiet_pipe_writer_errors(args):
+    """discord.py's FFmpeg stdin-writer thread raises BrokenPipe/teardown errors when a song is
+    stopped mid-stream (/skip, /leave). They're harmless; keep them out of the log."""
+    name = getattr(args.thread, "name", "") or ""
+    if name.startswith("popen-stdin-writer") and issubclass(args.exc_type, (OSError, AttributeError, ValueError)):
+        return
+    _orig_thread_excepthook(args)
+
+
+if getattr(threading.excepthook, "__name__", "") != "_quiet_pipe_writer_errors":
+    threading.excepthook = _quiet_pipe_writer_errors
+
+
+class YTDLPipeAudio(discord.FFmpegPCMAudio):
+    """Audio source where a yt-dlp subprocess downloads the stream and pipes it into FFmpeg.
+
+    Letting FFmpeg fetch googlevideo URLs itself gets HTTP 403 on many networks: those URLs
+    need yt-dlp's exact headers and chunked range requests. yt-dlp's own downloader handles
+    that (and SoundCloud HLS). `--load-info-json` reuses the info we already extracted, so the
+    song isn't looked up twice.
+    """
+
+    def __init__(self, info: dict, stderr_tail: "_StderrTail"):
+        self._tail = stderr_tail
+        fd, self._info_path = tempfile.mkstemp(prefix="jengbot-", suffix=".info.json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(info, f)
+        cmd = [sys.executable, "-m", "yt_dlp", "--load-info-json", self._info_path,
+               "-f", str(info["format_id"]), "-o", "-", "--quiet", "--no-warnings",
+               "--no-part", "--no-progress", "--no-cache-dir"]
+        if YT_COOKIES and os.path.exists(YT_COOKIES):
+            cmd += ["--cookies", YT_COOKIES]
+        self._ytdlp = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+        threading.Thread(target=self._drain_stderr, daemon=True,
+                         name=f"ytdlp-stderr:{self._ytdlp.pid}").start()
+        try:
+            super().__init__(self._ytdlp.stdout, pipe=True, stderr=stderr_tail, options="-vn")
+        except Exception:
+            self._stop_ytdlp()
+            raise
+
+    def _drain_stderr(self):
+        for line in iter(self._ytdlp.stderr.readline, b""):
+            self._tail.write(b"[yt-dlp] " + line)
+
+    def _stop_ytdlp(self):
+        try:
+            if self._ytdlp.poll() is None:
+                self._ytdlp.kill()
+            self._ytdlp.wait(timeout=5)
+        except Exception:
+            pass
+        try:
+            os.remove(self._info_path)
+        except OSError:
+            pass
+
+    def cleanup(self) -> None:
+        # Stop yt-dlp first: discord.py's stdin-writer thread then sees EOF and exits cleanly,
+        # instead of racing FFmpeg's teardown (which logs a noisy AttributeError traceback).
+        self._stop_ytdlp()
+        writer = getattr(self, "_pipe_writer_thread", None)
+        if writer is not None:
+            writer.join(timeout=2)
+        super().cleanup()
 
 
 def parse_iso8601_duration(iso: str) -> int:
@@ -390,23 +460,25 @@ class Music(commands.Cog):
         with yt_dlp.YoutubeDL(_ydl_opts(**extra)) as ydl:
             return ydl.extract_info(query, download=False)
 
-    def get_stream_url(self, url: str) -> str:
+    def get_stream_info(self, url: str) -> dict:
+        """Resolve a single playable audio format. Returns yt-dlp's (JSON-safe) info dict,
+        which YTDLPipeAudio hands to a yt-dlp subprocess to do the actual download."""
         if url.lower().startswith('scsearch'):
             return self._soundcloud_search_stream(url.split(':', 1)[1])
         fmt = 'bestaudio[ext=mp3]/bestaudio/best' if _is_soundcloud(url) else 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best'
         with yt_dlp.YoutubeDL(_ydl_opts(format=fmt, noplaylist=True)) as ydl:
             info = ydl.extract_info(url, download=False)
-        if not info or not isinstance(info, dict):
-            raise RuntimeError("yt-dlp returned no info")
-        if info.get('entries'):
-            info = info['entries'][0]
-        resolved = info.get('url')
-        if not resolved:
-            raise RuntimeError("yt-dlp info missing stream url")
+            if not info or not isinstance(info, dict):
+                raise RuntimeError("yt-dlp returned no info")
+            if info.get('entries'):
+                info = info['entries'][0]
+            if not info.get('url') or not info.get('format_id'):
+                raise RuntimeError("yt-dlp found no playable audio format")
+            info = ydl.sanitize_info(info)
         _log(f"[DEBUG] Resolved stream for {url} -> {info.get('title')} ({info.get('format')})")
-        return resolved
+        return info
 
-    def _soundcloud_search_stream(self, terms: str, candidates: int = 5) -> str:
+    def _soundcloud_search_stream(self, terms: str, candidates: int = 5) -> dict:
         """Search SoundCloud and return the first result that actually resolves
         (many top results are DRM-protected Go+ tracks that can't be played)."""
         with yt_dlp.YoutubeDL(_ydl_opts(extract_flat='in_playlist')) as ydl:
@@ -417,25 +489,25 @@ class Music(commands.Cog):
             if not page:
                 continue
             try:
-                return self.get_stream_url(page)
+                return self.get_stream_info(page)
             except Exception as e:
                 last_err = e
         raise last_err
 
-    async def _resolve_stream(self, song: dict) -> tuple[str, Optional[str]]:
-        """Resolve a fresh playable URL for a song. Falls back to a SoundCloud search by
-        title when YouTube fails. Returns (stream_url, fallback_label_or_None)."""
+    async def _resolve_stream(self, song: dict) -> tuple[dict, Optional[str]]:
+        """Resolve fresh stream info for a song. Falls back to a SoundCloud search by
+        title when YouTube fails. Returns (info, fallback_label_or_None)."""
         target = song.get('search_query') or song.get('webpage_url') or song.get('url')
         if not target:
             raise RuntimeError("No URL or search query to resolve stream")
         try:
-            return await asyncio.to_thread(self.get_stream_url, target), None
+            return await asyncio.to_thread(self.get_stream_info, target), None
         except Exception as primary_err:
             if _is_soundcloud(target) or not song.get('title'):
                 raise
             _log(f"{YELLOW}⚠️ YouTube resolve failed for {song.get('title')}: {primary_err} — trying SoundCloud{RESET}")
             try:
-                return await asyncio.to_thread(self.get_stream_url, f"scsearch1:{song['title']}"), "SoundCloud"
+                return await asyncio.to_thread(self.get_stream_info, f"scsearch1:{song['title']}"), "SoundCloud"
             except Exception as sc_err:
                 raise RuntimeError(f"YouTube: {primary_err} | SoundCloud fallback: {sc_err}") from primary_err
 
@@ -611,7 +683,7 @@ class Music(commands.Cog):
                 save_queues(queues)
 
                 try:
-                    stream_url, via = await self._resolve_stream(song)
+                    stream_info, via = await self._resolve_stream(song)
                 except Exception as e:
                     _log(f"{RED}⚠️ Failed to resolve stream for {song.get('title')}: {e}{RESET}")
                     extra = ""
@@ -634,7 +706,7 @@ class Music(commands.Cog):
 
                 try:
                     stderr_tail = _StderrTail()
-                    source = discord.FFmpegPCMAudio(stream_url, stderr=stderr_tail, **FFMPEG_OPTS)
+                    source = YTDLPipeAudio(stream_info, stderr_tail)
                     self.user_stopped[guild_id] = False
                     self.last_playback[guild_id] = {
                         "title": song.get("title"), "via": via or "YouTube/direct",
@@ -1018,25 +1090,30 @@ class Music(commands.Cog):
 
     # ---- Diagnostics ----
     def _audio_selftest(self) -> str:
-        """Blocking: resolve a known YouTube video and decode 5s with FFmpeg."""
-        ffmpeg = shutil.which("ffmpeg")
-        if not ffmpeg:
+        """Blocking: run the real playback path (yt-dlp -> FFmpeg) on a known video for 5s."""
+        if not shutil.which("ffmpeg"):
             return "❌ ffmpeg not found on PATH"
         try:
-            url = self.get_stream_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+            info = self.get_stream_info("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
         except Exception as e:
             return f"❌ yt-dlp could not resolve a YouTube stream: {str(e)[:300]}"
-        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", *FFMPEG_OPTS["before_options"].split(),
-               "-i", url, "-t", "5", "-vn", "-f", "s16le", "-ar", "48000", "-ac", "2", "-"]
+        tail = _StderrTail()
         try:
-            p = subprocess.run(cmd, capture_output=True, timeout=60,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            src = YTDLPipeAudio(info, tail)
         except Exception as e:
-            return f"❌ ffmpeg failed to run: {e}"
-        got, want = len(p.stdout), 48000 * 2 * 2 * 5
-        ok = "✅" if got >= want * 0.9 else "❌"
-        err = p.stderr.decode(errors="replace").strip()[:300]
-        return f"{ok} decoded {got:,}/{want:,} bytes (rc={p.returncode})" + (f"\n{err}" if err else "")
+            return f"❌ could not start yt-dlp/ffmpeg: {e}"
+        frames, deadline = 0, time.monotonic() + 45
+        try:
+            while frames < 250 and time.monotonic() < deadline:  # 250 x 20 ms = 5 s
+                if not src.read():
+                    break
+                frames += 1
+        finally:
+            src.cleanup()
+        ok = "✅" if frames >= 250 else "❌"
+        err = tail.text()[:400]
+        result = f"{ok} got {frames * 20 / 1000:.1f}s of audio (format {info.get('format_id')})"
+        return result + ("\n" + err if err else "")
 
     @app_commands.command(name="musicdebug", description="Owner-only: diagnose music playback problems.")
     async def music_debug(self, interaction: Interaction):

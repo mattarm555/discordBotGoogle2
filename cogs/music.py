@@ -1149,6 +1149,11 @@ class Music(commands.Cog):
         embed.add_field(name="Versions", inline=False, value=(
             f"Python {sys.version.split()[0]} · discord.py {discord.__version__} · davey {ver('davey')} · "
             f"yt-dlp {yt_dlp.version.__version__} · PyNaCl {ver('nacl')}"))
+        davey_ver = ver('davey')
+        if davey_ver.startswith("0.2") and discord.__version__.startswith("2.7"):
+            embed.add_field(name="⚠️ Known problem", inline=False, value=(
+                f"davey {davey_ver} + discord.py {discord.__version__}: listeners hear silence. "
+                "Run `pip install \"davey>=0.1.6,<0.2\"` (or /redeploy with the pinned requirements.txt)."))
         embed.add_field(name="Tools", inline=False, value=(
             f"ffmpeg: {await asyncio.to_thread(first_line, 'ffmpeg', '-version')}\n"
             f"deno: {await asyncio.to_thread(first_line, 'deno', '--version')}\n"

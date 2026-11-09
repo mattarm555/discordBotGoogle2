@@ -1,6 +1,10 @@
 # discord.py 2.7+ is required: Discord enforces DAVE (E2EE) voice since March 2026.
 # The [voice] extra pulls in PyNaCl + davey.
 discord.py[voice]>=2.7.1
+# davey 0.2.0 (2026-11-02) changed how DAVE key transitions work and discord.py 2.7.1 doesn't
+# call the new API: the bot "speaks" (green ring) but listeners can't decrypt anything = silence.
+# Keep below 0.2 until discord.py ships Rapptz/discord.py#10548.
+davey>=0.1.6,<0.2
 # Keep yt-dlp current (deploy/update.sh upgrades it). [default] includes yt-dlp-ejs,
 # which needs the Deno runtime installed on the host for YouTube.
 yt-dlp[default]>=2026.10.26

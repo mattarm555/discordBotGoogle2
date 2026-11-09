@@ -44,6 +44,16 @@ while (-not (Test-Path $stopFile)) {
         Move-Item $log (Join-Path $logDir "bot.old.log") -Force
     }
 
+    # Install packages whenever requirements.txt changed (e.g. after /redeploy pulled new code)
+    $reqFile = Join-Path $root "requirements.txt"
+    $reqStamp = Join-Path $logDir ".requirements-hash"
+    $reqHash = (Get-FileHash $reqFile -Algorithm SHA256).Hash
+    if (-not (Test-Path $reqStamp) -or ((Get-Content $reqStamp -Raw).Trim() -ne $reqHash)) {
+        Write-Log "requirements.txt changed; installing packages"
+        (Start-Python "-m pip install -q -U -r `"$reqFile`"").WaitForExit()
+        Set-Content -Path $reqStamp -Value $reqHash -Encoding ASCII
+    }
+
     # Upgrade yt-dlp at most once a day (YouTube breaks old versions often)
     if (-not (Test-Path $stamp) -or ((Get-Item $stamp).LastWriteTime -lt (Get-Date).AddHours(-20))) {
         Write-Log "upgrading yt-dlp"

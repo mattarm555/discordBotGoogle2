@@ -46,6 +46,19 @@ def generate_scramble(puzzle: str = "3x3", rng: random.Random | None = None) -> 
     return " ".join(moves)
 
 
+MAX_SCRAMBLE_MOVES = 60
+_MOVE_RE = re.compile(r"^[URFDLB]w?(?:2|')?$")
+
+
+def normalize_scramble(text: str) -> Optional[str]:
+    """Clean up a pasted scramble (curly quotes, extra spaces). None if it is not valid WCA-style notation."""
+    text = text.replace("’", "'").replace("‘", "'").replace("`", "")
+    moves = text.split()
+    if not moves or len(moves) > MAX_SCRAMBLE_MOVES or not all(_MOVE_RE.match(m) for m in moves):
+        return None
+    return " ".join(moves)
+
+
 # -------------------------------------------------------------------- times
 _TIME_RE = re.compile(r"^(?:(\d{1,2}):)?(\d{1,2})(?:[.,](\d{1,3}))?$")
 
@@ -270,13 +283,14 @@ class Cube(commands.Cog):
         view.message = await interaction.original_response()
 
     @cube.command(name="submit", description="Submit a time from a real timer.")
-    @app_commands.describe(time="e.g. 12.34 or 1:02.34", puzzle="Which puzzle (default 3x3)", penalty="Optional penalty")
+    @app_commands.describe(time="e.g. 12.34 or 1:02.34", puzzle="Which puzzle (default 3x3)", penalty="Optional penalty",
+                           scramble="Optional: the scramble you solved, e.g. R U R' U' F2")
     @app_commands.choices(puzzle=PUZZLE_CHOICES, penalty=[
         app_commands.Choice(name="none", value=""),
         app_commands.Choice(name="+2", value="+2"),
         app_commands.Choice(name="DNF", value="DNF")])
     async def submit(self, interaction: Interaction, time: str, puzzle: app_commands.Choice[str] = None,
-                     penalty: app_commands.Choice[str] = None):
+                     penalty: app_commands.Choice[str] = None, scramble: Optional[str] = None):
         p = puzzle.value if puzzle else "3x3"
         debug_command("cube submit", interaction.user, interaction.guild, time=time, puzzle=p)
         ms = parse_time(time)
@@ -284,15 +298,23 @@ class Cube(commands.Cog):
             await interaction.response.send_message(
                 "❌ I couldn't read that time. Try `12.34` or `1:02.34`.", ephemeral=True)
             return
+        scr = ""
+        if scramble is not None and scramble.strip():
+            scr = normalize_scramble(scramble)
+            if scr is None:
+                await interaction.response.send_message(
+                    "❌ I couldn't read that scramble. Use standard notation like `R U R' U' F2` "
+                    f"(faces U D L R F B, optional `w`, `'` or `2`, up to {MAX_SCRAMBLE_MOVES} moves).",
+                    ephemeral=True)
+                return
         pen = penalty.value if penalty else ""
-        last = self.last_scramble.get((interaction.guild_id, interaction.user.id))
-        scr = last[1] if last and last[0] == p else ""
         self.add_solve(interaction.guild_id, interaction.user.id, p, ms, pen, scr)
         solve = {"t": ms, "pen": pen}
+        desc = f"{interaction.user.mention}: **{fmt_ms(eff(solve))}** on {p}" + (f" ({pen})" if pen else "")
+        if scr:
+            desc += f"\n```{scr}```"
         await interaction.response.send_message(embed=discord.Embed(
-            title="✅ Solve saved",
-            description=f"{interaction.user.mention}: **{fmt_ms(eff(solve))}** on {p}" + (f" ({pen})" if pen else ""),
-            color=discord.Color.green()))
+            title="✅ Solve saved", description=desc, color=discord.Color.green()))
 
     @cube.command(name="leaderboard", description="Server leaderboard by best single.")
     @app_commands.describe(puzzle="Which puzzle (default 3x3)")

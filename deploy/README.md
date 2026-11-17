@@ -1,5 +1,20 @@
 # Hosting JengBot 24/7
 
+## Live JengChat status
+
+On the machine running the Discord bot, set `JENGCHAT_STATUS_URL` in the bot's
+`.env` to the JengChat status endpoint. It should return HTTP 200 with JSON such
+as `{"online":true,"players":["Alice","Bob"]}`. An empty `players` array means
+nobody is online. `{"online":false}` reports a known outage. If the endpoint is
+missing or unreachable, the bot cannot report a roster. `JENGCHAT_HOST` and
+`JENGCHAT_PORT` are an optional reachability check only.
+
+After restarting the bot, run `/jengchat` in the text channel where you want
+the live status. Members who can manage bot permissions can set it up. The bot
+updates one message per Discord server every 30 seconds and resumes after a
+restart. Delete the message and rerun the command in another channel to move it.
+`/server status` still gives an on-demand snapshot.
+
 Target: **Oracle Cloud Always Free** Ampere A1 VM (Ubuntu 24.04, ARM). Cost: $0.
 Fallback: any Ubuntu VPS (Hetzner CX22 ≈ €4/mo) — the steps are identical.
 

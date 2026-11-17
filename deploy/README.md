@@ -6,13 +6,23 @@ On the machine running the Discord bot, set `JENGCHAT_STATUS_URL` in the bot's
 `.env` to the JengChat status endpoint. It should return HTTP 200 with JSON such
 as `{"online":true,"players":["Alice","Bob"]}`. An empty `players` array means
 nobody is online. `{"online":false}` reports a known outage. If the endpoint is
-missing or unreachable, the bot cannot report a roster. `JENGCHAT_HOST` and
-`JENGCHAT_PORT` are an optional reachability check only.
+missing or unreachable, the bot can use `JENGCHAT_HOST` and `JENGCHAT_PORT`
+to check reachability or fetch the roster over TLS as described below.
 
-After restarting the bot, run `/jengchat` in the text channel where you want
-the live status. Members who can manage bot permissions can set it up. The bot
-updates one message per Discord server every 30 seconds and resumes after a
-restart. Delete the message and rerun the command in another channel to move it.
+For a JengChat server with TLS roster support, use `JENGCHAT_HOST` and
+`JENGCHAT_PORT` with `JENGCHAT_STATUS_TOKEN` and `JENGCHAT_CERT_SHA256` instead.
+Generate a 32-byte hex token (`openssl rand -hex 32`) and set the same value in
+the server process and bot `.env`. Set `JENGCHAT_CERT_SHA256` on the bot to the
+server's public certificate SHA-256 fingerprint (64 hex digits, no colons).
+Get the fingerprint from the trusted certificate file on the server with
+`openssl x509 -in server.crt -noout -fingerprint -sha256`. Update the pin when
+the certificate changes. If the roster check fails, availability still works.
+
+After restarting the bot, a bot admin can run `/jengchat show` to set up the
+live status. The bot updates one message per Discord server every 15 minutes
+and resumes after a restart. Any member can run `/jengchat show` to refresh
+the status and move it into the current channel. A bot admin can run
+`/jengchat delete` to remove the message and stop automatic checks for that server.
 `/server status` still gives an on-demand snapshot.
 
 Target: **Oracle Cloud Always Free** Ampere A1 VM (Ubuntu 24.04, ARM). Cost: $0.

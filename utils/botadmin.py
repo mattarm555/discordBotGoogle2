@@ -138,7 +138,7 @@ def _has_discord_manage_guild(member: discord.Member) -> bool:
         return False
 
 
-async def _ensure_can_manage_bot_permissions(interaction: discord.Interaction) -> bool:
+async def ensure_can_manage_bot_permissions(interaction: discord.Interaction) -> bool:
     """Bootstrap-safe check for managing bot-admin roles.
 
     Allows:
@@ -186,4 +186,4 @@ async def _ensure_can_manage_bot_permissions(interaction: discord.Interaction) -
 
 
 def app_check_can_manage_bot_permissions():
-    return app_commands.check(_ensure_can_manage_bot_permissions)
+    return app_commands.check(ensure_can_manage_bot_permissions)

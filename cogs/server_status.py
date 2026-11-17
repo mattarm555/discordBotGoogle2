@@ -1,7 +1,11 @@
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
+import re
+import ssl
 import time
 from pathlib import Path
 
@@ -10,11 +14,11 @@ import discord
 from discord import app_commands, Interaction
 from discord.ext import commands, tasks
 
-from utils.botadmin import app_check_can_manage_bot_permissions
+from utils.botadmin import app_check_can_manage_bot_permissions, ensure_can_manage_bot_permissions
 from utils.debug import debug_command
 
 LIVE_FILE = Path(__file__).resolve().parents[1] / "jengchat_status_messages.json"
-REFRESH_SECONDS = 30
+REFRESH_MINUTES = 15
 log = logging.getLogger(__name__)
 
 
@@ -29,6 +33,7 @@ class ServerStatus(commands.Cog):
     """
 
     server = app_commands.Group(name="server", description="Game server commands")
+    jengchat = app_commands.Group(name="jengchat", description="Manage the live JengChat status", guild_only=True)
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -78,6 +83,36 @@ class ServerStatus(commands.Cog):
             pass
         return {"online": True}, ping
 
+    async def _query_roster(self, host: str, port: int, token: str, fingerprint: str):
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", token) or not re.fullmatch(r"[0-9a-fA-F]{64}", fingerprint):
+            raise ValueError("Expected a hex roster token and certificate SHA-256")
+        start = time.monotonic()
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        # JengChat uses a pinned certificate. Authenticate it before sending the token.
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        async with asyncio.timeout(3):
+            reader, writer = await asyncio.open_connection(host, port, ssl=context, limit=4096)
+            try:
+                certificate = writer.get_extra_info("ssl_object").getpeercert(binary_form=True)
+                if not hmac.compare_digest(hashlib.sha256(certificate).hexdigest(), fingerprint.lower()):
+                    raise ValueError("Unexpected JengChat server certificate")
+                writer.write(f"STATUS|{token}\n".encode("ascii"))
+                await writer.drain()
+                if await reader.readline() != b"STATUS\n":
+                    raise ValueError("JengChat did not accept the roster request")
+                players = []
+                for _ in range(129):
+                    line = await reader.readline()
+                    if line == b"\n":
+                        return {"online": True, "players": players}, int((time.monotonic() - start) * 1000)
+                    if not line.endswith(b"\n"):
+                        break
+                    players.append(line[:-1].decode("utf-8"))
+                raise ValueError("Incomplete JengChat roster")
+            finally:
+                writer.close()
+
     @staticmethod
     def _target():
         return (os.getenv("JENGCHAT_STATUS_URL"), os.getenv("JENGCHAT_HOST"), os.getenv("JENGCHAT_PORT"))
@@ -87,7 +122,7 @@ class ServerStatus(commands.Cog):
         embed = await self._build_status(url, host, port)
         if live:
             embed.timestamp = discord.utils.utcnow()
-            notes = [embed.footer.text, f"Checked every {REFRESH_SECONDS} seconds · Last checked"]
+            notes = [embed.footer.text, f"Checked every {REFRESH_MINUTES} minutes · Last checked"]
             embed.set_footer(text=" · ".join(note for note in notes if note))
         return embed
 
@@ -104,6 +139,14 @@ class ServerStatus(commands.Cog):
                 data, ping = await self._query_http(url)
             except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError):
                 log.debug("JengChat HTTP check failed", exc_info=True)
+        if data is None and host and port:
+            token = os.getenv("JENGCHAT_STATUS_TOKEN")
+            fingerprint = os.getenv("JENGCHAT_CERT_SHA256")
+            if token and fingerprint:
+                try:
+                    data, ping = await self._query_roster(host, int(port), token, fingerprint)
+                except (OSError, TimeoutError, ValueError, OverflowError):
+                    log.debug("JengChat roster check failed", exc_info=True)
         if data is None and host and port:
             try:
                 data, ping = await self._query_tcp(host, int(port))
@@ -155,13 +198,11 @@ class ServerStatus(commands.Cog):
         await interaction.response.defer(thinking=True, ephemeral=not (url or (host and port)))
         await interaction.followup.send(embed=await self._status_embed(), allowed_mentions=discord.AllowedMentions.none())
 
-    @app_commands.command(name="jengchat", description="Create or refresh this server's live JengChat status message.")
-    @app_commands.guild_only()
-    @app_check_can_manage_bot_permissions()
-    async def jengchat(self, interaction: Interaction):
+    @jengchat.command(name="show", description="Show the live JengChat status in this channel.")
+    async def show(self, interaction: Interaction):
         channel = interaction.channel
-        if not isinstance(channel, discord.TextChannel):
-            await interaction.response.send_message("Run `/jengchat` in a server text channel.", ephemeral=True)
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            await interaction.response.send_message("Run `/jengchat show` in a server text channel or thread.", ephemeral=True)
             return
         url, host, port = self._target()
         if not url and not (host and port):
@@ -169,16 +210,22 @@ class ServerStatus(commands.Cog):
             return
         await interaction.response.defer(thinking=True, ephemeral=True)
         async with self.live_lock:
+            guild_id = channel.guild.id
+            existing = self.live_messages.get(guild_id)
+            if existing is None:
+                try:
+                    await ensure_can_manage_bot_permissions(interaction)
+                except app_commands.CheckFailure:
+                    await interaction.followup.send("Ask a bot admin to set up the live JengChat status message.")
+                    return
             embed = await self._status_embed(live=True)
-            existing = self.live_messages.get(channel.guild.id)
-            if existing:
-                channel_id, message_id = existing
-                message = self._live_message(channel_id, message_id)
-                jump_url = f"https://discord.com/channels/{channel.guild.id}/{channel_id}/{message_id}"
+            if existing and existing[0] == channel.id:
+                message = self._live_message(*existing)
+                jump_url = f"https://discord.com/channels/{guild_id}/{channel.id}/{message.id}"
                 try:
                     await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
                 except discord.NotFound:
-                    pass  # Recreate a deleted message in the current channel.
+                    pass
                 except discord.HTTPException:
                     await interaction.followup.send(f"I couldn't refresh the [existing status message]({jump_url}). Check my channel permissions.")
                     return
@@ -190,19 +237,80 @@ class ServerStatus(commands.Cog):
             except discord.HTTPException:
                 await interaction.followup.send("I couldn't post the status here. Check my Send Messages and Embed Links permissions.")
                 return
-            self.live_messages[channel.guild.id] = (channel.id, message.id)
             try:
-                self._save_live()
+                self._set_live(guild_id, (channel.id, message.id))
             except OSError:
                 log.exception("Could not save JengChat live messages")
-                await interaction.followup.send(f"Posted the [live status]({message.jump_url}), but I couldn't save it for the next restart.")
+                await self._discard_post(message)
+                await interaction.followup.send("I couldn't save the new status location.")
                 return
-            await interaction.followup.send(f"Posted the [live JengChat status]({message.jump_url}).")
+            if existing and existing[0] != channel.id:
+                try:
+                    await self._delete_post(self._live_message(*existing))
+                except discord.HTTPException:
+                    try:
+                        self._set_live(guild_id, existing)
+                    except OSError:
+                        log.exception("Could not restore the previous JengChat status location")
+                        await interaction.followup.send(f"The [new status]({message.jump_url}) will update, but I couldn't remove the old post.")
+                    else:
+                        await self._discard_post(message)
+                        await interaction.followup.send("I couldn't remove the old status message. It will keep updating in its original channel.")
+                    return
+            await interaction.followup.send(f"The [live JengChat status]({message.jump_url}) is now in this channel.")
+
+    @jengchat.command(name="delete", description="Delete the live status and stop its automatic checks.")
+    @app_check_can_manage_bot_permissions()
+    async def delete(self, interaction: Interaction):
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        async with self.live_lock:
+            guild_id = interaction.guild_id
+            existing = self.live_messages.get(guild_id)
+            if existing is None:
+                await interaction.followup.send("This server has no live JengChat status message.")
+                return
+            try:
+                self._set_live(guild_id, None)
+            except OSError:
+                log.exception("Could not clear the JengChat status location")
+                await interaction.followup.send("I couldn't save the change. The live status is still active.")
+                return
+            try:
+                await self._delete_post(self._live_message(*existing))
+            except discord.HTTPException:
+                await interaction.followup.send("Automatic checks stopped for this server, but I couldn't delete the old post. A moderator can remove it.")
+                return
+            await interaction.followup.send("Deleted the live JengChat status and stopped its automatic checks for this server.")
+
+    def _set_live(self, guild_id: int, location: tuple[int, int] | None):
+        previous = self.live_messages.pop(guild_id, None)
+        if location is not None:
+            self.live_messages[guild_id] = location
+        try:
+            self._save_live()
+        except OSError:
+            self.live_messages.pop(guild_id, None)
+            if previous is not None:
+                self.live_messages[guild_id] = previous
+            raise
+
+    @staticmethod
+    async def _delete_post(message):
+        try:
+            await message.delete()
+        except discord.NotFound:
+            pass
+
+    async def _discard_post(self, message):
+        try:
+            await self._delete_post(message)
+        except discord.HTTPException:
+            log.warning("Could not remove an untracked JengChat status message %s", message.id)
 
     def _live_message(self, channel_id: int, message_id: int) -> discord.PartialMessage:
         return self.bot.get_partial_messageable(channel_id).get_partial_message(message_id)
 
-    @tasks.loop(seconds=REFRESH_SECONDS)
+    @tasks.loop(minutes=REFRESH_MINUTES)
     async def refresh_live(self):
         async with self.live_lock:
             if not self.live_messages:

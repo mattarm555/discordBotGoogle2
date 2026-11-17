@@ -13,7 +13,10 @@ import discord
 from discord import app_commands, Interaction
 from discord.ext import commands
 
+from datetime import timedelta
+
 from utils.botadmin import is_bot_admin
+from utils.daytime import today
 from utils.debug import debug_command
 
 DATA_FILE = Path(__file__).resolve().parents[1] / "trivia_data.json"
@@ -123,6 +126,27 @@ class QuestionView(discord.ui.View):
                 pass
 
 
+class DailyView(discord.ui.View):
+    """A/B/C/D buttons for the daily question. Only the person who opened it can answer."""
+
+    def __init__(self, cog: "Trivia", guild_id: int, user_id: int, day):
+        super().__init__(timeout=60 * 60)
+        self.cog, self.user_id, self.day = cog, user_id, day
+        for i in range(4):
+            b = discord.ui.Button(label=LETTERS[i], style=discord.ButtonStyle.primary)
+            b.callback = self._make_cb(i)
+            self.add_item(b)
+
+    def _make_cb(self, index: int):
+        async def cb(interaction: Interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("Run `/trivia daily` for your own question!", ephemeral=True)
+                return
+            self.stop()
+            await self.cog.answer_daily(interaction, index, self.day)
+        return cb
+
+
 class Trivia(commands.Cog):
     trivia = app_commands.Group(name="trivia", description="Trivia from Open Trivia DB", guild_only=True)
 
@@ -131,6 +155,7 @@ class Trivia(commands.Cog):
         self.data = _load()
         self.categories: dict[int, str] = {}
         self._api_lock = asyncio.Lock()
+        self._daily_lock = asyncio.Lock()
         self._last_request = 0.0
         self._active: set[int] = set()  # channel ids with a live question or trivia night
         self._nights: dict[int, dict] = {}  # channel id -> {starter, stop, event}
@@ -480,6 +505,143 @@ class Trivia(commands.Cog):
         state["stop"] = True
         state["event"].set()
         await interaction.response.send_message("🛑 Ending trivia night...")
+
+    # ------------------------------------------------------ daily question
+    def daily_stats(self, guild_id: int, user_id: int) -> dict:
+        return self.data.get(str(guild_id), {}).get("daily_users", {}).get(str(user_id), {})
+
+    def daily_streak(self, guild_id: int, user_id: int) -> int:
+        """Current daily streak, 0 if it has lapsed (last correct answer was before yesterday)."""
+        u = self.daily_stats(guild_id, user_id)
+        d = today()
+        alive = u.get("last") in (d.isoformat(), (d - timedelta(days=1)).isoformat())
+        return u.get("streak", 0) if alive else 0
+
+    def _record_daily(self, guild_id: int, user_id: int, d, correct: bool):
+        g = self.data.setdefault(str(guild_id), {})
+        u = g.setdefault("daily_users", {}).setdefault(
+            str(user_id), {"streak": 0, "best": 0, "correct": 0, "played": 0, "last": None})
+        u["played"] += 1
+        if correct:
+            u["correct"] += 1
+            yesterday = (d - timedelta(days=1)).isoformat()
+            u["streak"] = u["streak"] + 1 if u["last"] == yesterday else 1
+            u["best"] = max(u["best"], u["streak"])
+            u["last"] = d.isoformat()
+        else:
+            u["streak"] = 0
+
+    async def _daily_question(self, guild_id: int, d) -> dict:
+        """Today's question for this server, fetched once and shared by everyone."""
+        async with self._daily_lock:
+            g = self.data.setdefault(str(guild_id), {})
+            daily = g.get("daily")
+            if daily and daily.get("date") == d.isoformat():
+                return daily
+            raw = (await self._fetch_question(guild_id, None, None))
+            dec = lambda x: html.unescape(unquote(x))
+            correct = dec(raw["correct_answer"])
+            options = [dec(a) for a in raw["incorrect_answers"]] + [correct]
+            random.shuffle(options)
+            daily = {"date": d.isoformat(), "question": dec(raw["question"]),
+                     "category": dec(raw["category"]), "difficulty": raw["difficulty"],
+                     "options": options, "correct": options.index(correct), "answers": {}}
+            g["daily"] = daily
+            _save(self.data)
+            return daily
+
+    def _daily_embed(self, daily: dict, uid: int, d) -> discord.Embed:
+        e = discord.Embed(title=f"📅 Daily Trivia · {d.strftime('%b %d')}",
+                          description=f"**{daily['question']}**", color=discord.Color.blurple())
+        e.add_field(name=f"{daily['category']} · {daily['difficulty'].title()}",
+                    value="\n".join(f"**{LETTERS[i]}.** {o}" for i, o in enumerate(daily["options"])), inline=False)
+        choice = daily["answers"].get(str(uid))
+        if choice is None:
+            e.set_footer(text="One try per day, the same question for everyone. No time limit!")
+        else:
+            ok = choice == daily["correct"]
+            e.color = discord.Color.green() if ok else discord.Color.red()
+            e.add_field(name="✅ You got it!" if ok else f"❌ You picked {LETTERS[choice]}",
+                        value=f"Correct answer: **{LETTERS[daily['correct']]}. {daily['options'][daily['correct']]}**",
+                        inline=False)
+        return e
+
+    @trivia.command(name="daily", description="Today's daily trivia question. One try, same question for the whole server.")
+    async def daily(self, interaction: Interaction):
+        debug_command("trivia daily", interaction.user, interaction.guild)
+        d = today()
+        await interaction.response.defer(ephemeral=True)
+        try:
+            daily = await self._daily_question(interaction.guild_id, d)
+        except TriviaError as e:
+            msg = {"rate": "Trivia is being rate limited. Try again in a few seconds."
+                   }.get(str(e), "Could not get today's question. Try again in a moment.")
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+
+        uid = str(interaction.user.id)
+        embed = self._daily_embed(daily, interaction.user.id, d)
+        if uid in daily["answers"]:
+            streak = self.daily_streak(interaction.guild_id, interaction.user.id)
+            embed.set_footer(text=f"You've answered today's question. 🔥 Daily streak: {streak}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+        await interaction.followup.send(embed=embed, view=DailyView(self, interaction.guild_id, interaction.user.id, d),
+                                        ephemeral=True)
+
+    async def answer_daily(self, interaction: Interaction, index: int, d):
+        """Record a daily answer (first one wins), then show the result."""
+        uid = str(interaction.user.id)
+        public = None
+        async with self._daily_lock:
+            daily = self.data.get(str(interaction.guild_id), {}).get("daily")
+            if not daily or daily.get("date") != d.isoformat():
+                await interaction.response.edit_message(
+                    content="That question is from an earlier day. Run `/trivia daily` for the new one!",
+                    embed=None, view=None)
+                return
+            if uid not in daily["answers"]:
+                daily["answers"][uid] = index
+                ok = index == daily["correct"]
+                self._record_daily(interaction.guild_id, interaction.user.id, d, ok)
+                _save(self.data)
+                public = ok
+        streak = self.daily_streak(interaction.guild_id, interaction.user.id)
+        embed = self._daily_embed(daily, interaction.user.id, d)
+        embed.set_footer(text=f"🔥 Daily streak: {streak}")
+        await interaction.response.edit_message(embed=embed, view=None)
+        if public is not None and interaction.channel is not None:
+            try:
+                line = (f"{interaction.user.mention} got today's **Daily Trivia** right! 🔥 {streak}"
+                        if public else f"{interaction.user.mention} took on today's **Daily Trivia** and missed it. 😬")
+                await interaction.channel.send(line, allowed_mentions=discord.AllowedMentions.none())
+            except Exception:
+                pass
+
+    @trivia.command(name="dailyboard", description="Daily trivia streaks and scores in this server.")
+    async def dailyboard(self, interaction: Interaction):
+        debug_command("trivia dailyboard", interaction.user, interaction.guild)
+        g = self.data.get(str(interaction.guild_id), {})
+        users = g.get("daily_users", {})
+        rows = []
+        for uid, u in users.items():
+            if u.get("played"):
+                rows.append((uid, u["correct"], u["played"], self.daily_streak(interaction.guild_id, int(uid)), u["best"]))
+        if not rows:
+            await interaction.response.send_message("Nobody has answered a daily question yet. Try `/trivia daily`!")
+            return
+        rows.sort(key=lambda r: (r[3], r[1], r[4]), reverse=True)
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for i, (uid, correct, played, streak, best) in enumerate(rows[:10]):
+            prefix = medals[i] if i < 3 else f"`{i + 1}.`"
+            fire = f"🔥 **{streak}**" if streak else "—"
+            lines.append(f"{prefix} <@{uid}> streak {fire} (best {best}) · {correct}/{played} correct")
+        daily = g.get("daily")
+        answered = len(daily["answers"]) if daily and daily.get("date") == today().isoformat() else 0
+        e = discord.Embed(title="📅 Daily trivia leaderboard", description="\n".join(lines), color=discord.Color.gold())
+        e.set_footer(text=f"{answered} answered today · /trivia daily")
+        await interaction.response.send_message(embed=e, allowed_mentions=discord.AllowedMentions.none())
 
     @trivia.command(name="leaderboard", description="Top trivia players in this server.")
     async def leaderboard(self, interaction: Interaction):

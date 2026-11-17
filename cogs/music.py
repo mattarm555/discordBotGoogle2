@@ -113,6 +113,8 @@ class QueueView(ui.View):
             await interaction.response.defer()
 
 class Music(commands.Cog):
+    music = app_commands.Group(name="music", description="Music player commands")
+
     def __init__(self, bot):
         self.bot = bot
         self.currently_playing = {}  # guild_id: {start_time, duration, song}
@@ -467,7 +469,7 @@ class Music(commands.Cog):
         }
         return discord.FFmpegPCMAudio(url, **ffmpeg_opts)
 
-    @app_commands.command(name="play", description="Plays a song or playlist from YouTube or SoundCloud.")
+    @music.command(name="play", description="Plays a song or playlist from YouTube or SoundCloud.")
     @app_commands.rename(url="search")
     @app_commands.describe(url="YouTube/SoundCloud URL or search term (accepts both links, searches only YouTube)")
     async def play(self, interaction: Interaction, url: str):
@@ -879,7 +881,7 @@ class Music(commands.Cog):
 
         asyncio.run_coroutine_threadsafe(wrapper(), self.bot.loop)
 
-    @app_commands.command(name="np", description="Shows the currently playing song.")
+    @music.command(name="np", description="Shows the currently playing song.")
     async def now_playing(self, interaction: Interaction):
         await interaction.response.defer()
         guild_id = str(interaction.guild.id)
@@ -911,7 +913,7 @@ class Music(commands.Cog):
         embed.set_footer(text=f"{elapsed_fmt} / {total_fmt}")
         await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="queue", description="Shows the current music queue.")
+    @music.command(name="queue", description="Shows the current music queue.")
     async def queue(self, interaction: Interaction):
         await interaction.response.defer()
         debug_command("queue", interaction.user, interaction.guild)
@@ -925,7 +927,7 @@ class Music(commands.Cog):
         embed = view.format_embed()
         await interaction.followup.send(embed=embed, view=view)
 
-    @app_commands.command(name="refresh_cookies", description="Owner-only: Run refresh_cookies.py and sync cookies.txt")
+    @music.command(name="refresh_cookies", description="Owner-only: Run refresh_cookies.py and sync cookies.txt")
     async def refresh_cookies(self, interaction: Interaction):
         # Owner-only guard
         try:
@@ -1008,7 +1010,7 @@ class Music(commands.Cog):
             desc = "⚠️ refresh_cookies.py returned a non-zero exit code." + (f"\n\nStdout:\n```\n{out_snip}\n```" if out_snip else "") + (f"\n\nStderr:\n```\n{err_snip}\n```" if err_snip else "") + sync_note
             await interaction.followup.send(embed=Embed(title="Cookie Refresh Error", description=desc, color=discord.Color.orange()), ephemeral=True)
 
-    @app_commands.command(name="skip", description="Skips the current song.")
+    @music.command(name="skip", description="Skips the current song.")
     async def skip(self, interaction: Interaction):
         if not self._user_is_dj(interaction):
             await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot skip songs.", color=discord.Color.red()), ephemeral=True)
@@ -1025,7 +1027,7 @@ class Music(commands.Cog):
             embed = Embed(title="No Song Playing", description="Nothing to skip.", color=discord.Color.red())
             await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="stop", description="Pauses the music.")
+    @music.command(name="stop", description="Pauses the music.")
     async def stop(self, interaction: Interaction):
         if not self._user_is_dj(interaction):
             await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot pause music.", color=discord.Color.red()), ephemeral=True)
@@ -1042,7 +1044,7 @@ class Music(commands.Cog):
             embed = Embed(title="No Music Playing", description="Nothing to pause.", color=discord.Color.red())
             await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="start", description="Resumes paused music.")
+    @music.command(name="start", description="Resumes paused music.")
     async def start(self, interaction: Interaction):
         if not self._user_is_dj(interaction):
             await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot resume music.", color=discord.Color.red()), ephemeral=True)
@@ -1059,7 +1061,7 @@ class Music(commands.Cog):
             embed = Embed(title="Not Paused", description="Nothing is paused.", color=discord.Color.red())
             await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="leave", description="Disconnects from voice and clears queue.")
+    @music.command(name="leave", description="Disconnects from voice and clears queue.")
     async def leave(self, interaction: Interaction):
         if not self._user_is_dj(interaction):
             await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot disconnect the bot.", color=discord.Color.red()), ephemeral=True)
@@ -1097,7 +1099,7 @@ class Music(commands.Cog):
 
     
 
-    @app_commands.command(name="queueshuffle", description="Shuffle the current song queue.")
+    @music.command(name="queueshuffle", description="Shuffle the current song queue.")
     async def queueshuffle(self, interaction: Interaction):
         if not self._user_is_dj(interaction):
             await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot shuffle the queue.", color=discord.Color.red()), ephemeral=True)
@@ -1231,7 +1233,7 @@ class Music(commands.Cog):
                 embed = Embed(title="Playlist Queued", description=f"Added {len(songs_added)} songs.", color=discord.Color.green())
             await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="removeplaylist", description="Delete a saved playlist.")
+    @music.command(name="removeplaylist", description="Delete a saved playlist.")
     async def remove_playlist(self, interaction: Interaction, name: str):
         if not self._user_is_dj(interaction):
             await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot modify playlists.", color=discord.Color.red()), ephemeral=True)
@@ -1256,7 +1258,7 @@ class Music(commands.Cog):
 
 
 
-    @app_commands.command(name="playplaylist", description="Play a previously saved playlist.")
+    @music.command(name="playplaylist", description="Play a previously saved playlist.")
     async def play_playlist(self, interaction: Interaction, name: str):
         if not self._user_is_dj(interaction):
             await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot start playlists.", color=discord.Color.red()), ephemeral=True)
@@ -1280,7 +1282,7 @@ class Music(commands.Cog):
             ))
 
 
-    @app_commands.command(name="listplaylists", description="List saved playlists for this server.")
+    @music.command(name="listplaylists", description="List saved playlists for this server.")
     async def list_playlists(self, interaction: Interaction):
         debug_command("listplaylists", interaction.user, interaction.guild)
         guild_id = str(interaction.guild.id)
@@ -1299,7 +1301,7 @@ class Music(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
 
-    @app_commands.command(name="saveplaylist", description="Save a playlist link under a custom name.")
+    @music.command(name="saveplaylist", description="Save a playlist link under a custom name.")
     async def save_playlist(self, interaction: Interaction, name: str, link: str):
         if not self._user_is_dj(interaction):
             await interaction.response.send_message(embed=Embed(title="🎧 DJ Only", description="A DJ role is set. You cannot save playlists.", color=discord.Color.red()), ephemeral=True)
@@ -1357,7 +1359,7 @@ class Music(commands.Cog):
         ))
 
     # ---- DJ Role Commands ----
-    @app_commands.command(name="setdj", description="Assign or update the DJ role for this server.")
+    @music.command(name="setdj", description="Assign or update the DJ role for this server.")
     @app_commands.describe(role="Role that will have permission to control music features")
     async def set_dj(self, interaction: Interaction, role: discord.Role):
         # Bot-admin role check (configured via /setpermissions)
@@ -1376,7 +1378,7 @@ class Music(commands.Cog):
             color=discord.Color.green()
         ))
 
-    @app_commands.command(name="cleardj", description="Remove the configured DJ role (revert to everyone allowed).")
+    @music.command(name="cleardj", description="Remove the configured DJ role (revert to everyone allowed).")
     async def clear_dj(self, interaction: Interaction):
         if not is_bot_admin(interaction.user):
             await interaction.response.send_message(embed=Embed(
@@ -1397,7 +1399,7 @@ class Music(commands.Cog):
             color=discord.Color.orange()
         ))
 
-    @app_commands.command(name="djinfo", description="Show the current DJ role configuration.")
+    @music.command(name="djinfo", description="Show the current DJ role configuration.")
     async def dj_info(self, interaction: Interaction):
         role_id = self.dj_roles.get(str(interaction.guild.id))
         if role_id:

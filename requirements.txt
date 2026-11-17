@@ -1,11 +1,12 @@
 discord.py
 openai
-speechrecognition
-pyaudio
-gtts
 yt-dlp
 aiohttp
 python-dotenv
 curl_cffi
 PyNaCl
 pillow
+tzdata
+pytz
+requests
+davey

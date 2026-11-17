@@ -8,3 +8,12 @@ __pycache__/
 cogs/jengGPT.py
 *.json
 cogs/avatar.py
+cookies.txt
+runtime/
+*.log
+cards.zip
+venv/
+.venv/
+logs/
+STOP
+jengbot-data.zip

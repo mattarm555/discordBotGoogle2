@@ -156,21 +156,21 @@ class Misc(commands.Cog):
 
         # Music (includes DJ commands) - owner-only commands intentionally excluded
         music_fields: list[tuple[str, str]] = [
-            ("/play <url>", "Plays a song or playlist from the given URL."),
-            ("/queue", "Shows the current music queue."),
-            ("/skip", "Skips the current song."),
-            ("/stop", "Pauses the music."),
-            ("/start", "Resumes paused music."),
-            ("/leave", "Clears the queue and makes the bot leave the voice channel."),
-            ("/playplaylist <name>", "Play a previously saved playlist."),
-            ("/saveplaylist <name> <link>", "Save a playlist link under a custom name."),
-            ("/removeplaylist <name>", "Delete a saved playlist."),
-            ("/listplaylists", "List saved playlists for this server."),
-            ("/queueshuffle", "Shuffles the current queue."),
-            ("/np", "Shows the currently playing song."),
-            ("/setdj <role>", "Assign or update the DJ role (Manage Guild)."),
-            ("/cleardj", "Remove the configured DJ role restriction."),
-            ("/djinfo", "Show the current DJ role configuration."),
+            ("/music play <url>", "Plays a song or playlist from the given URL."),
+            ("/music queue", "Shows the current music queue."),
+            ("/music skip", "Skips the current song."),
+            ("/music stop", "Pauses the music."),
+            ("/music start", "Resumes paused music."),
+            ("/music leave", "Clears the queue and makes the bot leave the voice channel."),
+            ("/music playplaylist <name>", "Play a previously saved playlist."),
+            ("/music saveplaylist <name> <link>", "Save a playlist link under a custom name."),
+            ("/music removeplaylist <name>", "Delete a saved playlist."),
+            ("/music listplaylists", "List saved playlists for this server."),
+            ("/music queueshuffle", "Shuffles the current queue."),
+            ("/music np", "Shows the currently playing song."),
+            ("/music setdj <role>", "Assign or update the DJ role (Manage Guild)."),
+            ("/music cleardj", "Remove the configured DJ role restriction."),
+            ("/music djinfo", "Show the current DJ role configuration."),
         ]
         pages.extend(build_section_pages("🎵 Music Commands", discord.Color.blue(), music_fields))
 

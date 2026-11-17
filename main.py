@@ -172,6 +172,15 @@ if TOKEN:
         print(f"{GREEN}🔒 YOUTUBE_API_KEY loaded.{RESET}")
     else:
         print(f"{YELLOW}⚠️ YOUTUBE_API_KEY not set.{RESET}")
+    # Show AI / game-server config status (never print the values)
+    if os.getenv('GROQ_API_KEY'):
+        print(f"{GREEN}🔒 GROQ_API_KEY loaded.{RESET}")
+    else:
+        print(f"{YELLOW}⚠️ GROQ_API_KEY not set (/askjeng and /summarize will be unavailable).{RESET}")
+    if os.getenv('JENGCHAT_STATUS_URL') or (os.getenv('JENGCHAT_HOST') and os.getenv('JENGCHAT_PORT')):
+        print(f"{GREEN}🔒 JengChat status target configured.{RESET}")
+    else:
+        print(f"{YELLOW}⚠️ JENGCHAT_STATUS_URL / JENGCHAT_HOST+PORT not set (/server status disabled).{RESET}")
     bot.run(TOKEN)
 else:
     print(f"{RED}❌ TOKEN not found in .env{RESET}")

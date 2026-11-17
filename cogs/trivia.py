@@ -22,6 +22,7 @@ ANSWER_SECONDS = 20
 NIGHT_QUESTIONS = 20
 NIGHT_SECONDS = 15
 NIGHT_PAUSE = 4  # seconds between questions
+NIGHT_IDLE_LIMIT = 3  # trivia night ends after this many questions in a row with no answers
 LETTERS = ["A", "B", "C", "D"]
 
 # Fallback if the category endpoint is unreachable (id -> name)
@@ -374,6 +375,8 @@ class Trivia(commands.Cog):
         self._nights[channel.id] = state
         scores: dict[int, int] = {}
         asked = 0
+        idle = 0  # consecutive questions nobody answered
+        idle_stopped = False
         dec = lambda x: html.unescape(unquote(x))
 
         async def pause(seconds: float):
@@ -422,6 +425,14 @@ class Trivia(commands.Cog):
                 for uid in view.winners:
                     scores[uid] += 1
 
+                # Nobody touched the last few questions: assume everyone left and wrap up.
+                idle = 0 if view.answers else idle + 1
+                if idle >= NIGHT_IDLE_LIMIT and n < total:
+                    idle_stopped = True
+                    await channel.send(f"😴 No one answered the last {NIGHT_IDLE_LIMIT} questions, "
+                                       "so I'm ending trivia night.")
+                    break
+
                 if state["stop"]:
                     break
                 if n < total:
@@ -432,7 +443,7 @@ class Trivia(commands.Cog):
                     await pause(NIGHT_PAUSE)
 
             # Final results
-            early = state["stop"] and asked < len(questions)
+            early = (state["stop"] or idle_stopped) and asked < len(questions)
             title = "🏁 Trivia Night results" + (" (ended early)" if early else "")
             if scores:
                 desc = "\n".join(f"{line} / {asked}" for line in standings())
